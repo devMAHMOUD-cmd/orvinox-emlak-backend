@@ -1,0 +1,187 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: postgres_server
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - craftora_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  minio:
+    image: minio/minio:latest
+    container_name: craftora_minio
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+    networks:
+      - craftora_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: craftora_redis
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: ["sh", "-c", "redis-server --requirepass \"$${REDIS_PASSWORD}\" --appendonly yes"]
+    networks:
+      - craftora_network
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$${REDIS_PASSWORD}\" ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: craftora_rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS}
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    networks:
+      - craftora_network
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  elasticsearch:
+    image: elasticsearch:8.13.0
+    container_name: craftora_elasticsearch
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+    ports:
+      - "9200:9200"
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+    networks:
+      - craftora_network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9200/_cluster/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  craftora_api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: craftora_api:latest
+    container_name: craftora_api
+    env_file:
+      - .env
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_URLS: "http://+:5000"
+      ConnectionStrings__PostgreSQL: "Host=postgres;Port=5432;Database=${POSTGRES_DB};Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
+      ConnectionStrings__DefaultConnection: "Host=postgres;Port=5432;Database=${POSTGRES_DB};Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
+      ConnectionStrings__Redis: "redis:6379,password=${REDIS_PASSWORD},abortConnect=false"
+      ConnectionStrings__RabbitMQ: "amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@rabbitmq:5672"
+      ConnectionStrings__Elasticsearch: "http://elasticsearch:9200"
+      Jwt__Secret: "${JWT_SECRET}"
+      OAuth__Google__ClientId: "${GOOGLE_CLIENT_ID}"
+      OAuth__Google__ClientSecret: "${GOOGLE_CLIENT_SECRET}"
+      Email__Provider: "resend"
+      Email__ApiKey: "${RESEND_API_KEY:-}"
+      Email__Resend__ApiKey: "${RESEND_API_KEY:-}"
+      Email__SendGrid__ApiKey: "${SENDGRID_API_KEY}"
+      Email__FromEmail: "onboarding@resend.dev"
+      Email__FromName: "${EMAIL_FROM_NAME:-Craftora}"
+      Email__Smtp__Host: "${SMTP_HOST:-}"
+      Email__Smtp__Port: "${SMTP_PORT:-587}"
+      Email__Smtp__Username: "${SMTP_USER:-}"
+      Email__Smtp__Password: "${SMTP_PASS:-}"
+      Email__Smtp__UseSsl: "${SMTP_USE_SSL:-false}"
+      Stripe__PublishableKey: "${STRIPE_PUBLISHABLE_KEY}"
+      Stripe__SecretKey: "${STRIPE_SECRET_KEY}"
+      Stripe__WebhookSecret: "${STRIPE_WEBHOOK_SECRET}"
+      MINIO_INTERNAL_ENDPOINT: "${MINIO_INTERNAL_ENDPOINT:-minio:9000}"
+      MINIO_PUBLIC_ENDPOINT: "${MINIO_PUBLIC_ENDPOINT:-192.168.1.207:9000}"
+      MINIO_USE_SSL: "${MINIO_USE_SSL:-false}"
+      MinIO__Endpoint: "${MINIO_INTERNAL_ENDPOINT:-minio:9000}"
+      MinIO__InternalEndpoint: "${MINIO_INTERNAL_ENDPOINT:-minio:9000}"
+      MinIO__PublicEndpoint: "${MINIO_PUBLIC_ENDPOINT:-192.168.1.207:9000}"
+      MinIO__AccessKey: "${MINIO_ROOT_USER}"
+      MinIO__SecretKey: "${MINIO_ROOT_PASSWORD}"
+      MinIO__UseSSL: "${MINIO_USE_SSL:-false}"
+      Storage__ServiceUrl: "http://${MINIO_INTERNAL_ENDPOINT:-minio:9000}"
+      Storage__PublicServiceUrl: "http://${MINIO_PUBLIC_ENDPOINT:-192.168.1.207:9000}"
+      Storage__AccessKey: "${MINIO_ROOT_USER}"
+      Storage__SecretKey: "${MINIO_ROOT_PASSWORD}"
+      Storage__ForcePathStyle: "true"
+      Storage__CorsAllowedOrigins__0: "http://localhost:8081"
+      Storage__CorsAllowedOrigins__1: "http://192.168.1.207:8081"
+      Storage__CorsAllowedOrigins__2: "http://localhost:19006"
+      Sentry__Dsn: "${SENTRY_DSN}"
+    expose:
+      - "5000"
+    networks:
+      - craftora_network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
+  nginx:
+    image: nginx:alpine
+    container_name: craftora_nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+    networks:
+      - craftora_network
+    depends_on:
+      - craftora_api
+
+networks:
+  craftora_network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  minio_data:
+  redis_data:
+  rabbitmq_data:
+  elasticsearch_data:
