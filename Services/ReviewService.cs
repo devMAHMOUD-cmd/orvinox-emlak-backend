@@ -42,6 +42,7 @@ public sealed class ReviewService : IReviewService
             UserId = userId,
             Rating = dto.Rating,
             Comment = dto.Comment,
+            Images = dto.Images ?? new List<string>(),
             CreatedAt = DateTime.UtcNow,
             UpdatedAt = DateTime.UtcNow
         };
@@ -69,6 +70,7 @@ public sealed class ReviewService : IReviewService
 
         review.Rating = dto.Rating;
         review.Comment = dto.Comment;
+        review.Images = dto.Images ?? new List<string>();
         review.UpdatedAt = DateTime.UtcNow;
 
         await _dbContext.SaveChangesAsync();
@@ -192,6 +194,7 @@ public sealed class ReviewService : IReviewService
             UserFullName: review.User?.FullName,
             Rating: review.Rating,
             Comment: review.Comment,
+            Images: review.Images,
             SellerReply: review.SellerReply,
             CreatedAt: review.CreatedAt,
             UpdatedAt: review.UpdatedAt);

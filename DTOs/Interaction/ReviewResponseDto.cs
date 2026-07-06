@@ -7,6 +7,7 @@ public sealed record ReviewResponseDto(
     string? UserFullName,
     int Rating,
     string? Comment,
+    List<string> Images,
     string? SellerReply,
     DateTime? CreatedAt,
     DateTime? UpdatedAt);

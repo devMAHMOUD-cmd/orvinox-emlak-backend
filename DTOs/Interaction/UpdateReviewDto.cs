@@ -6,4 +6,6 @@ public sealed record UpdateReviewDto(
     [property: Range(1, 5, ErrorMessage = "Puan 1 ile 5 arasinda olmalidir.")]
     int Rating,
 
-    string? Comment);
+    string? Comment,
+
+    List<string>? Images);

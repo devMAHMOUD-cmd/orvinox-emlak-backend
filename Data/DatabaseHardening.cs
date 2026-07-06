@@ -10,6 +10,112 @@ public static class DatabaseHardening
             CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
             CREATE EXTENSION IF NOT EXISTS "citext";
 
+            ALTER TABLE contests ADD COLUMN IF NOT EXISTS description TEXT;
+            ALTER TABLE contests ADD COLUMN IF NOT EXISTS rewards_hidden BOOLEAN DEFAULT FALSE;
+            ALTER TABLE contest_results ADD COLUMN IF NOT EXISTS joined_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP;
+            ALTER TABLE media ADD COLUMN IF NOT EXISTS share_count INT DEFAULT 0;
+
+            CREATE TABLE IF NOT EXISTS admin_reports (
+                id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                type VARCHAR(50) NOT NULL,
+                target_id UUID NOT NULL,
+                target_title TEXT,
+                reported_by_user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+                reason VARCHAR(50) NOT NULL,
+                description TEXT,
+                status VARCHAR(20) NOT NULL DEFAULT 'open',
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS admin_warnings (
+                id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                admin_user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+                title VARCHAR(255) NOT NULL,
+                message TEXT NOT NULL,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS admin_audit_logs (
+                id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                admin_user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+                action VARCHAR(100) NOT NULL,
+                target_type VARCHAR(50) NOT NULL,
+                target_id UUID,
+                metadata JSONB DEFAULT '{{}}'::jsonb,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS pulse_news (
+                id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                title VARCHAR(255) NOT NULL,
+                description TEXT,
+                meta VARCHAR(100),
+                icon VARCHAR(50),
+                is_published BOOLEAN NOT NULL DEFAULT false,
+                is_new_until TIMESTAMP WITH TIME ZONE,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS home_cards (
+                id VARCHAR(80) PRIMARY KEY,
+                title VARCHAR(255) NOT NULL,
+                description TEXT,
+                icon VARCHAR(50),
+                action_type VARCHAR(50),
+                sort_order INT NOT NULL DEFAULT 0,
+                is_active BOOLEAN NOT NULL DEFAULT true,
+                updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS admin_competition_rewards (
+                id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                contest_id UUID NOT NULL REFERENCES contests(id) ON DELETE CASCADE,
+                user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                rank INT NOT NULL,
+                reward_type VARCHAR(50) NOT NULL,
+                amount DECIMAL(12,2),
+                currency VARCHAR(3),
+                note TEXT,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_admin_reports_status_type ON admin_reports(status, type);
+            CREATE INDEX IF NOT EXISTS idx_admin_warnings_user ON admin_warnings(user_id, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_admin_audit_logs_created ON admin_audit_logs(created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_pulse_news_published ON pulse_news(is_published, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_seller_subs_period ON seller_subscriptions(status, current_period_end);
+            CREATE INDEX IF NOT EXISTS idx_seller_subs_grace ON seller_subscriptions(grace_period_end) WHERE grace_period_end IS NOT NULL;
+            CREATE INDEX IF NOT EXISTS idx_media_comments_media_parent_created ON media_comments(media_id, parent_comment_id, created_at);
+            CREATE INDEX IF NOT EXISTS idx_media_comments_parent ON media_comments(parent_comment_id);
+            CREATE INDEX IF NOT EXISTS idx_ip_attempts_locked_until ON ip_login_attempts(locked_until) WHERE locked_until IS NOT NULL;
+
+            ALTER TABLE orders DROP CONSTRAINT IF EXISTS check_fee_logic;
+            ALTER TABLE orders ADD CONSTRAINT check_fee_logic CHECK (ABS(amount - (platform_fee + seller_earnings)) <= 0.01);
+
+            ALTER TABLE payments DROP CONSTRAINT IF EXISTS check_payment_math;
+            ALTER TABLE payments ADD CONSTRAINT check_payment_math CHECK (ABS(gross_amount - (platform_fee_amount + net_earnings)) <= 0.01);
+
+            ALTER TABLE seller_subscriptions DROP CONSTRAINT IF EXISTS check_grace_after_period;
+            ALTER TABLE seller_subscriptions ADD CONSTRAINT check_grace_after_period CHECK (grace_period_end IS NULL OR grace_period_end >= current_period_end);
+
+            ALTER TABLE notifications DROP CONSTRAINT IF EXISTS check_notification_type;
+            ALTER TABLE notifications ADD CONSTRAINT check_notification_type CHECK (type IN (
+                'sale_completed',
+                'new_follower',
+                'new_review',
+                'new_question',
+                'media_liked',
+                'media_commented',
+                'contest_result',
+                'order_completed',
+                'new_video',
+                'new_product',
+                'system'
+            ));
+
             CREATE OR REPLACE FUNCTION update_updated_at_column()
             RETURNS TRIGGER AS $$
             BEGIN
@@ -34,18 +140,28 @@ public static class DatabaseHardening
             RETURNS TRIGGER AS $$
             BEGIN
                 IF TG_TABLE_NAME = 'media_likes' THEN
-                    IF TG_OP = 'INSERT' THEN UPDATE media SET like_count = like_count + 1 WHERE id = NEW.media_id;
-                    ELSIF TG_OP = 'DELETE' THEN UPDATE media SET like_count = GREATEST(like_count - 1, 0) WHERE id = OLD.media_id; END IF;
+                    IF TG_OP = 'INSERT' THEN
+                        UPDATE media SET like_count = like_count + 1 WHERE id = NEW.media_id;
+                    ELSIF TG_OP = 'DELETE' THEN
+                        UPDATE media SET like_count = GREATEST(like_count - 1, 0) WHERE id = OLD.media_id;
+                    END IF;
                 ELSIF TG_TABLE_NAME = 'media_saves' THEN
-                    IF TG_OP = 'INSERT' THEN UPDATE media SET save_count = save_count + 1 WHERE id = NEW.media_id;
-                    ELSIF TG_OP = 'DELETE' THEN UPDATE media SET save_count = GREATEST(save_count - 1, 0) WHERE id = OLD.media_id; END IF;
+                    IF TG_OP = 'INSERT' THEN
+                        UPDATE media SET save_count = save_count + 1 WHERE id = NEW.media_id;
+                    ELSIF TG_OP = 'DELETE' THEN
+                        UPDATE media SET save_count = GREATEST(save_count - 1, 0) WHERE id = OLD.media_id;
+                    END IF;
                 ELSIF TG_TABLE_NAME = 'media_comments' THEN
-                    IF TG_OP = 'INSERT' THEN UPDATE media SET comment_count = comment_count + 1 WHERE id = NEW.media_id;
-                    ELSIF TG_OP = 'DELETE' THEN UPDATE media SET comment_count = GREATEST(comment_count - 1, 0) WHERE id = OLD.media_id; END IF;
+                    IF TG_OP = 'INSERT' THEN
+                        UPDATE media SET comment_count = comment_count + 1 WHERE id = NEW.media_id;
+                    ELSIF TG_OP = 'DELETE' THEN
+                        UPDATE media SET comment_count = GREATEST(comment_count - 1, 0) WHERE id = OLD.media_id;
+                    END IF;
                 END IF;
+
                 RETURN NULL;
             END;
-            $$ LANGUAGE plpgsql;
+            $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
 
             CREATE OR REPLACE FUNCTION deliver_product_to_library()
             RETURNS TRIGGER AS $$
@@ -54,18 +170,23 @@ public static class DatabaseHardening
                     INSERT INTO user_library (user_id, product_id)
                     VALUES (NEW.buyer_id, NEW.product_id)
                     ON CONFLICT (user_id, product_id) DO NOTHING;
+                ELSIF (NEW.status = 'refunded' AND TG_OP = 'UPDATE' AND OLD.status != 'refunded') THEN
+                    DELETE FROM user_library
+                    WHERE user_id = NEW.buyer_id AND product_id = NEW.product_id;
                 END IF;
+
                 RETURN NEW;
             END;
-            $$ LANGUAGE plpgsql;
+            $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
 
             CREATE OR REPLACE FUNCTION process_completed_order()
             RETURNS TRIGGER AS $$
             DECLARE v_seller_id UUID;
             BEGIN
+                SELECT user_id INTO v_seller_id FROM shops WHERE id = NEW.shop_id;
+
                 IF (NEW.status = 'completed' AND (TG_OP = 'INSERT' OR OLD.status != 'completed')) THEN
                     UPDATE products SET sales_count = sales_count + 1 WHERE id = NEW.product_id;
-                    SELECT user_id INTO v_seller_id FROM shops WHERE id = NEW.shop_id;
 
                     IF v_seller_id IS NOT NULL THEN
                         INSERT INTO point_logs (user_id, action_type, points_earned, reference_id)
@@ -77,10 +198,23 @@ public static class DatabaseHardening
                         SET total_points = user_points.total_points + 20.0,
                             updated_at = CURRENT_TIMESTAMP;
                     END IF;
+                ELSIF (NEW.status = 'refunded' AND TG_OP = 'UPDATE' AND OLD.status != 'refunded') THEN
+                    UPDATE products SET sales_count = GREATEST(sales_count - 1, 0) WHERE id = NEW.product_id;
+
+                    IF v_seller_id IS NOT NULL THEN
+                        INSERT INTO point_logs (user_id, action_type, points_earned, reference_id)
+                        VALUES (v_seller_id, 'refund_sale', -20.0, NEW.id);
+
+                        UPDATE user_points
+                        SET total_points = GREATEST(total_points - 20.0, 0),
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE user_id = v_seller_id;
+                    END IF;
                 END IF;
+
                 RETURN NEW;
             END;
-            $$ LANGUAGE plpgsql;
+            $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
 
             CREATE OR REPLACE FUNCTION sync_order_status_from_payment()
             RETURNS TRIGGER AS $$
@@ -90,19 +224,126 @@ public static class DatabaseHardening
                 ELSIF (NEW.status = 'refunded' AND (TG_OP = 'INSERT' OR OLD.status != 'refunded')) THEN
                     UPDATE orders SET status = 'refunded' WHERE id = NEW.order_id;
                 END IF;
+
                 RETURN NEW;
             END;
-            $$ LANGUAGE plpgsql;
+            $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
 
             CREATE OR REPLACE FUNCTION prevent_duplicate_purchase()
             RETURNS TRIGGER AS $$
             BEGIN
                 IF EXISTS (SELECT 1 FROM user_library WHERE user_id = NEW.user_id AND product_id = NEW.product_id) THEN
-                    RAISE EXCEPTION 'Bu ürün zaten kütüphanenizde mevcut!';
+                    RAISE EXCEPTION 'Bu urun zaten kutuphanenizde mevcut!';
                 END IF;
+
                 RETURN NEW;
             END;
-            $$ LANGUAGE plpgsql;
+            $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
+
+            CREATE OR REPLACE FUNCTION award_seller_points()
+            RETURNS TRIGGER AS $$
+            DECLARE v_seller_id UUID;
+            BEGIN
+                SELECT s.user_id INTO v_seller_id
+                FROM media m
+                JOIN shops s ON m.shop_id = s.id
+                WHERE m.id = NEW.media_id;
+
+                IF v_seller_id IS NOT NULL THEN
+                    INSERT INTO point_logs (user_id, action_type, points_earned, reference_id)
+                    VALUES (v_seller_id, 'receive_like', 0.5, NEW.media_id);
+
+                    INSERT INTO user_points (user_id, total_points)
+                    VALUES (v_seller_id, 0.5)
+                    ON CONFLICT (user_id) DO UPDATE
+                    SET total_points = user_points.total_points + 0.5,
+                        updated_at = CURRENT_TIMESTAMP;
+                END IF;
+
+                RETURN NEW;
+            END;
+            $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
+
+            CREATE OR REPLACE FUNCTION award_viewer_points()
+            RETURNS TRIGGER AS $$
+            DECLARE v_daily_points DECIMAL;
+            BEGIN
+                SELECT COALESCE(SUM(points_earned), 0) INTO v_daily_points
+                FROM point_logs
+                WHERE user_id = NEW.user_id
+                  AND action_type = 'watch_reels'
+                  AND created_at::date = CURRENT_DATE;
+
+                IF v_daily_points < 120 THEN
+                    INSERT INTO point_logs (user_id, action_type, points_earned, reference_id)
+                    VALUES (NEW.user_id, 'watch_reels', 1.0, NEW.media_id);
+
+                    INSERT INTO user_points (user_id, total_points)
+                    VALUES (NEW.user_id, 1.0)
+                    ON CONFLICT (user_id) DO UPDATE
+                    SET total_points = user_points.total_points + 1.0,
+                        updated_at = CURRENT_TIMESTAMP;
+
+                    NEW.is_point_earned := TRUE;
+                END IF;
+
+                RETURN NEW;
+            END;
+            $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
+
+            CREATE OR REPLACE FUNCTION normalize_analytics_event_shop_id()
+            RETURNS TRIGGER AS $$
+            DECLARE
+                v_product_shop_id UUID;
+                v_order_shop_id UUID;
+            BEGIN
+                IF NEW.product_id IS NOT NULL THEN
+                    SELECT shop_id INTO v_product_shop_id
+                    FROM products
+                    WHERE id = NEW.product_id;
+
+                    IF v_product_shop_id IS NULL THEN
+                        RAISE EXCEPTION 'Analytics event product_id gecersiz: %', NEW.product_id;
+                    END IF;
+
+                    NEW.shop_id := v_product_shop_id;
+                END IF;
+
+                IF NEW.order_id IS NOT NULL THEN
+                    SELECT shop_id INTO v_order_shop_id
+                    FROM orders
+                    WHERE id = NEW.order_id;
+
+                    IF v_order_shop_id IS NULL THEN
+                        RAISE EXCEPTION 'Analytics event order_id gecersiz: %', NEW.order_id;
+                    END IF;
+
+                    NEW.shop_id := v_order_shop_id;
+                END IF;
+
+                RETURN NEW;
+            END;
+            $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
+
+            CREATE OR REPLACE FUNCTION reward_lesson_completion()
+            RETURNS TRIGGER AS $$
+            BEGIN
+                IF (NEW.is_completed = TRUE AND OLD.is_completed = FALSE) THEN
+                    INSERT INTO point_logs (user_id, action_type, points_earned, reference_id)
+                    VALUES (NEW.user_id, 'complete_lesson', 2.0, NEW.lesson_id);
+
+                    INSERT INTO user_points (user_id, total_points)
+                    VALUES (NEW.user_id, 2.0)
+                    ON CONFLICT (user_id) DO UPDATE
+                    SET total_points = user_points.total_points + 2.0,
+                        updated_at = CURRENT_TIMESTAMP;
+
+                    NEW.completed_at = CURRENT_TIMESTAMP;
+                END IF;
+
+                RETURN NEW;
+            END;
+            $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
 
             CREATE OR REPLACE FUNCTION increment_coupon_usage()
             RETURNS TRIGGER AS $$
@@ -132,6 +373,12 @@ public static class DatabaseHardening
             DROP TRIGGER IF EXISTS set_cart_updated_at ON cart_items;
             CREATE TRIGGER set_cart_updated_at BEFORE UPDATE ON cart_items FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
+            DROP TRIGGER IF EXISTS set_reviews_updated_at ON reviews;
+            CREATE TRIGGER set_reviews_updated_at BEFORE UPDATE ON reviews FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+            DROP TRIGGER IF EXISTS set_media_comments_updated_at ON media_comments;
+            CREATE TRIGGER set_media_comments_updated_at BEFORE UPDATE ON media_comments FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
             DROP TRIGGER IF EXISTS trg_sync_followers ON subscriptions;
             CREATE TRIGGER trg_sync_followers AFTER INSERT OR DELETE ON subscriptions FOR EACH ROW EXECUTE FUNCTION sync_follower_count();
 
@@ -158,6 +405,15 @@ public static class DatabaseHardening
 
             DROP TRIGGER IF EXISTS trg_increment_coupon_usage ON coupon_uses;
             CREATE TRIGGER trg_increment_coupon_usage AFTER INSERT ON coupon_uses FOR EACH ROW EXECUTE FUNCTION increment_coupon_usage();
+
+            DROP TRIGGER IF EXISTS trg_points_on_like ON media_likes;
+            CREATE TRIGGER trg_points_on_like AFTER INSERT ON media_likes FOR EACH ROW EXECUTE FUNCTION award_seller_points();
+
+            DROP TRIGGER IF EXISTS trg_points_on_watch ON media_watch_history;
+            CREATE TRIGGER trg_points_on_watch BEFORE INSERT ON media_watch_history FOR EACH ROW EXECUTE FUNCTION award_viewer_points();
+
+            DROP TRIGGER IF EXISTS trg_normalize_analytics_event_shop_id ON analytics_events;
+            CREATE TRIGGER trg_normalize_analytics_event_shop_id BEFORE INSERT ON analytics_events FOR EACH ROW EXECUTE FUNCTION normalize_analytics_event_shop_id();
             """);
 
         await db.Database.ExecuteSqlRawAsync("""
@@ -184,7 +440,8 @@ public static class DatabaseHardening
             ALTER TABLE user_device_tokens ENABLE ROW LEVEL SECURITY;
 
             DROP POLICY IF EXISTS users_select_active ON users;
-            CREATE POLICY users_select_active ON users FOR SELECT USING (is_active = TRUE);
+            DROP POLICY IF EXISTS "Aktif kullanıcıları herkes görebilir" ON users;
+            CREATE POLICY "Aktif kullanıcıları herkes görebilir" ON users FOR SELECT USING (is_active = TRUE AND deleted_at IS NULL);
 
             DROP POLICY IF EXISTS users_update_own ON users;
             CREATE POLICY users_update_own ON users FOR UPDATE USING (id = current_setting('app.current_user_id', true)::uuid);
@@ -205,13 +462,25 @@ public static class DatabaseHardening
             CREATE POLICY media_select_active ON media FOR SELECT USING (is_active = TRUE);
 
             DROP POLICY IF EXISTS cart_manage_own ON cart_items;
-            CREATE POLICY cart_manage_own ON cart_items FOR ALL USING (user_id = current_setting('app.current_user_id', true)::uuid);
+            DROP POLICY IF EXISTS "Kullanıcı kendi sepetini yönetebilir" ON cart_items;
+            CREATE POLICY "Kullanıcı kendi sepetini yönetebilir" ON cart_items
+                USING (user_id = current_setting('app.current_user_id', true)::uuid)
+                WITH CHECK (user_id = current_setting('app.current_user_id', true)::uuid);
 
             DROP POLICY IF EXISTS notifications_manage_own ON notifications;
-            CREATE POLICY notifications_manage_own ON notifications FOR ALL USING (user_id = current_setting('app.current_user_id', true)::uuid);
+            DROP POLICY IF EXISTS "Kullanıcı kendi bildirimlerini görebilir" ON notifications;
+            CREATE POLICY "Kullanıcı kendi bildirimlerini görebilir" ON notifications FOR SELECT
+                USING (user_id = current_setting('app.current_user_id', true)::uuid);
+
+            DROP POLICY IF EXISTS "Kullanıcı bildirimini okundu yapabilir" ON notifications;
+            CREATE POLICY "Kullanıcı bildirimini okundu yapabilir" ON notifications FOR UPDATE
+                USING (user_id = current_setting('app.current_user_id', true)::uuid);
 
             DROP POLICY IF EXISTS device_tokens_manage_own ON user_device_tokens;
-            CREATE POLICY device_tokens_manage_own ON user_device_tokens FOR ALL USING (user_id = current_setting('app.current_user_id', true)::uuid);
+            DROP POLICY IF EXISTS "Kullanıcı kendi cihazlarını yönetebilir" ON user_device_tokens;
+            CREATE POLICY "Kullanıcı kendi cihazlarını yönetebilir" ON user_device_tokens
+                USING (user_id = current_setting('app.current_user_id', true)::uuid)
+                WITH CHECK (user_id = current_setting('app.current_user_id', true)::uuid);
             """);
     }
 }

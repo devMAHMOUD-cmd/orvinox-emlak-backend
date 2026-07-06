@@ -1,2439 +1,1701 @@
--- BİSMİLLAH: CRAFTORA VERİTABANI KURULUMU - BÖLÜM 1
-
--- 1. EKLENTİLER (EXTENSIONS)
-CREATE EXTENSION IF NOT EXISTS "uuid-ossp"; -- UUID (rastgele benzersiz ID) oluşturmak için gerekli eklenti
-CREATE EXTENSION IF NOT EXISTS "citext"; -- Büyük/küçük harf duyarsız, süper hızlı metin (email) araması için eklenti
-
--- 2. ÖZEL VERİ TİPLERİ (ENUMS)
-CREATE TYPE user_role AS ENUM ('user', 'seller', 'admin'); -- Kullanıcı yetki seviyelerini belirlediğimiz sabit liste
-
--- 3. KULLANICILAR TABLOSU (USERS)
-CREATE TABLE users (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(), -- Her kullanıcıya özel, tahmin edilemez şifreli kimlik numarası
-    email CITEXT UNIQUE NOT NULL, -- Kullanıcının e-posta adresi (CITEXT: AHMET@gmail.com ile ahmet@gmail.com aynı sayılır)
-    full_name VARCHAR(100), -- Kullanıcının ad ve soyadı bilgisi
-    avatar_url TEXT, -- Profil fotoğrafının tutulduğu bulut (Storage) linki
-    role user_role DEFAULT 'user', -- Sisteme kayıt olan herkes varsayılan olarak 'user' (normal müşteri) başlar
-    auth_provider VARCHAR(50) DEFAULT 'email', -- Sisteme nereden kayıt oldu? (email, google, apple, facebook)
-    provider_id VARCHAR(255) UNIQUE, -- Google/Apple gibi yerlerden gelen özel ID numarası
-    password_hash TEXT, -- Eğer email ile kayıt olduysa, şifresinin kriptolanmış (kırılmaz) hali
-    is_email_verified BOOLEAN DEFAULT FALSE, -- Email adresine giden kodu (OTP) doğru girdi mi?
-    locked_until TIMESTAMP WITH TIME ZONE, -- Hacker saldırısı olursa hesabı şu saate kadar dondur (Brute-Force koruması)
-    stripe_customer_id VARCHAR(255), -- Stripe (Ödeme) tarafındaki müşteri cüzdan kodu (Alışveriş için)
-    stripe_account_id VARCHAR(255), -- Satıcı ise paranın yatacağı Stripe IBAN/Hesap kodu
-    preferences JSONB DEFAULT '{}'::jsonb, -- Tema, dil, bildirim gibi mobil uygulama ayarlarının tutulduğu esnek depo
-    is_active BOOLEAN DEFAULT TRUE, -- Hesap silinirse FALSE olur (Soft Delete), veriler gerçekten silinmez
-    last_login_at TIMESTAMP WITH TIME ZONE, -- Sisteme en son ne zaman giriş yaptı?
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP, -- Hesabın oluşturulma (kayıt) tarihi
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP, -- Profilde yapılan en son değişikliğin tarihi
-    
-    -- AKILLI GÜVENLİK KURALI: 
-    -- Eğer Google/Apple ile değil de normal email ile giriyorsa, şifre boş OLAMAZ!
-    CONSTRAINT check_password_if_email CHECK (
-        (auth_provider = 'email' AND password_hash IS NOT NULL) OR 
-        (auth_provider != 'email')
-    )
-);
-
--- 4. KULLANICI OTURUMLARI TABLOSU (USER SESSIONS)
-CREATE TABLE user_sessions (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(), -- Oturuma ait benzersiz ID
-    user_id UUID REFERENCES users(id) ON DELETE CASCADE, -- Bu oturum hangi kullanıcıya ait? (Kullanıcı silinirse oturum da silinir)
-    refresh_token TEXT NOT NULL, -- Kullanıcıyı her seferinde şifre girmekten kurtaran uzun yetki anahtarı
-    device_id VARCHAR(255), -- Kullanıcının girdiği telefonun veya bilgisayarın benzersiz cihaz kodu
-    ip_address INET, -- Güvenlik için kullanıcının girdiği internet IP adresi
-    user_agent TEXT, -- Hangi tarayıcıdan (Chrome/Safari) veya işletim sisteminden (iOS/Android) giriyor?
-    expires_at TIMESTAMP WITH TIME ZONE NOT NULL, -- Bu oturumun (token'ın) son kullanma tarihi (Örn: 30 gün sonra biter)
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP -- Bu oturumun açıldığı anın tarihi
-);
-
--- 5. HATALI GİRİŞ DENEMELERİ TABLOSU (LOGIN ATTEMPTS)
-CREATE TABLE login_attempts (
-    email CITEXT PRIMARY KEY, -- Hangi e-posta adresine saldırı yapılıyor/deneniyor?
-    attempt_count INT DEFAULT 1, -- Kaç kere yanlış şifre girildi?
-    last_attempt_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP -- En son hatalı giriş denemesi ne zaman yapıldı?
-);
-
-
--- BİSMİLLAH: CRAFTORA VERİTABANI KURULUMU - BÖLÜM 2
-
--- ==========================================
--- 1. İNDEKS KAVŞAKLARI (PERFORMANS VE HIZ)
--- Milyonlarca veri içinde aramaları milisaniyelere düşüren arama motorları
--- ==========================================
-
--- Sosyal medya ile giriş yapanları anında bulmak için B-Tree İndeksi
-CREATE INDEX idx_users_provider_id ON users(provider_id);
-
--- Mobil JSON ayarlarında ("Karanlık mod açık mı?") süper hızlı arama yapmak için GIN İndeksi
-CREATE INDEX idx_users_preferences ON users USING GIN (preferences);
-
--- Bir kullanıcının açık olan oturumlarını şıp diye bulmak için
-CREATE INDEX idx_user_sessions_user_id ON user_sessions(user_id);
-
--- Gelen Refresh Token'ın veritabanında olup olmadığını saliselik sürede doğrulamak için
-CREATE INDEX idx_user_sessions_token ON user_sessions(refresh_token);
-
-
--- ==========================================
--- 2. TETİKLEYİCİLER (OTOMASYON - TRIGGERS)
--- Geliştirici hata yapsa bile veritabanının kendi kendini düzeltmesini sağlayan robotlar
--- ==========================================
-
--- Önce bir "Tarih Güncelleyen Robot (Fonksiyon)" üretiyoruz
-CREATE OR REPLACE FUNCTION update_updated_at_column()
-RETURNS TRIGGER AS $$
-BEGIN
-    NEW.updated_at = CURRENT_TIMESTAMP; -- Yeni verinin updated_at sütununu şu anki saat yap
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
--- Şimdi bu robotu 'users' tablosuna bağlıyoruz: "Her UPDATE işleminden hemen ÖNCE bu robotu çalıştır"
-CREATE TRIGGER set_users_updated_at
-BEFORE UPDATE ON users
-FOR EACH ROW
-EXECUTE FUNCTION update_updated_at_column();
-
-
--- ==========================================
--- 3. SATIR BAZLI GÜVENLİK (RLS - ROW LEVEL SECURITY)
--- Hackerları veritabanı kapısında durduran çelik yeleğimiz
--- ==========================================
-
--- Tablolarda RLS kalkanını aktif ediyoruz
-ALTER TABLE users ENABLE ROW LEVEL SECURITY;
-ALTER TABLE user_sessions ENABLE ROW LEVEL SECURITY;
-
--- KURAL 1: Kullanıcı Profillerini Görme (SELECT)
--- Herkes (sisteme giriş yapmamış anonim biri dahil) aktif kullanıcıların profilini görebilir
-CREATE POLICY "Aktif kullanıcıları herkes görebilir" 
-ON users FOR SELECT 
-USING (is_active = TRUE);
-
--- KURAL 2: Profil Güncelleme (UPDATE)
--- (Not: Backend kodumuzda, sisteme giriş yapan kişinin ID'sini 'app.current_user_id' adında bir veritabanı değişkenine atayacağız)
--- Kullanıcı SADECE kendi satırındaki verileri (kendi ID'si eşleşiyorsa) değiştirebilir
-CREATE POLICY "Kullanıcı sadece kendi profilini güncelleyebilir" 
-ON users FOR UPDATE 
-USING (id = current_setting('app.current_user_id', true)::uuid);
-
--- KURAL 3: Oturumları Görme ve Silme (SESSION GİZLİLİĞİ)
--- Oturumlar (Token'lar) aşırı gizlidir. Sadece sahibi kendi token'ını görebilir ve silebilir (Çıkış yapma)
-CREATE POLICY "Kullanıcı sadece kendi oturumlarını görebilir" 
-ON user_sessions FOR SELECT 
-USING (user_id = current_setting('app.current_user_id', true)::uuid);
-
-CREATE POLICY "Kullanıcı sadece kendi oturumlarını silebilir" 
-ON user_sessions FOR DELETE 
-USING (user_id = current_setting('app.current_user_id', true)::uuid);
-
-
-
-SELECT full_name, created_at, updated_at FROM users;
-
-
-
-
-
-
--- CRAFTORA VERİTABANI KURULUMU - BÖLÜM 3 (MAĞAZA EKOSİSTEMİ)
-
--- 1. MAĞAZALAR TABLOSU (SHOPS)
-CREATE TABLE shops (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(), -- Mağaza kimlik numarası
-    user_id UUID UNIQUE NOT NULL REFERENCES users(id) ON DELETE CASCADE, -- Mağaza sahibi (1 kullanıcı = 1 mağaza kuralı UNIQUE ile sağlandı)
-    shop_name VARCHAR(100) NOT NULL, -- Mağazanın görünen adı
-    slug CITEXT UNIQUE NOT NULL, -- URL adresi (Örn: craftora.com/magza-adi). CITEXT sayesinde büyük/küçük harf duyarsız ve hızlıdır.
-    external_url VARCHAR(255), -- Varsa harici web sitesi linki
-    short_description VARCHAR(255), -- Mağaza kartlarında görünecek kısa özet
-    description TEXT, -- Mağaza ana açıklama metni
-    about_content TEXT, -- HTML destekli zengin "Hakkımızda" içeriği
-    social_links JSONB DEFAULT '{}'::jsonb, -- Instagram, TikTok vb. linklerin tutulduğu esnek JSON deposu
-    logo_url TEXT, -- Mağaza logosunun bulut linki
-    banner_url TEXT, -- Mağaza kapak fotoğrafının bulut linki
-    follower_count INT DEFAULT 0, -- PERFORMANS: Her seferinde sayım yapmamak için otomatik güncellenen takipçi sayısı
-    rating DECIMAL(3,2) DEFAULT 0.0, -- PERFORMANS: Mağaza puan ortalaması (Örn: 4.85)
-    is_verified BOOLEAN DEFAULT FALSE, -- CTO DOKUNUŞU: Mavi Tik (Onaylı Mağaza) durumu
-    is_active BOOLEAN DEFAULT TRUE, -- Mağaza donduruldu mu?
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP, -- Kuruluş tarihi
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP -- Son düzenleme tarihi
-);
-
--- 2. ABONELİKLER TABLOSU (SUBSCRIPTIONS)
-CREATE TABLE subscriptions (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    shop_id UUID NOT NULL REFERENCES shops(id) ON DELETE CASCADE, -- Takip edilen mağaza
-    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE, -- Takip eden kullanıcı
-    wants_notifications BOOLEAN DEFAULT TRUE, -- CTO DOKUNUŞU: Zil butonu (Yeni ürün bildirimi gelsin mi?)
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    
-    -- Bir kullanıcı bir mağazayı sadece bir kez takip edebilir:
-    CONSTRAINT unique_subscription UNIQUE (shop_id, user_id)
-);
-
--- 3. MAĞAZA ZİYARETLERİ TABLOSU (SHOP_VISITS)
-CREATE TABLE shop_visits (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    shop_id UUID NOT NULL REFERENCES shops(id) ON DELETE CASCADE,
-    user_id UUID REFERENCES users(id) ON DELETE SET NULL, -- Üye olan ziyaretçi (Nullable: Üye olmayanlar için boş kalabilir)
-    ip_address INET, -- CTO DOKUNUŞU: Üye olmayan anonim ziyaretçileri IP üzerinden takip etmek için
-    visited_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP -- Ziyaret saati
-);
-
-
--- 4. İNDEKS KAVŞAKLARI (HIZ)
-CREATE INDEX idx_shops_slug ON shops(slug); -- Mağaza URL aramalarını ışık hızına çıkarır
-CREATE INDEX idx_shop_visits_composite ON shop_visits(shop_id, visited_at); -- Satıcı paneli grafiklerini hızlandırır
--- Kullanıcıların arama çubuğunda mağaza adıyla arama yapmasını hızlandırmak için:
-CREATE INDEX idx_shops_name ON shops(shop_name);
-
--- 5. OTOMATİK ABONE SAYACI (TRIGGER FUNCTION)
-CREATE OR REPLACE FUNCTION sync_follower_count()
-RETURNS TRIGGER AS $$
-BEGIN
-    IF (TG_OP = 'INSERT') THEN
-        UPDATE shops SET follower_count = follower_count + 1 WHERE id = NEW.shop_id;
-    ELSIF (TG_OP = 'DELETE') THEN
-        UPDATE shops SET follower_count = follower_count - 1 WHERE id = OLD.shop_id;
-    END IF;
-    RETURN NULL;
-END;
-$$ LANGUAGE plpgsql;
-
--- Takip etme/çıkma anında sayacı çalıştır
-CREATE TRIGGER trg_sync_followers
-AFTER INSERT OR DELETE ON subscriptions
-FOR EACH ROW EXECUTE FUNCTION sync_follower_count();
-
--- Mağaza updated_at tetikleyicisi
-CREATE TRIGGER set_shops_updated_at
-BEFORE UPDATE ON shops
-FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
-
-
-
--- 6. GÜVENLİK KALKANLARI (RLS)
-ALTER TABLE shops ENABLE ROW LEVEL SECURITY;
-ALTER TABLE subscriptions ENABLE ROW LEVEL SECURITY;
-ALTER TABLE shop_visits ENABLE ROW LEVEL SECURITY;
-
--- Mağazaları herkes görebilir ama sadece sahibi düzenleyebilir
-CREATE POLICY "Aktif mağazalar herkese açıktır" ON shops FOR SELECT USING (is_active = TRUE);
-CREATE POLICY "Mağaza sahibi dükkanını yönetebilir" ON shops FOR UPDATE 
-USING (user_id = current_setting('app.current_user_id', true)::uuid);
-
--- Abonelik ve Ziyaret gizliliği: Sadece mağaza sahibi görebilir
-CREATE POLICY "Satıcı kendi abonelerini görebilir" ON subscriptions FOR SELECT 
-USING (shop_id IN (SELECT id FROM shops WHERE user_id = current_setting('app.current_user_id', true)::uuid));
-
-CREATE POLICY "Satıcı kendi trafiğini görebilir" ON shop_visits FOR SELECT 
-USING (shop_id IN (SELECT id FROM shops WHERE user_id = current_setting('app.current_user_id', true)::uuid));
-
-
-
-
--- SADECE YARIŞMALAR TABLOSUNU SİSTEME BAĞLAMA YAMASI (İzole adayı kurtarıyoruz)
-ALTER TABLE contests
-ADD COLUMN created_by UUID REFERENCES users(id) ON DELETE SET NULL;
-
-
-
-
--- CRAFTORA VERİTABANI KURULUMU - BÖLÜM 4 (ÜRÜNLER VE KURSLAR)
-
--- 1. YENİ VERİ TİPLERİ (ENUMS)
-CREATE TYPE product_type AS ENUM ('digital_file', 'course');
-CREATE TYPE media_status AS ENUM ('processing', 'ready', 'failed'); -- Videolar işlenirken bozuk görünmesin diye
-
--- 2. ANA ÜRÜNLER TABLOSU (PRODUCTS)
-CREATE TABLE products (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    shop_id UUID NOT NULL REFERENCES shops(id) ON DELETE CASCADE,
-    type product_type DEFAULT 'digital_file',
-    title VARCHAR(255) NOT NULL,
-    description TEXT,
-    metadata JSONB DEFAULT '{}'::jsonb, -- CTO DOKUNUŞU: E-kitap sayfası, 3D model formatı gibi sınırsız özellikleri buraya gömeceğiz
-    price DECIMAL(10,2) NOT NULL,
-    currency VARCHAR(3) DEFAULT 'USD',
-    cover_image_url TEXT,
-    file_url TEXT, -- Dijital dosya ise indirme linki (Kurs ise NULL kalır)
-    rating_average DECIMAL(3,2) DEFAULT 0.0, -- OTOPİLOT: Müşteri ana sayfada gezerken hesap yapmakla uğraşmayacak
-    review_count INT DEFAULT 0, -- OTOPİLOT: Toplam yorum sayısı
-    sales_count INT DEFAULT 0, -- Çok satanları bulmak için
-    is_active BOOLEAN DEFAULT TRUE, -- Satıcı ürünü silse bile kütüphaneler bozulmasın diye Soft Delete yapıyoruz
-    is_featured BOOLEAN DEFAULT FALSE,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    CONSTRAINT check_price_positive CHECK (price >= 0) -- Fiyat asla eksi olamaz kalkanı!
-);
-
-
--- 3. KURS BÖLÜMLERİ (Örn: C++ Döngüler)
-CREATE TABLE course_sections (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    product_id UUID NOT NULL REFERENCES products(id) ON DELETE CASCADE,
-    title VARCHAR(255) NOT NULL,
-    sort_order INT NOT NULL, -- Uygulamada hangi sırada görünecek? (1, 2, 3)
-    
-    UNIQUE(product_id, sort_order) -- Aynı kurs içinde aynı sıra numarası yanlışlıkla girilmesin
-);
-
--- 4. KURS DERSLERİ / VİDEOLARI (Örn: For Döngüsü)
-CREATE TABLE course_lessons (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    section_id UUID NOT NULL REFERENCES course_sections(id) ON DELETE CASCADE,
-    title VARCHAR(255) NOT NULL,
-    video_url TEXT,
-    document_url TEXT, -- Varsa ders notu (PDF)
-    duration_seconds INT DEFAULT 0,
-    is_free_preview BOOLEAN DEFAULT FALSE, -- Ücretsiz tanıtım videosu mu?
-    sort_order INT NOT NULL,
-    status media_status DEFAULT 'ready', -- Video işlenme durumu
-    
-    UNIQUE(section_id, sort_order)
-);
-
-
--- 5. DEĞERLENDİRMELER (Yıldız ve Yorum - Kesin Kurallı)
-CREATE TABLE reviews (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    product_id UUID NOT NULL REFERENCES products(id) ON DELETE CASCADE,
-    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    rating INT NOT NULL,
-    comment TEXT,
-    seller_reply TEXT, -- Satıcının tek bir yanıt hakkı var (Uzatılamaz)
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    
-    CONSTRAINT check_rating_range CHECK (rating >= 1 AND rating <= 5), -- Yıldız 1-5 arası olmak ZORUNDA
-    CONSTRAINT unique_user_review UNIQUE (product_id, user_id) -- 1 Kullanıcı ürüne SADECE 1 KERE puan verebilir
-);
-
--- 6. SORU VE CEVAP (Kullanıcı ve Satıcı Karşılıklı Sohbeti)
-CREATE TABLE product_qa (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    product_id UUID NOT NULL REFERENCES products(id) ON DELETE CASCADE,
-    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    parent_id UUID REFERENCES product_qa(id) ON DELETE CASCADE, -- Eğer yanıtsa hangi mesaja yanıt?
-    message TEXT NOT NULL,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-);
-
-
+﻿-- =========================================================================
+-- CRAFTORA CANONICAL FRESH-INSTALL SCHEMA
+-- Date: 2026-07-05
+-- Source: Live PostgreSQL schema/data dump captured on 2026-07-05.
+-- Purpose: Clean fresh-install schema for Craftora backend.
+-- Notes:
+--   - User/business COPY data was removed.
+--   - Seed data kept only for categories and __EFMigrationsHistory.
+--   - RLS test grants and pg_dump restrict markers were removed.
+--   - Owner assignments were omitted to avoid requiring a local admin role.
+-- =========================================================================
+
+SET statement_timeout = 0;
+SET lock_timeout = 0;
+SET idle_in_transaction_session_timeout = 0;
+SET client_encoding = 'UTF8';
+SET standard_conforming_strings = on;
+SET check_function_bodies = false;
+SET client_min_messages = warning;
+SET row_security = off;
+
+BEGIN;
 
 
 -- =========================================================================
--- CRAFTORA VERİTABANI KURULUMU - BÖLÜM 5 (MEDYA, REELS VE OYUNLAŞTIRMA)
+-- EXTENSIONS
 -- =========================================================================
 
--- -------------------------------------------------------------------------
--- 1. MEDYA VE ETKİLEŞİM TABLOLARI (SOSYAL MEDYA MOTORU)
--- -------------------------------------------------------------------------
+CREATE EXTENSION IF NOT EXISTS citext WITH SCHEMA public;
 
--- REELS VİDEOLARI
-CREATE TABLE media (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    shop_id UUID NOT NULL REFERENCES shops(id) ON DELETE CASCADE,
-    product_id UUID REFERENCES products(id) ON DELETE SET NULL, -- Videoda satılan ürün
-    video_url TEXT NOT NULL,
-    thumbnail_url TEXT,
-    view_count INT DEFAULT 0, 
-    like_count INT DEFAULT 0, 
-    save_count INT DEFAULT 0, 
-    comment_count INT DEFAULT 0, -- CTO DOKUNUŞU: Yorum sayacı
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    is_active BOOLEAN DEFAULT TRUE
+COMMENT ON EXTENSION citext IS 'data type for case-insensitive character strings';
+
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp" WITH SCHEMA public;
+
+COMMENT ON EXTENSION "uuid-ossp" IS 'generate universally unique identifiers (UUIDs)';
+
+
+-- =========================================================================
+-- ENUM TYPES
+-- =========================================================================
+
+CREATE TYPE public.analytics_event_type AS ENUM (
+    'shop_visit',
+    'product_view',
+    'add_to_cart',
+    'checkout_started',
+    'purchase_completed',
+    'download_clicked'
 );
 
--- REELS BEĞENİLERİ
-CREATE TABLE media_likes (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    media_id UUID NOT NULL REFERENCES media(id) ON DELETE CASCADE,
-    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(media_id, user_id) 
+CREATE TYPE public.media_status AS ENUM (
+    'failed',
+    'processing',
+    'ready'
 );
 
--- REELS KAYDETMELERİ
-CREATE TABLE media_saves (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    media_id UUID NOT NULL REFERENCES media(id) ON DELETE CASCADE,
-    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(media_id, user_id)
+CREATE TYPE public.order_status AS ENUM (
+    'completed',
+    'failed',
+    'pending',
+    'refunded'
 );
 
--- REELS YORUMLARI (CTO DOKUNUŞU)
-CREATE TABLE media_comments (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    media_id UUID NOT NULL REFERENCES media(id) ON DELETE CASCADE,
-    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    comment_text TEXT NOT NULL,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+CREATE TYPE public.payment_status_type AS ENUM (
+    'failed',
+    'processing',
+    'refunded',
+    'succeeded'
 );
 
--- İZLEME GEÇMİŞİ (Günlük Puan Limiti ve Algoritma İçin)
-CREATE TABLE media_watch_history (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    media_id UUID NOT NULL REFERENCES media(id) ON DELETE CASCADE,
-    watched_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    is_point_earned BOOLEAN DEFAULT FALSE,
-    UNIQUE(user_id, media_id) -- Keşfet'te aynı video bir daha çıkmasın diye
+CREATE TYPE public.product_type AS ENUM (
+    'course',
+    'digital_file'
 );
 
--- -------------------------------------------------------------------------
--- 2. OYUNLAŞTIRMA VE LİDERLİK TABLOLARI (GAMIFICATION)
--- -------------------------------------------------------------------------
-
--- KULLANICI PUAN CÜZDANI
-CREATE TABLE user_points (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    user_id UUID UNIQUE NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    total_points DECIMAL(12,2) DEFAULT 0.0, 
-    current_rank INT DEFAULT 0, 
-    current_streak INT DEFAULT 0, -- CTO DOKUNUŞU: Kaç gündür üst üste giriyor (Ateş serisi)
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+CREATE TYPE public.sub_status AS ENUM (
+    'active',
+    'canceled',
+    'past_due',
+    'unpaid'
 );
 
--- PUAN KAYIT DEFTERİ (Geçmiş)
-CREATE TABLE point_logs (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    action_type VARCHAR(50) NOT NULL, 
-    points_earned DECIMAL(10,2) NOT NULL,
-    reference_id UUID, 
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+CREATE TYPE public.user_role AS ENUM (
+    'admin',
+    'seller',
+    'user'
 );
 
--- YARIŞMALAR VE SONUÇLAR (Senin yakaladığın efsane köprü!)
-CREATE TABLE contests (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    title VARCHAR(255) NOT NULL,
-    start_date TIMESTAMP WITH TIME ZONE NOT NULL,
-    end_date TIMESTAMP WITH TIME ZONE NOT NULL,
-    prize_pool TEXT,
-    is_active BOOLEAN DEFAULT TRUE
-);
 
-CREATE TABLE contest_results (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    contest_id UUID NOT NULL REFERENCES contests(id) ON DELETE CASCADE,
-    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    final_rank INT,
-    total_score DECIMAL(12,2),
-    reward_claimed BOOLEAN DEFAULT FALSE,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(contest_id, user_id)
-);
+-- =========================================================================
+-- TRIGGER FUNCTIONS
+-- =========================================================================
 
--- -------------------------------------------------------------------------
--- 3. OTOPİLOT ROBOTLARI VE İNDEKS KAVŞAKLARI
--- -------------------------------------------------------------------------
-
-CREATE INDEX idx_media_shop ON media(shop_id);
-CREATE INDEX idx_media_product ON media(product_id);
-CREATE INDEX idx_point_logs_user_date ON point_logs(user_id, created_at);
-
--- OTOPİLOT 1: MEDYA SAYAÇLARI (Like, Save ve Yorumları Otomatik Sayar)
-CREATE OR REPLACE FUNCTION sync_media_counters() RETURNS TRIGGER AS $$
-BEGIN
-    IF TG_TABLE_NAME = 'media_likes' THEN
-        IF TG_OP = 'INSERT' THEN UPDATE media SET like_count = like_count + 1 WHERE id = NEW.media_id;
-        ELSIF TG_OP = 'DELETE' THEN UPDATE media SET like_count = like_count - 1 WHERE id = OLD.media_id; END IF;
-    ELSIF TG_TABLE_NAME = 'media_saves' THEN
-        IF TG_OP = 'INSERT' THEN UPDATE media SET save_count = save_count + 1 WHERE id = NEW.media_id;
-        ELSIF TG_OP = 'DELETE' THEN UPDATE media SET save_count = save_count - 1 WHERE id = OLD.media_id; END IF;
-    ELSIF TG_TABLE_NAME = 'media_comments' THEN
-        IF TG_OP = 'INSERT' THEN UPDATE media SET comment_count = comment_count + 1 WHERE id = NEW.media_id;
-        ELSIF TG_OP = 'DELETE' THEN UPDATE media SET comment_count = comment_count - 1 WHERE id = OLD.media_id; END IF;
-    END IF;
-    RETURN NULL;
-END;
-$$ LANGUAGE plpgsql;
-
-CREATE TRIGGER trg_media_like_counter AFTER INSERT OR DELETE ON media_likes FOR EACH ROW EXECUTE FUNCTION sync_media_counters();
-CREATE TRIGGER trg_media_save_counter AFTER INSERT OR DELETE ON media_saves FOR EACH ROW EXECUTE FUNCTION sync_media_counters();
-CREATE TRIGGER trg_media_comment_counter AFTER INSERT OR DELETE ON media_comments FOR EACH ROW EXECUTE FUNCTION sync_media_counters();
-
--- OTOPİLOT 2: SATICI PUAN ROBOTU (Like Aldıkça 0.5 Kazanır, UPSERT mantığıyla)
-CREATE OR REPLACE FUNCTION award_seller_points() RETURNS TRIGGER AS $$
+CREATE FUNCTION public.award_seller_points() RETURNS trigger
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path TO 'public'
+    AS $$
 DECLARE v_seller_id UUID;
 BEGIN
-    SELECT s.user_id INTO v_seller_id FROM media m JOIN shops s ON m.shop_id = s.id WHERE m.id = NEW.media_id;
+    SELECT s.user_id INTO v_seller_id 
+    FROM media m JOIN shops s ON m.shop_id = s.id 
+    WHERE m.id = NEW.media_id;
     
-    INSERT INTO point_logs (user_id, action_type, points_earned, reference_id) VALUES (v_seller_id, 'receive_like', 0.5, NEW.media_id);
+    INSERT INTO point_logs (user_id, action_type, points_earned, reference_id) 
+    VALUES (v_seller_id, 'receive_like', 0.5, NEW.media_id);
     
-    -- ON CONFLICT: Cüzdanı yoksa yarat, varsa üstüne ekle (UPSERT)
-    INSERT INTO user_points (user_id, total_points) VALUES (v_seller_id, 0.5)
-    ON CONFLICT (user_id) DO UPDATE SET total_points = user_points.total_points + 0.5, updated_at = CURRENT_TIMESTAMP;
+    INSERT INTO user_points (user_id, total_points) 
+    VALUES (v_seller_id, 0.5)
+    ON CONFLICT (user_id) DO UPDATE 
+    SET total_points = user_points.total_points + 0.5, 
+        updated_at = CURRENT_TIMESTAMP;
     
     RETURN NEW;
 END;
-$$ LANGUAGE plpgsql;
-CREATE TRIGGER trg_points_on_like AFTER INSERT ON media_likes FOR EACH ROW EXECUTE FUNCTION award_seller_points();
+$$;
 
--- OTOPİLOT 3: İZLEYİCİ PUAN ROBOTU (Günlük Limit: 120)
-CREATE OR REPLACE FUNCTION award_viewer_points() RETURNS TRIGGER AS $$
+CREATE FUNCTION public.award_viewer_points() RETURNS trigger
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path TO 'public'
+    AS $$
 DECLARE v_daily_points DECIMAL;
 BEGIN
-    SELECT COALESCE(SUM(points_earned), 0) INTO v_daily_points FROM point_logs 
-    WHERE user_id = NEW.user_id AND action_type = 'watch_reels' AND created_at::date = CURRENT_DATE;
-
+    SELECT COALESCE(SUM(points_earned), 0) INTO v_daily_points 
+    FROM point_logs 
+    WHERE user_id = NEW.user_id 
+      AND action_type = 'watch_reels' 
+      AND created_at::date = CURRENT_DATE;
     IF v_daily_points < 120 THEN
-        INSERT INTO point_logs (user_id, action_type, points_earned, reference_id) VALUES (NEW.user_id, 'watch_reels', 1.0, NEW.media_id);
+        INSERT INTO point_logs (user_id, action_type, points_earned, reference_id) 
+        VALUES (NEW.user_id, 'watch_reels', 1.0, NEW.media_id);
         
-        INSERT INTO user_points (user_id, total_points) VALUES (NEW.user_id, 1.0)
-        ON CONFLICT (user_id) DO UPDATE SET total_points = user_points.total_points + 1.0, updated_at = CURRENT_TIMESTAMP;
+        INSERT INTO user_points (user_id, total_points) 
+        VALUES (NEW.user_id, 1.0)
+        ON CONFLICT (user_id) DO UPDATE 
+        SET total_points = user_points.total_points + 1.0, 
+            updated_at = CURRENT_TIMESTAMP;
         
         NEW.is_point_earned := TRUE;
     END IF;
     RETURN NEW;
 END;
-$$ LANGUAGE plpgsql;
-CREATE TRIGGER trg_points_on_watch BEFORE INSERT ON media_watch_history FOR EACH ROW EXECUTE FUNCTION award_viewer_points();
+$$;
 
+CREATE FUNCTION public.cleanup_old_shop_visits() RETURNS void
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    DELETE FROM shop_visits 
+    WHERE visited_at < NOW() - INTERVAL '90 days';
+END;
+$$;
 
--- -------------------------------------------------------------------------
--- 4. ÇELİK YELEKLER (RLS POLICIES) - SENİN YAKALADIĞIN EKSİK!
--- -------------------------------------------------------------------------
-ALTER TABLE media ENABLE ROW LEVEL SECURITY;
-ALTER TABLE media_likes ENABLE ROW LEVEL SECURITY;
-ALTER TABLE media_saves ENABLE ROW LEVEL SECURITY;
-ALTER TABLE media_comments ENABLE ROW LEVEL SECURITY;
-ALTER TABLE media_watch_history ENABLE ROW LEVEL SECURITY;
-ALTER TABLE user_points ENABLE ROW LEVEL SECURITY;
-ALTER TABLE point_logs ENABLE ROW LEVEL SECURITY;
-
--- MEDYA (REELS)
-CREATE POLICY "Aktif videolar herkese açık" ON media FOR SELECT USING (is_active = TRUE);
-CREATE POLICY "Satıcı kendi videosunu yönetebilir" ON media FOR ALL 
-USING (shop_id IN (SELECT id FROM shops WHERE user_id = current_setting('app.current_user_id', true)::uuid));
-
--- BEĞENİ VE KAYDETMELER (GİZLİLİK)
-CREATE POLICY "Herkes kendi beğeni/kayıtlarını görebilir" ON media_likes FOR SELECT USING (user_id = current_setting('app.current_user_id', true)::uuid);
-CREATE POLICY "Herkes kendi beğeni/kayıtlarını yapabilir" ON media_likes FOR ALL USING (user_id = current_setting('app.current_user_id', true)::uuid);
-
-CREATE POLICY "Herkes kendi kaydettiklerini görebilir" ON media_saves FOR SELECT USING (user_id = current_setting('app.current_user_id', true)::uuid);
-CREATE POLICY "Herkes kendi kaydettiklerini yönetebilir" ON media_saves FOR ALL USING (user_id = current_setting('app.current_user_id', true)::uuid);
-
--- YORUMLAR
-CREATE POLICY "Yorumları herkes okuyabilir" ON media_comments FOR SELECT USING (true);
-CREATE POLICY "Kullanıcı kendi yorumunu silebilir/düzenleyebilir" ON media_comments FOR ALL USING (user_id = current_setting('app.current_user_id', true)::uuid);
-
--- OYUNLAŞTIRMA VE LİDERLİK TABLOSU GÜVENLİĞİ
-CREATE POLICY "Liderlik tablosunu herkes görebilir" ON user_points FOR SELECT USING (true);
--- DİKKAT: user_points tablosuna UPDATE kuralı yazmıyoruz! Çünkü puanları API değil, sadece veritabanı Trigger'ları (Robotlar) verebilir. Hacker puanını artıramaz!
-
-CREATE POLICY "Kullanıcı sadece kendi puan geçmişini görebilir" ON point_logs FOR SELECT USING (user_id = current_setting('app.current_user_id', true)::uuid);
-
-
-
-
-
--- =========================================================================
--- CRAFTORA VERİTABANI KURULUMU - BÖLÜM 6 (SİPARİŞLER VE FİNANS)
--- =========================================================================
-
--- 1. SİPARİŞ DURUMLARI (ENUM)
-CREATE TYPE order_status AS ENUM ('pending', 'completed', 'failed', 'refunded');
-
--- 2. SİPARİŞLER TABLOSU (ORDERS)
-CREATE TABLE orders (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    buyer_id UUID NOT NULL REFERENCES users(id) ON DELETE RESTRICT, -- MÜHENDİSLİK: Kullanıcı silinse bile fatura silinmez!
-    product_id UUID NOT NULL REFERENCES products(id) ON DELETE RESTRICT, -- Ürün silinse bile sipariş geçmişi kalır!
-    shop_id UUID NOT NULL REFERENCES shops(id) ON DELETE RESTRICT,
-    order_number VARCHAR(50) UNIQUE NOT NULL, -- Örn: CRAFT-2026-XYZ123
+CREATE FUNCTION public.deliver_product_to_library() RETURNS trigger
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path TO 'public'
+    AS $$
+BEGIN
+    -- SipariÅŸ 'completed' olunca Ã¼rÃ¼nÃ¼ kÃ¼tÃ¼phaneye ekle
+    IF (NEW.status = 'completed' AND (TG_OP = 'INSERT' OR OLD.status != 'completed')) THEN
+        INSERT INTO user_library (user_id, product_id)
+        VALUES (NEW.buyer_id, NEW.product_id)
+        ON CONFLICT (user_id, product_id) DO NOTHING;
+        
+    -- SipariÅŸ 'refunded' olunca Ã¼rÃ¼nÃ¼ kÃ¼tÃ¼phaneden Ã‡IKAR
+    ELSIF (NEW.status = 'refunded' AND TG_OP = 'UPDATE' AND OLD.status != 'refunded') THEN
+        DELETE FROM user_library 
+        WHERE user_id = NEW.buyer_id AND product_id = NEW.product_id;
+    END IF;
     
-    -- FİNANSAL BÖLÜNME (MUHASEBE)
-    amount DECIMAL(10,2) NOT NULL, -- Müşterinin ödediği toplam para (Örn: 100.00)
-    currency VARCHAR(3) DEFAULT 'USD',
-    platform_fee DECIMAL(10,2) DEFAULT 0.00, -- Craftora'nın cebine giren komisyon (Örn: 10.00)
-    seller_earnings DECIMAL(10,2) DEFAULT 0.00, -- Satıcının Stripe hesabına yatacak para (Örn: 90.00)
-    
-    status order_status DEFAULT 'pending',
-    stripe_payment_id VARCHAR(255), -- İade ve iptaller için banka işlem numarası
-    invoice_pdf_url TEXT, -- Kesilen e-faturanın PDF linki
-    
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    
-    -- GÜVENLİK KALKANLARI
-    CONSTRAINT check_amount_positive CHECK (amount >= 0),
-    CONSTRAINT check_fee_logic CHECK (platform_fee + seller_earnings = amount) -- Toplam tutar, kesintilerle eşleşmek ZORUNDA!
-);
+    RETURN NEW;
+END;
+$$;
 
--- 3. İNDEKS KAVŞAKLARI (PERFORMANS VE ARAMA HIZI)
-CREATE INDEX idx_orders_buyer ON orders(buyer_id); -- Müşterinin "Siparişlerim" sayfasını hızlandırır
-CREATE INDEX idx_orders_shop ON orders(shop_id); -- Satıcının "Gelen Siparişler" tablosunu hızlandırır
-CREATE INDEX idx_orders_number ON orders(order_number); -- Müşteri hizmetlerinin fatura no ile arama yapması için
-CREATE INDEX idx_orders_status ON orders(status);
+CREATE FUNCTION public.increment_coupon_usage() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    UPDATE coupons SET used_count = used_count + 1 WHERE id = NEW.coupon_id;
+    RETURN NEW;
+END;
+$$;
 
--- 4. OTOPİLOT ROBOTLARI (OTOMASYON)
+CREATE FUNCTION public.normalize_analytics_event_shop_id() RETURNS trigger
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path TO 'public'
+    AS $$
+DECLARE
+    v_product_shop_id UUID;
+    v_order_shop_id UUID;
+BEGIN
+    -- product_id varsa Ã¼rÃ¼nÃ¼n gerÃ§ek shop_id'sini bul
+    IF NEW.product_id IS NOT NULL THEN
+        SELECT shop_id INTO v_product_shop_id
+        FROM products
+        WHERE id = NEW.product_id;
+        IF v_product_shop_id IS NULL THEN
+            RAISE EXCEPTION 'Analytics event product_id geÃ§ersiz: %', NEW.product_id;
+        END IF;
+        NEW.shop_id := v_product_shop_id;
+    END IF;
+    -- order_id varsa order'Ä±n gerÃ§ek shop_id'sini bul
+    IF NEW.order_id IS NOT NULL THEN
+        SELECT shop_id INTO v_order_shop_id
+        FROM orders
+        WHERE id = NEW.order_id;
+        IF v_order_shop_id IS NULL THEN
+            RAISE EXCEPTION 'Analytics event order_id geÃ§ersiz: %', NEW.order_id;
+        END IF;
+        NEW.shop_id := v_order_shop_id;
+    END IF;
+    RETURN NEW;
+END;
+$$;
 
--- Saat Güncelleyici
-CREATE TRIGGER set_orders_updated_at
-BEFORE UPDATE ON orders
-FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+CREATE FUNCTION public.prevent_duplicate_purchase() RETURNS trigger
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path TO 'public'
+    AS $$
+BEGIN
+    -- KullanÄ±cÄ±nÄ±n kÃ¼tÃ¼phanesinde bu Ã¼rÃ¼n var mÄ±?
+    IF EXISTS (
+        SELECT 1 FROM user_library 
+        WHERE user_id = NEW.user_id AND product_id = NEW.product_id
+    ) THEN
+        RAISE EXCEPTION 'Bu Ã¼rÃ¼n zaten kÃ¼tÃ¼phanenizde mevcut!';
+    END IF;
+    RETURN NEW;
+END;
+$$;
 
--- EFSANE ROBOT: Sipariş "Completed" (Tamamlandı) olunca çalışır!
-CREATE OR REPLACE FUNCTION process_completed_order()
-RETURNS TRIGGER AS $$
+CREATE FUNCTION public.process_completed_order() RETURNS trigger
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path TO 'public'
+    AS $$
 DECLARE 
     v_seller_id UUID;
 BEGIN
-    -- Eğer sipariş durumu 'completed' olarak güncellendiyse (veya direkt eklendiyse)
+    -- SatÄ±cÄ±yÄ± bul
+    SELECT user_id INTO v_seller_id FROM shops WHERE id = NEW.shop_id;
+    -- ============ SÄ°PARÄ°Å TAMAMLANDI ============
     IF (NEW.status = 'completed' AND (TG_OP = 'INSERT' OR OLD.status != 'completed')) THEN
         
-        -- 1. Ürünün satış sayacını (sales_count) 1 artır
+        -- 1. ÃœrÃ¼n satÄ±ÅŸ sayacÄ±nÄ± artÄ±r
         UPDATE products SET sales_count = sales_count + 1 WHERE id = NEW.product_id;
         
-        -- 2. Satıcıyı bul
-        SELECT user_id INTO v_seller_id FROM shops WHERE id = NEW.shop_id;
-        
-        -- 3. Satıcıya Oyunlaştırma Modülünden 20 PUAN kazandır! (make_sale aksiyonu)
+        -- 2. SatÄ±cÄ±ya 20 puan (UPSERT ile)
         INSERT INTO point_logs (user_id, action_type, points_earned, reference_id) 
         VALUES (v_seller_id, 'make_sale', 20.0, NEW.id);
         
-        UPDATE user_points SET total_points = total_points + 20.0, updated_at = CURRENT_TIMESTAMP 
+        INSERT INTO user_points (user_id, total_points) 
+        VALUES (v_seller_id, 20.0)
+        ON CONFLICT (user_id) DO UPDATE 
+        SET total_points = user_points.total_points + 20.0, 
+            updated_at = CURRENT_TIMESTAMP;
+    
+    -- ============ SÄ°PARÄ°Å Ä°ADE EDÄ°LDÄ° (REFUND) ============
+    ELSIF (NEW.status = 'refunded' AND TG_OP = 'UPDATE' AND OLD.status != 'refunded') THEN
+        
+        -- 1. SatÄ±ÅŸ sayacÄ±nÄ± geri al (negatif korumalÄ±)
+        UPDATE products SET sales_count = GREATEST(sales_count - 1, 0) WHERE id = NEW.product_id;
+        
+        -- 2. SatÄ±cÄ±nÄ±n puanÄ±nÄ± geri al
+        INSERT INTO point_logs (user_id, action_type, points_earned, reference_id) 
+        VALUES (v_seller_id, 'refund_sale', -20.0, NEW.id);
+        
+        UPDATE user_points 
+        SET total_points = GREATEST(total_points - 20.0, 0), 
+            updated_at = CURRENT_TIMESTAMP 
         WHERE user_id = v_seller_id;
         
     END IF;
     
     RETURN NEW;
 END;
-$$ LANGUAGE plpgsql;
+$$;
 
--- Robotu Siparişler Tablosuna Bağlayalım
-CREATE TRIGGER trg_on_order_completed
-AFTER INSERT OR UPDATE ON orders
-FOR EACH ROW EXECUTE FUNCTION process_completed_order();
-
-
--- 5. ÇELİK YELEKLER (RLS - FİNANSAL GİZLİLİK)
-ALTER TABLE orders ENABLE ROW LEVEL SECURITY;
-
--- KURAL 1: Alıcı (Müşteri) SADECE kendi verdiği siparişleri ve faturalarını görebilir
-CREATE POLICY "Alıcılar kendi siparişlerini görebilir" ON orders FOR SELECT 
-USING (buyer_id = current_setting('app.current_user_id', true)::uuid);
-
--- KURAL 2: Satıcı SADECE kendi dükkanına gelen siparişleri görebilir
-CREATE POLICY "Satıcılar kendi mağaza siparişlerini görebilir" ON orders FOR SELECT 
-USING (shop_id IN (SELECT id FROM shops WHERE user_id = current_setting('app.current_user_id', true)::uuid));
-
--- DİKKAT (CTO KURALI): Kullanıcılar (Alıcı veya Satıcı) sipariş silebilir veya durumunu değiştirebilir mi? ASLA!
--- RLS kalkanında INSERT, UPDATE ve DELETE kurallarını YAZMIYORUZ. 
--- Bu sayede sadece Backend Sunucumuz (Stripe'dan ödeme onayı alınca) siparişi güncelleyebilir. Hacker fiyata veya duruma müdahale edemez.
-
-
-
-
--- 1. ÖDEME DURUMLARI (ENUM)
-CREATE TYPE payment_status_type AS ENUM ('processing', 'succeeded', 'failed', 'refunded');
-
--- 2. ANA ÖDEMELER TABLOSU (PAYMENTS)
-CREATE TABLE payments (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    order_id UUID UNIQUE NOT NULL REFERENCES orders(id) ON DELETE RESTRICT, -- UNIQUE: Bir siparişin SADECE BİR ödeme kaydı olur!
-    payment_provider VARCHAR(50) NOT NULL, -- 'stripe', 'iyzico', 'paypal'
-    provider_transaction_id VARCHAR(255) UNIQUE, -- Bankanın verdiği efsanevi, kopyalanamaz dekont/işlem numarası
-    
-    gross_amount DECIMAL(10,2) NOT NULL, -- Karttan çekilen brüt para
-    platform_fee_amount DECIMAL(10,2) NOT NULL, -- Banka+Craftora kesintisi
-    net_earnings DECIMAL(10,2) NOT NULL, -- Satıcının hesabına yatacak net para
-    
-    status payment_status_type DEFAULT 'processing',
-    error_message TEXT, -- Eğer işlem failed olursa bankanın gönderdiği hata kodu ("Bakiye yetersiz" vb.)
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    
-    -- GÜVENLİK KALKANLARI
-    CONSTRAINT check_gross_positive CHECK (gross_amount >= 0),
-    CONSTRAINT check_payment_math CHECK (gross_amount = platform_fee_amount + net_earnings) -- Muhasebe matematiği ASLA şaşamaz!
-);
-
--- 3. İNDEKS KAVŞAKLARI (PERFORMANS)
-CREATE INDEX idx_payments_transaction_id ON payments(provider_transaction_id); -- Bankadan gelen Webhook'ları salisede bulmak için
-CREATE INDEX idx_payments_status ON payments(status);
-
--- 4. OTOPİLOT ROBOTLARI (DOMİNO ETKİSİ)
-
--- Saat Güncelleyici
-CREATE TRIGGER set_payments_updated_at
-BEFORE UPDATE ON payments
-FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
-
--- DOMİNO ROBOTU: Ödeme başarılı olursa, Siparişi de Tamamla!
-CREATE OR REPLACE FUNCTION sync_order_status_from_payment()
-RETURNS TRIGGER AS $$
+CREATE FUNCTION public.reward_lesson_completion() RETURNS trigger
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path TO 'public'
+    AS $$
 BEGIN
-    -- Eğer banka ödemesi 'succeeded' olduysa
-    IF (NEW.status = 'succeeded' AND (TG_OP = 'INSERT' OR OLD.status != 'succeeded')) THEN
-        
-        -- Gidip Orders (Sipariş) tablosundaki durumu da 'completed' yapıyoruz.
-        -- DİKKAT: Bu UPDATE işlemi, bir önceki aşamada yazdığımız Puan Dağıtma robotunu tetikleyecek!
-        UPDATE orders SET status = 'completed' WHERE id = NEW.order_id;
-        
-    -- Eğer banka 'refunded' (İade) dediyse, siparişi de iptal et
-    ELSIF (NEW.status = 'refunded' AND OLD.status != 'refunded') THEN
-        UPDATE orders SET status = 'refunded' WHERE id = NEW.order_id;
-    END IF;
-    
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
-CREATE TRIGGER trg_sync_order_on_payment
-AFTER INSERT OR UPDATE ON payments
-FOR EACH ROW EXECUTE FUNCTION sync_order_status_from_payment();
-
-
--- 5. ÇELİK YELEKLER (RLS - FİNANSAL GİZLİLİK)
-ALTER TABLE payments ENABLE ROW LEVEL SECURITY;
-
--- KURAL 1: Alıcı sadece KENDİ siparişine bağlı ödeme dekontunu görebilir
-CREATE POLICY "Alıcılar dekontunu görebilir" ON payments FOR SELECT 
-USING (order_id IN (SELECT id FROM orders WHERE buyer_id = current_setting('app.current_user_id', true)::uuid));
-
--- KURAL 2: Satıcı sadece KENDİ dükkanına ait satışların ödeme/komisyon dökümünü görebilir
-CREATE POLICY "Satıcılar kendi gelir dökümlerini görebilir" ON payments FOR SELECT 
-USING (order_id IN (SELECT id FROM orders WHERE shop_id IN (SELECT id FROM shops WHERE user_id = current_setting('app.current_user_id', true)::uuid)));
-
--- DİKKAT: INSERT, UPDATE, DELETE KESİNLİKLE YOK! Ödeme durumunu sadece Stripe webhook'larından gelen veriyi işleyen arka uç (Backend) kodumuz yapabilir.
-
-
-INSERT INTO payments (order_id, payment_provider, provider_transaction_id, gross_amount, platform_fee_amount, net_earnings, status)
-VALUES (
-    (SELECT id FROM orders WHERE order_number = 'PENDING-ORD-002'),
-    'stripe',
-    'ch_basarili_islem_123',
-    100.00,
-    10.00,
-    90.00,
-    'succeeded' -- İŞTE BU KELİME DOMİNOYI BAŞLATACAK!
-);
-
-
-SELECT order_number, status FROM orders WHERE order_number = 'PENDING-ORD-002';
-
--- SONUÇ 2: C++ Kursunun satış sayısı tekrar artmış mı?
-SELECT title, sales_count FROM products WHERE title = 'Sıfırdan İleri Seviye C++ Eğitimi';
-
--- SONUÇ 3: Ahmet'in cüzdanına ekstra 20 puan daha (Toplam 40.50) gelmiş mi?
-SELECT total_points FROM user_points WHERE user_id = (SELECT id FROM users WHERE email = 'ahmet.yilmaz@gmail.com');
-
-
-
-
--- =========================================================================
--- CRAFTORA VERİTABANI KURULUMU - BÖLÜM 7 (KÜTÜPHANE VE EĞİTİM)
--- =========================================================================
-
--- -------------------------------------------------------------------------
--- 1. TABLOLAR (MİMARİ)
--- -------------------------------------------------------------------------
-
--- KULLANICI KÜTÜPHANESİ (SATIN ALINANLAR)
-CREATE TABLE user_library (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    product_id UUID NOT NULL REFERENCES products(id) ON DELETE CASCADE,
-    purchased_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    last_accessed_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP, -- CTO DOKUNUŞU: Kaldığın yerden devam et!
-    
-    UNIQUE(user_id, product_id) -- Bir kullanıcı aynı ürüne iki kere sahip olamaz
-);
-
--- DERS İLERLEMESİ (VİDEO İZLEME SÜRELERİ)
-CREATE TABLE lesson_progress (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    lesson_id UUID NOT NULL REFERENCES course_lessons(id) ON DELETE CASCADE,
-    is_completed BOOLEAN DEFAULT FALSE,
-    watched_seconds INT DEFAULT 0,
-    completed_at TIMESTAMP WITH TIME ZONE, -- Ne zaman bitirdi?
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    
-    UNIQUE(user_id, lesson_id) -- Bir kullanıcı bir ders için sadece bir kayıt tutabilir
-);
-
--- -------------------------------------------------------------------------
--- 2. İNDEKS KAVŞAKLARI (PERFORMANS)
--- -------------------------------------------------------------------------
-
-CREATE INDEX idx_user_library_accessed ON user_library(user_id, last_accessed_at DESC); -- "Devam Et" rafını saniyede yükler
-CREATE INDEX idx_lesson_progress_user ON lesson_progress(user_id, lesson_id);
-
--- -------------------------------------------------------------------------
--- 3. OTOPİLOT ROBOTLARI (OTOMATİK TESLİMAT VE PUAN)
--- -------------------------------------------------------------------------
-
--- ROBOT 1: Saat Güncelleyici
-CREATE TRIGGER set_progress_updated_at
-BEFORE UPDATE ON lesson_progress
-FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
-
--- EFSANE ROBOT 2: OTOMATİK DİJİTAL TESLİMAT (Sipariş Onaylanınca Çalışır)
-CREATE OR REPLACE FUNCTION deliver_product_to_library()
-RETURNS TRIGGER AS $$
-BEGIN
-    -- Sipariş 'completed' statüsüne geçtiyse:
-    IF (NEW.status = 'completed' AND (TG_OP = 'INSERT' OR OLD.status != 'completed')) THEN
-        -- Ürünü alıcının kütüphanesine ekle (Eğer zaten varsa hata verme, sessizce geç: ON CONFLICT DO NOTHING)
-        INSERT INTO user_library (user_id, product_id)
-        VALUES (NEW.buyer_id, NEW.product_id)
-        ON CONFLICT (user_id, product_id) DO NOTHING;
-    END IF;
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
-CREATE TRIGGER trg_auto_deliver_product
-AFTER INSERT OR UPDATE ON orders
-FOR EACH ROW EXECUTE FUNCTION deliver_product_to_library();
-
-
--- EFSANE ROBOT 3: ÖĞRENCİ PUAN SİSTEMİ (Ders Bitince 2 Puan Verir)
-CREATE OR REPLACE FUNCTION reward_lesson_completion()
-RETURNS TRIGGER AS $$
-BEGIN
-    -- Eğer ders ŞU AN tamamlandıysa (Önceden false idi, şimdi true olduysa)
+    -- Ders ilk kez tamamlandÄ±ysa (Ã¶nceden false, ÅŸimdi true)
     IF (NEW.is_completed = TRUE AND OLD.is_completed = FALSE) THEN
         
-        -- Müşteriye 2 Puan ver (action_type: 'complete_lesson')
+        -- Ã–ÄŸrenciye 2 puan ver
         INSERT INTO point_logs (user_id, action_type, points_earned, reference_id)
         VALUES (NEW.user_id, 'complete_lesson', 2.0, NEW.lesson_id);
         
-        -- Cüzdanı güncelle (UPSERT - Cüzdanı yoksa yarat)
-        INSERT INTO user_points (user_id, total_points) VALUES (NEW.user_id, 2.0)
-        ON CONFLICT (user_id) DO UPDATE SET total_points = user_points.total_points + 2.0, updated_at = CURRENT_TIMESTAMP;
+        INSERT INTO user_points (user_id, total_points) 
+        VALUES (NEW.user_id, 2.0)
+        ON CONFLICT (user_id) DO UPDATE 
+        SET total_points = user_points.total_points + 2.0, 
+            updated_at = CURRENT_TIMESTAMP;
         
-        -- Tamamlanma saatini şu anki saat yap
+        -- Tamamlanma saatini kaydet
         NEW.completed_at = CURRENT_TIMESTAMP;
-        
     END IF;
     RETURN NEW;
 END;
-$$ LANGUAGE plpgsql;
-
--- Bu robotu sadece UPDATE işleminde çalıştırıyoruz (Videoyu izledikçe güncellenecek çünkü)
-CREATE TRIGGER trg_reward_on_lesson_complete
-BEFORE UPDATE ON lesson_progress
-FOR EACH ROW EXECUTE FUNCTION reward_lesson_completion();
-
-
--- -------------------------------------------------------------------------
--- 4. ÇELİK YELEKLER (RLS - KORSAN KALKANI)
--- -------------------------------------------------------------------------
-
-ALTER TABLE user_library ENABLE ROW LEVEL SECURITY;
-ALTER TABLE lesson_progress ENABLE ROW LEVEL SECURITY;
-
--- KÜTÜPHANE GÜVENLİĞİ: Kullanıcı KENDİ kütüphanesini görebilir. 
--- DİKKAT: INSERT veya DELETE yok! Ürünü sadece sistem (Orders tablosundaki Trigger) ekleyebilir.
-CREATE POLICY "Kullanıcı kendi kütüphanesini görebilir" ON user_library FOR SELECT 
-USING (user_id = current_setting('app.current_user_id', true)::uuid);
-
--- DERS İLERLEMESİ GÜVENLİĞİ
-CREATE POLICY "Kullanıcı kendi ilerlemesini görebilir" ON lesson_progress FOR SELECT 
-USING (user_id = current_setting('app.current_user_id', true)::uuid);
-
--- Kullanıcı sadece kendi ders ilerlemesini yaratabilir ve güncelleyebilir (İzlediği saniyeyi kaydetmek için)
-CREATE POLICY "Kullanıcı kendi ilerlemesini güncelleyebilir" ON lesson_progress FOR ALL 
-USING (user_id = current_setting('app.current_user_id', true)::uuid);
-
-
-
-
--- =========================================================================
--- CRAFTORA VERİTABANI KURULUMU - BÖLÜM 8 (SATICI ABONELİKLERİ / SAAS)
--- =========================================================================
-
--- 1. ABONELİK DURUMLARI (ENUM)
-CREATE TYPE sub_status AS ENUM ('active', 'past_due', 'canceled', 'unpaid');
-
--- 2. SATICI ABONELİKLERİ TABLOSU
-CREATE TABLE seller_subscriptions (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    shop_id UUID UNIQUE NOT NULL REFERENCES shops(id) ON DELETE CASCADE, -- Bir mağazanın tek abonelik kaydı olur
-    stripe_subscription_id VARCHAR(255) UNIQUE, -- CTO DOKUNUŞU: Bankadaki (Stripe) otomatik çekim talimatının kodu
-    
-    status sub_status DEFAULT 'active',
-    current_period_end TIMESTAMP WITH TIME ZONE NOT NULL, -- Bu ayki paketin bitiş tarihi
-    grace_period_end TIMESTAMP WITH TIME ZONE, -- 7 Günlük ek süre (Fatura ödenmezse dükkanı hemen kapatmamak için)
-    
-    amount DECIMAL(10,2) DEFAULT 25.00, -- Aylık ücret
-    currency VARCHAR(3) DEFAULT 'USD',
-    
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    
-    CONSTRAINT check_sub_amount_positive CHECK (amount >= 0)
-);
-
--- 3. OTOPİLOT ROBOTU (SAAT GÜNCELLEYİCİ)
-CREATE TRIGGER set_seller_sub_updated_at
-BEFORE UPDATE ON seller_subscriptions
-FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
-
--- 4. ÇELİK YELEK (RLS - FİNANSAL GİZLİLİK)
-ALTER TABLE seller_subscriptions ENABLE ROW LEVEL SECURITY;
-
--- KURAL: Satıcı SADECE kendi dükkanının abonelik faturasını/durumunu görebilir.
--- DİKKAT: INSERT, UPDATE, DELETE yok! Aboneliği sadece Stripe'dan gelen Webhook (Backend) güncelleyebilir.
-CREATE POLICY "Satıcılar kendi abonelik durumlarını görebilir" ON seller_subscriptions FOR SELECT 
-USING (shop_id IN (SELECT id FROM shops WHERE user_id = current_setting('app.current_user_id', true)::uuid));
-
-
--- 1. Sütunun adındaki "Stripe" kelimesini atıp evrensel (Provider) ismine çeviriyoruz:
-ALTER TABLE seller_subscriptions 
-RENAME COLUMN stripe_subscription_id TO provider_subscription_id;
-
--- 2. Bu aboneliğin hangi bankadan (Iyzico mu, Stripe mı) yapıldığını bilmek için sağlayıcı sütununu ekliyoruz:
-ALTER TABLE seller_subscriptions 
-ADD COLUMN payment_provider VARCHAR(50) DEFAULT 'stripe'; -- Satıcının kaydolduğu pos firması (Örn: 'iyzico')
-
-
-
-
-
-
--- =========================================================================
--- CRAFTORA VERİTABANI KURULUMU - BÖLÜM 9 (AKILLI SEPET / CART ITEMS)
--- =========================================================================
-
--- 1. SEPET ÜRÜNLERİ TABLOSU
-CREATE TABLE cart_items (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    product_id UUID NOT NULL REFERENCES products(id) ON DELETE CASCADE,
-    quantity INT DEFAULT 1, 
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    
-    -- GÜVENLİK VE MANTIK KALKANLARI
-    CONSTRAINT check_quantity_positive CHECK (quantity > 0), -- Miktar eksi veya sıfır olamaz!
-    UNIQUE(user_id, product_id) -- Aynı ürün sepete ikinci kez ayrı satır olarak eklenmesin
-);
-
--- 2. İNDEKS (PERFORMANS)
-CREATE INDEX idx_cart_items_user ON cart_items(user_id); -- Sepet sayfasını salisede açmak için
-
--- 3. OTOPİLOT ROBOTLARI 
-
--- Robot A: Saat Güncelleyici (Terk edilmiş sepetleri bulmak için çok kritik)
-CREATE TRIGGER set_cart_updated_at
-BEFORE UPDATE ON cart_items
-FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
-
--- Robot B: ZEKİ MÜŞTERİ KORUMASI (Zaten sahip olunan ürünü sepete aldırtmaz!)
-CREATE OR REPLACE FUNCTION prevent_duplicate_purchase()
-RETURNS TRIGGER AS $$
-BEGIN
-    -- Kullanıcının kütüphanesinde bu ürün var mı diye kontrol et
-    IF EXISTS (SELECT 1 FROM user_library WHERE user_id = NEW.user_id AND product_id = NEW.product_id) THEN
-        RAISE EXCEPTION 'Bu ürün zaten kütüphanenizde mevcut!';
-    END IF;
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
-CREATE TRIGGER trg_check_already_owned
-BEFORE INSERT OR UPDATE ON cart_items
-FOR EACH ROW EXECUTE FUNCTION prevent_duplicate_purchase();
-
--- 4. ÇELİK YELEKLER (RLS - GÜVENLİK)
-ALTER TABLE cart_items ENABLE ROW LEVEL SECURITY;
-
--- KURAL 1: Kullanıcı sadece KENDİ sepetindeki ürünleri görebilir
-CREATE POLICY "Kullanıcılar kendi sepetini görebilir" ON cart_items FOR SELECT 
-USING (user_id = current_setting('app.current_user_id', true)::uuid);
-
--- KURAL 2: Kullanıcı sadece KENDİ sepetine ürün ekleyebilir/çıkarabilir/miktar güncelleyebilir
-CREATE POLICY "Kullanıcılar kendi sepetini yönetebilir" ON cart_items FOR ALL 
-USING (user_id = current_setting('app.current_user_id', true)::uuid);
-
-
-CREATE TABLE coupons (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    
-    -- Hangi ürüne ait?
-    product_id UUID NOT NULL REFERENCES products(id) ON DELETE CASCADE,
-    -- Kuponu kim oluşturdu? (Güvenlik için)
-    shop_id UUID NOT NULL REFERENCES shops(id) ON DELETE CASCADE,
-    
-    -- Kupon Kodu
-    code VARCHAR(50) NOT NULL,
-    
-    -- İndirim Tipi
-    discount_type VARCHAR(10) NOT NULL, -- 'percent' veya 'fixed'
-    discount_value DECIMAL(10,2) NOT NULL, -- %20 için 20.00, 10$ için 10.00
-    
-    -- Kullanım Limiti
-    max_uses INT DEFAULT NULL, -- NULL = sınırsız
-    used_count INT DEFAULT 0,  -- Kaç kişi kullandı?
-    
-    -- Geçerlilik Tarihi
-    starts_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    expires_at TIMESTAMP WITH TIME ZONE DEFAULT NULL, -- NULL = süresiz
-    
-    is_active BOOLEAN DEFAULT TRUE,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    
-    -- Güvenlik Kalkanlari
-    CONSTRAINT check_discount_type CHECK (discount_type IN ('percent', 'fixed')),
-    CONSTRAINT check_discount_value CHECK (discount_value > 0),
-    CONSTRAINT check_percent_max CHECK (discount_type != 'percent' OR discount_value <= 100),
-    CONSTRAINT unique_coupon_per_product UNIQUE (product_id, code) -- Aynı üründe aynı kod olamaz
-);
-
--- Kişi başı 1 kez kullanım takibi
-CREATE TABLE coupon_uses (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    coupon_id UUID NOT NULL REFERENCES coupons(id) ON DELETE CASCADE,
-    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    order_id UUID NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
-    used_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    
-    UNIQUE(coupon_id, user_id) -- Kişi başı 1 kez!
-);
-
--- İndeksler
-CREATE INDEX idx_coupons_product ON coupons(product_id);
-CREATE INDEX idx_coupons_code ON coupons(code);
-
--- Otopilot: Kullanıldıkça sayacı artır
-CREATE OR REPLACE FUNCTION increment_coupon_usage()
-RETURNS TRIGGER AS $$
-BEGIN
-    UPDATE coupons SET used_count = used_count + 1 WHERE id = NEW.coupon_id;
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
-CREATE TRIGGER trg_increment_coupon_usage
-AFTER INSERT ON coupon_uses
-FOR EACH ROW EXECUTE FUNCTION increment_coupon_usage();
-
--- RLS
-ALTER TABLE coupons ENABLE ROW LEVEL SECURITY;
-ALTER TABLE coupon_uses ENABLE ROW LEVEL SECURITY;
-
--- Kuponları herkes görebilir (Sepette kod girerken)
-CREATE POLICY "Aktif kuponlar herkese açık" ON coupons FOR SELECT 
-USING (is_active = TRUE);
-
--- Sadece mağaza sahibi kendi ürününe kupon ekleyebilir
-CREATE POLICY "Satıcı kendi kuponlarını yönetebilir" ON coupons FOR ALL 
-USING (shop_id IN (
-    SELECT id FROM shops 
-    WHERE user_id = current_setting('app.current_user_id', true)::uuid
-));
-
--- Kupon kullanım geçmişi sadece alıcıya özel
-CREATE POLICY "Kullanıcı kendi kupon geçmişini görebilir" ON coupon_uses FOR SELECT 
-USING (user_id = current_setting('app.current_user_id', true)::uuid);
-
-
-CREATE TABLE notifications (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    
-    -- Bildirim Tipi
-    type VARCHAR(50) NOT NULL,
-    -- 'sale_completed', 'new_follower', 'new_review', 
-    -- 'new_question', 'media_liked', 'media_commented',
-    -- 'contest_result', 'order_completed'
-    
-    -- Bildirim İçeriği
-    title VARCHAR(255) NOT NULL,        -- "Yeni Satış! 🎉"
-    body TEXT NOT NULL,                 -- "Ali, C++ Kursunu satın aldı"
-    
-    -- Hangi içeriğe ait? (Tıklayınca nereye gitsin?)
-    reference_type VARCHAR(50),         -- 'order', 'media', 'product', 'shop', 'contest'
-    reference_id UUID,                  -- İlgili kaydın ID'si
-    
-    -- Durum
-    is_read BOOLEAN DEFAULT FALSE,
-    read_at TIMESTAMP WITH TIME ZONE,
-    
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    
-    -- Güvenlik
-    CONSTRAINT check_notification_type CHECK (type IN (
-        'sale_completed', 'new_follower', 'new_review',
-        'new_question', 'media_liked', 'media_commented',
-        'contest_result', 'order_completed'
-    ))
-);
-
--- İndeksler
-CREATE INDEX idx_notifications_user ON notifications(user_id, created_at DESC);
-CREATE INDEX idx_notifications_unread ON notifications(user_id, is_read) 
-    WHERE is_read = FALSE; -- Sadece okunmamışları hızlı bulmak için
-
-
-CREATE TABLE notification_deliveries (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    notification_id UUID NOT NULL REFERENCES notifications(id) ON DELETE CASCADE,
-    
-    -- Kanal
-    channel VARCHAR(20) NOT NULL, -- 'push', 'email', 'in_app'
-    
-    -- Durum
-    status VARCHAR(20) DEFAULT 'pending', -- 'pending', 'sent', 'failed'
-    
-    -- Gönderim Detayı
-    provider VARCHAR(50),         -- 'firebase', 'sendgrid', 'resend'
-    provider_message_id VARCHAR(255), -- Sağlayıcının verdiği mesaj ID'si
-    error_message TEXT,           -- Başarısız olursa neden?
-    
-    sent_at TIMESTAMP WITH TIME ZONE,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    
-    CONSTRAINT check_channel CHECK (channel IN ('push', 'email', 'in_app')),
-    CONSTRAINT check_status CHECK (status IN ('pending', 'sent', 'failed'))
-);
-
-CREATE INDEX idx_deliveries_notification ON notification_deliveries(notification_id);
-CREATE INDEX idx_deliveries_pending ON notification_deliveries(status) 
-    WHERE status = 'pending'; -- Bekleyen gönderimleri hızlı bulmak için
-
-
-CREATE TABLE user_device_tokens (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    
-    token TEXT NOT NULL,                    -- Firebase FCM token
-    device_type VARCHAR(20) NOT NULL,       -- 'ios', 'android', 'web'
-    device_id VARCHAR(255),                 -- Cihaz ID'si
-    
-    is_active BOOLEAN DEFAULT TRUE,
-    last_used_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    
-    UNIQUE(user_id, device_id),             -- Aynı cihaz 2 kez kayıt olmasın
-    CONSTRAINT check_device_type CHECK (device_type IN ('ios', 'android', 'web'))
-);
-
-CREATE INDEX idx_device_tokens_user ON user_device_tokens(user_id) 
-    WHERE is_active = TRUE;
-
-
-
-ALTER TABLE notifications ENABLE ROW LEVEL SECURITY;
-ALTER TABLE notification_deliveries ENABLE ROW LEVEL SECURITY;
-ALTER TABLE user_device_tokens ENABLE ROW LEVEL SECURITY;
-
--- Kullanıcı sadece kendi bildirimlerini görebilir
-CREATE POLICY "Kullanıcı kendi bildirimlerini görebilir" 
-ON notifications FOR SELECT 
-USING (user_id = current_setting('app.current_user_id', true)::uuid);
-
--- Kullanıcı kendi bildirimini okundu yapabilir
-CREATE POLICY "Kullanıcı bildirimini okundu yapabilir" 
-ON notifications FOR UPDATE
-USING (user_id = current_setting('app.current_user_id', true)::uuid);
-
--- Gönderim geçmişi sadece sistem görür (Policy yok = sadece backend erişir)
-
--- Kullanıcı kendi cihaz tokenlarını yönetebilir
-CREATE POLICY "Kullanıcı kendi tokenlarını yönetebilir" 
-ON user_device_tokens FOR ALL
-USING (user_id = current_setting('app.current_user_id', true)::uuid);
-
-
-
-
-CraftoraApi/
-  src/
-    Controllers/
-      AuthController.cs
-      ShopController.cs
-      ProductController.cs
-      MediaController.cs
-      OrderController.cs
-      CartController.cs
-      CouponController.cs
-      NotificationController.cs
-      
-    Services/
-      AuthService.cs
-      ShopService.cs
-      ProductService.cs
-      MediaService.cs
-      OrderService.cs
-      StorageService.cs      ← MinIO
-      EmailService.cs        ← SendGrid/Resend
-      CacheService.cs        ← Redis
-      NotificationService.cs
-      
-    Models/                  ← DB modelleri (EF Core)
-    DTOs/                    ← Request/Response modelleri
-    Middleware/
-      ExceptionMiddleware.cs
-      RateLimitMiddleware.cs
-    Data/
-      AppDbContext.cs
-      Migrations/
-    Consumers/               ← RabbitMQ işçileri
-      EmailConsumer.cs
-      VideoProcessConsumer.cs
-      InvoiceConsumer.cs
-      
-  docker-compose.yml
-  appsettings.json
-  appsettings.Development.json
-  appsettings.Production.json
-
-
-
-
-
-Aşama 1 → Altyapı
-  ✦ Docker Compose kur
-    (PostgreSQL + Redis + RabbitMQ + MinIO)
-  ✦ .NET projesi oluştur
-  ✦ EF Core + Migration
-  ✦ Exception Middleware
-  ✦ Serilog (structured logging)
-
-Aşama 2 → Auth
-  ✦ Register (email doğrulama ile)
-  ✦ Login (JWT access + refresh token)
-  ✦ Google OAuth
-  ✦ Apple OAuth
-  ✦ Refresh token endpoint
-  ✦ Logout
-
-Aşama 3 → MinIO (Dosya Depolama)
-  ✦ MinIO bağlantısı
-  ✦ Presigned URL üretimi
-  ✦ Video upload
-  ✦ Resim upload
-
-Aşama 4 → Core CRUD
-  ✦ Mağaza (shop) yönetimi
-  ✦ Ürün yönetimi
-  ✦ Kurs + bölüm + ders
-  ✦ Sepet
-
-Aşama 5 → Redis
-  ✦ Mağaza profili cache
-  ✦ Popüler ürünler cache
-  ✦ Token blacklist
-
-Aşama 6 → RabbitMQ
-  ✦ Email kuyruğu
-  ✦ Video işleme kuyruğu
-  ✦ Fatura kuyruğu
-  ✦ Bildirim kuyruğu
-
-Aşama 7 → Ödeme
-  ✦ Stripe entegrasyonu
-  ✦ Webhook handler
-  ✦ Sipariş akışı
-
-Aşama 8 → Medya/Reels
-  ✦ Video feed
-  ✦ Beğeni/kaydetme/yorum
-  ✦ İzleme geçmişi
-
-Aşama 9 → Bildirimler
-  ✦ Firebase push
-  ✦ Email bildirimleri
-  ✦ Uygulama içi
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-CRAFTORA BACKEND Geli■tirme Plan■ ve ■lerleme Raporu TikTok + Shopify + Udemy Benzeri Sosyal Ticaret Platformu ■ TEKNOLOJ■ STACK Teknoloji Görev Durum .NET 9 (C#) Ana Backend API ■ Kurulu PostgreSQL 16 Ana Veritaban■ (28 tablo) ■ Kurulu Redis 7 Cache + Token Blacklist ■ Kurulu RabbitMQ 3 Mesaj Kuyru■u ■ Kurulu MinIO Dosya Depolama (S3 uyumlu) ■ Kurulu Elasticsearch 8.13 Arama Motoru ■ Kurulu Nginx Reverse Proxy ■ Kurulu Serilog Structured Logging ■ Kurulu EF Core 9 ORM (Database First) ■ Kurulu MassTransit RabbitMQ Entegrasyonu ■ Kurulu JWT Bearer Kimlik Do■rulama ■ Kurulu FluentValidation Input Validasyonu ■ Kurulu ■ PROJE HAKKINDA Craftora, kullan■c■lar■n video izlerken ürün sat■n alabildi■i sosyal ticaret platformudur. TikTok'un video ak■■■, Shopify'■n ma■aza altyap■s■ ve Udemy'nin kurs sistemi tek çat■ alt■nda birle■tirilmi■tir. Sat■c■lar video yükleyerek ürünlerini tan■t■r, izleyiciler an■nda sat■n alabilir. ■■ VER■TABANI ÖZET■ (28 Tablo) Bölüm Tablolar Kullan■c■ Sistemi users, user_sessions, login_attempts Ma■aza shops, subscriptions, shop_visits Ürünler products, course_sections, course_lessons, reviews, product_qa Medya/Reels media, media_likes, media_saves, media_comments, media_watch_history Oyunla■t■rma user_points, point_logs, contests, contest_results Sipari■/Ödeme orders, payments Kütüphane user_library, lesson_progress SaaS Abonelik seller_subscriptions Sepet cart_items Kupon coupons, coupon_uses Bildirim notifications, notification_deliveries, user_device_tokens-- 1. EKLENTİLER (EXTENSIONS) CREATE EXTENSION IF NOT EXISTS "uuid-ossp"; -- UUID (rastgele benzersiz ID) oluşturmak için gerekli eklenti CREATE EXTENSION IF NOT EXISTS "citext"; -- Büyük/küçük harf duyarsız, süper hızlı metin (email) araması için eklenti-- 2. ÖZEL VERİ TİPLERİ (ENUMS) CREATE TYPE user_role AS ENUM ('user', 'seller', 'admin'); -- Kullanıcı yetki seviyelerini belirlediğimiz sabit liste-- 3. KULLANICILAR TABLOSU (USERS) CREATE TABLE users ( id UUID PRIMARY KEY DEFAULT uuid_generate_v4(), -- Her kullanıcıya özel, tahmin edilemez şifreli kimlik numarası email CITEXT UNIQUE NOT NULL, -- Kullanıcının e-posta adresi (CITEXT: AHMET@gmail.com ile ahmet@gmail.com aynı sayılır) full_name VARCHAR(100), -- Kullanıcının ad ve soyadı bilgisi avatar_url TEXT, -- Profil fotoğrafının tutulduğu bulut (Storage) linki role user_role DEFAULT 'user', -- Sisteme kayıt olan herkes varsayılan olarak 'user' (normal müşteri) başlar auth_provider VARCHAR(50) DEFAULT 'email', -- Sisteme nereden kayıt oldu? (email, google, apple, facebook) provider_id VARCHAR(255) UNIQUE, -- Google/Apple gibi yerlerden gelen özel ID numarası password_hash TEXT, -- Eğer email ile kayıt olduysa, şifresinin kriptolanmış (kırılmaz) hali is_email_verified BOOLEAN DEFAULT FALSE, -- Email adresine giden kodu (OTP) doğru girdi mi? locked_until TIMESTAMP WITH TIME ZONE, -- Hacker saldırısı olursa hesabı şu saate kadar dondur (Brute-Force koruması) stripe_customer_id VARCHAR(255), -- Stripe (Ödeme) tarafındaki müşteri cüzdan kodu (Alışveriş için) stripe_account_id VARCHAR(255), -- Satıcı ise paranın yatacağı Stripe IBAN/Hesap kodu preferences JSONB DEFAULT '{}'::jsonb, -- Tema, dil, bildirim gibi mobil uygulama ayarlarının tutulduğu esnek depo is_active BOOLEAN DEFAULT TRUE, -- Hesap silinirse FALSE olur (Soft Delete), veriler gerçekten silinmez last_login_at TIMESTAMP WITH TIME ZONE, -- Sisteme en son ne zaman giriş yaptı? created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP, -- Hesabın oluşturulma (kayıt) tarihi updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP, -- Profilde yapılan en son değişikliğin tarihi-- AKILLI GÜVENLİK KURALI: -- Eğer Google/Apple ile değil de normal email ile giriyorsa, şifre boş OLAMAZ! CONSTRAINT check_password_if_email CHECK ( (auth_provider = 'email' AND password_hash IS NOT NULL) OR (auth_provider != 'email') ));-- 4. KULLANICI OTURUMLARI TABLOSU (USER SESSIONS) CREATE TABLE user_sessions ( id UUID PRIMARY KEY DEFAULT uuid_generate_v4(), -- Oturuma ait benzersiz ID user_id UUID REFERENCES users(id) ON DELETE CASCADE, -- Bu oturum hangi kullanıcıya ait? (Kullanıcı silinirse oturum da silinir) refresh_token TEXT NOT NULL, -- Kullanıcıyı her seferinde şifre girmekten kurtaran uzun yetki anahtarı device_id VARCHAR(255), -- Kullanıcının girdiği telefonun veya bilgisayarın benzersiz cihaz kodu ip_address INET, -- Güvenlik için kullanıcının girdiği internet IP adresi user_agent TEXT, -- Hangi tarayıcıdan (Chrome/Safari) veya işletim sisteminden (iOS/Android) giriyor? expires_at TIMESTAMP WITH TIME ZONE NOT NULL, -- Bu oturumun (token'ın) son kullanma tarihi (Örn: 30 gün sonra biter) created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP -- Bu oturumun açıldığı anın tarihi );-- 5. HATALI GİRİŞ DENEMELERİ TABLOSU (LOGIN ATTEMPTS) CREATE TABLE login_attempts ( email CITEXT PRIMARY KEY, -- Hangi e-posta adresine saldırı yapılıyor/deneniyor? attempt_count INT DEFAULT 1, -- Kaç kere yanlış şifre girildi? last_attempt_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP -- En son hatalı giriş denemesi ne zaman yapıldı? );-- BİSMİLLAH: CRAFTORA VERİTABANI KURULUMU - BÖLÜM 2-- ========================================== -- 1. İNDEKS KAVŞAKLARI (PERFORMANS VE HIZ) -- Milyonlarca veri içinde aramaları milisaniyelere düşüren arama motorları -- ==========================================-- Sosyal medya ile giriş yapanları anında bulmak için B-Tree İndeksi CREATE INDEX idx_users_provider_id ON users(provider_id);-- Mobil JSON ayarlarında ("Karanlık mod açık mı?") süper hızlı arama yapmak için GIN İndeksi CREATE INDEX idx_users_preferences ON users USING GIN (preferences);-- Bir kullanıcının açık olan oturumlarını şıp diye bulmak için CREATE INDEX idx_user_sessions_user_id ON user_sessions(user_id);-- Gelen Refresh Token'ın veritabanında olup olmadığını saliselik sürede doğrulamak için CREATE INDEX idx_user_sessions_token ON user_sessions(refresh_token);-- ========================================== -- 2. TETİKLEYİCİLER (OTOMASYON - TRIGGERS) -- Geliştirici hata yapsa bile veritabanının kendi kendini düzeltmesini sağlayan robotlar -- ==========================================-- Önce bir "Tarih Güncelleyen Robot (Fonksiyon)" üretiyoruz CREATE OR REPLACE FUNCTION update_updated_at_column() RETURNS TRIGGER AS $$ BEGIN NEW.updated_at = CURRENT_TIMESTAMP; -- Yeni verinin updated_at sütununu şu anki saat yap RETURN NEW; END; $$ LANGUAGE plpgsql;-- Şimdi bu robotu 'users' tablosuna bağlıyoruz: "Her UPDATE işleminden hemen ÖNCE bu robotu çalıştır" CREATE TRIGGER set_users_updated_at BEFORE UPDATE ON users FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();-- ========================================== -- 3. SATIR BAZLI GÜVENLİK (RLS - ROW LEVEL SECURITY) -- Hackerları veritabanı kapısında durduran çelik yeleğimiz -- ==========================================-- Tablolarda RLS kalkanını aktif ediyoruz ALTER TABLE users ENABLE ROW LEVEL SECURITY; ALTER TABLE user_sessions ENABLE ROW LEVEL SECURITY;-- KURAL 1: Kullanıcı Profillerini Görme (SELECT) -- Herkes (sisteme giriş yapmamış anonim biri dahil) aktif kullanıcıların profilini görebilir CREATE POLICY "Aktif kullanıcıları herkes görebilir" ON users FOR SELECT USING (is_active = TRUE);-- KURAL 2: Profil Güncelleme (UPDATE) -- (Not: Backend kodumuzda, sisteme giriş yapan kişinin ID'sini 'app.current_user_id' adında bir veritabanı değişkenine atayacağız) -- Kullanıcı SADECE kendi satırındaki verileri (kendi ID'si eşleşiyorsa) değiştirebilir CREATE POLICY "Kullanıcı sadece kendi profilini güncelleyebilir" ON users FOR UPDATE USING (id = current_setting('app.current_user_id', true)::uuid);-- KURAL 3: Oturumları Görme ve Silme (SESSION GİZLİLİĞİ) -- Oturumlar (Token'lar) aşırı gizlidir. Sadece sahibi kendi token'ını görebilir ve silebilir (Çıkış yapma) CREATE POLICY "Kullanıcı sadece kendi oturumlarını görebilir" ON user_sessions FOR SELECT USING (user_id = current_setting('app.current_user_id', true)::uuid);CREATE POLICY "Kullanıcı sadece kendi oturumlarını silebilir" ON user_sessions FOR DELETE USING (user_id = current_setting('app.current_user_id', true)::uuid);SELECT full_name, created_at, updated_at FROM users;-- CRAFTORA VERİTABANI KURULUMU - BÖLÜM 3 (MAĞAZA EKOSİSTEMİ)-- 1. MAĞAZALAR TABLOSU (SHOPS) CREATE TABLE shops ( id UUID PRIMARY KEY DEFAULT uuid_generate_v4(), -- Mağaza kimlik numarası user_id UUID UNIQUE NOT NULL REFERENCES users(id) ON DELETE CASCADE, -- Mağaza sahibi (1 kullanıcı = 1 mağaza kuralı UNIQUE ile sağlandı) shop_name VARCHAR(100) NOT NULL, -- Mağazanın görünen adı slug CITEXT UNIQUE NOT NULL, -- URL adresi (Örn: craftora.com/magza-adi). CITEXT sayesinde büyük/küçük harf duyarsız ve hızlıdır. external_url VARCHAR(255), -- Varsa harici web sitesi linki short_description VARCHAR(255), -- Mağaza kartlarında görünecek kısa özet description TEXT, -- Mağaza ana açıklama metni about_content TEXT, -- HTML destekli zengin "Hakkımızda" içeriği social_links JSONB DEFAULT '{}'::jsonb, -- Instagram, TikTok vb. linklerin tutulduğu esnek JSON deposu logo_url TEXT, -- Mağaza logosunun bulut linki banner_url TEXT, -- Mağaza kapak fotoğrafının bulut linki follower_count INT DEFAULT 0, -- PERFORMANS: Her seferinde sayım yapmamak için otomatik güncellenen takipçi sayısı rating DECIMAL(3,2) DEFAULT 0.0, -- PERFORMANS: Mağaza puan ortalaması (Örn: 4.85) is_verified BOOLEAN DEFAULT FALSE, -- CTO DOKUNUŞU: Mavi Tik (Onaylı Mağaza) durumu is_active BOOLEAN DEFAULT TRUE, -- Mağaza donduruldu mu? created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP, -- Kuruluş tarihi updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP -- Son düzenleme tarihi );-- 2. ABONELİKLER TABLOSU (SUBSCRIPTIONS) CREATE TABLE subscriptions ( id UUID PRIMARY KEY DEFAULT uuid_generate_v4(), shop_id UUID NOT NULL REFERENCES shops(id) ON DELETE CASCADE, -- Takip edilen mağaza user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE, -- Takip eden kullanıcı wants_notifications BOOLEAN DEFAULT TRUE, -- CTO DOKUNUŞU: Zil butonu (Yeni ürün bildirimi gelsin mi?) created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,-- Bir kullanıcı bir mağazayı sadece bir kez takip edebilir: CONSTRAINT unique_subscription UNIQUE (shop_id, user_id));-- 3. MAĞAZA ZİYARETLERİ TABLOSU (SHOP_VISITS) CREATE TABLE shop_visits ( id UUID PRIMARY KEY DEFAULT uuid_generate_v4(), shop_id UUID NOT NULL REFERENCES shops(id) ON DELETE CASCADE, user_id UUID REFERENCES users(id) ON DELETE SET NULL, -- Üye olan ziyaretçi (Nullable: Üye olmayanlar için boş kalabilir) ip_address INET, -- CTO DOKUNUŞU: Üye olmayan anonim ziyaretçileri IP üzerinden takip etmek için visited_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP -- Ziyaret saati );-- 4. İNDEKS KAVŞAKLARI (HIZ) CREATE INDEX idx_shops_slug ON shops(slug); -- Mağaza URL aramalarını ışık hızına çıkarır CREATE INDEX idx_shop_visits_composite ON shop_visits(shop_id, visited_at); -- Satıcı paneli grafiklerini hızlandırır -- Kullanıcıların arama çubuğunda mağaza adıyla arama yapmasını hızlandırmak için: CREATE INDEX idx_shops_name ON shops(shop_name);-- 5. OTOMATİK ABONE SAYACI (TRIGGER FUNCTION) CREATE OR REPLACE FUNCTION sync_follower_count() RETURNS TRIGGER AS $$ BEGIN IF (TG_OP = 'INSERT') THEN UPDATE shops SET follower_count = follower_count + 1 WHERE id = NEW.shop_id; ELSIF (TG_OP = 'DELETE') THEN UPDATE shops SET follower_count = follower_count - 1 WHERE id = OLD.shop_id; END IF; RETURN NULL; END; $$ LANGUAGE plpgsql;-- Takip etme/çıkma anında sayacı çalıştır CREATE TRIGGER trg_sync_followers AFTER INSERT OR DELETE ON subscriptions FOR EACH ROW EXECUTE FUNCTION sync_follower_count();-- Mağaza updated_at tetikleyicisi CREATE TRIGGER set_shops_updated_at BEFORE UPDATE ON shops FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();-- 6. GÜVENLİK KALKANLARI (RLS) ALTER TABLE shops ENABLE ROW LEVEL SECURITY; ALTER TABLE subscriptions ENABLE ROW LEVEL SECURITY; ALTER TABLE shop_visits ENABLE ROW LEVEL SECURITY;-- Mağazaları herkes görebilir ama sadece sahibi düzenleyebilir CREATE POLICY "Aktif mağazalar herkese açıktır" ON shops FOR SELECT USING (is_active = TRUE); CREATE POLICY "Mağaza sahibi dükkanını yönetebilir" ON shops FOR UPDATE USING (user_id = current_setting('app.current_user_id', true)::uuid);-- Abonelik ve Ziyaret gizliliği: Sadece mağaza sahibi görebilir CREATE POLICY "Satıcı kendi abonelerini görebilir" ON subscriptions FOR SELECT USING (shop_id IN (SELECT id FROM shops WHERE user_id = current_setting('app.current_user_id', true)::uuid));CREATE POLICY "Satıcı kendi trafiğini görebilir" ON shop_visits FOR SELECT USING (shop_id IN (SELECT id FROM shops WHERE user_id = current_setting('app.current_user_id', true)::uuid));-- SADECE YARIŞMALAR TABLOSUNU SİSTEME BAĞLAMA YAMASI (İzole adayı kurtarıyoruz) ALTER TABLE contests ADD COLUMN created_by UUID REFERENCES users(id) ON DELETE SET NULL;-- CRAFTORA VERİTABANI KURULUMU - BÖLÜM 4 (ÜRÜNLER VE KURSLAR)-- 1. YENİ VERİ TİPLERİ (ENUMS) CREATE TYPE product_type AS ENUM ('digital_file', 'course'); CREATE TYPE media_status AS ENUM ('processing', 'ready', 'failed'); -- Videolar işlenirken bozuk görünmesin diye-- 2. ANA ÜRÜNLER TABLOSU (PRODUCTS) CREATE TABLE products ( id UUID PRIMARY KEY DEFAULT uuid_generate_v4(), shop_id UUID NOT NULL REFERENCES shops(id) ON DELETE CASCADE, type product_type DEFAULT 'digital_file', title VARCHAR(255) NOT NULL, description TEXT, metadata JSONB DEFAULT '{}'::jsonb, -- CTO DOKUNUŞU: E-kitap sayfası, 3D model formatı gibi sınırsız özellikleri buraya gömeceğiz price DECIMAL(10,2) NOT NULL, currency VARCHAR(3) DEFAULT 'USD', cover_image_url TEXT, file_url TEXT, -- Dijital dosya ise indirme linki (Kurs ise NULL kalır) rating_average DECIMAL(3,2) DEFAULT 0.0, -- OTOPİLOT: Müşteri ana sayfada gezerken hesap yapmakla uğraşmayacak review_count INT DEFAULT 0, -- OTOPİLOT: Toplam yorum sayısı sales_count INT DEFAULT 0, -- Çok satanları bulmak için is_active BOOLEAN DEFAULT TRUE, -- Satıcı ürünü silse bile kütüphaneler bozulmasın diye Soft Delete yapıyoruz is_featured BOOLEAN DEFAULT FALSE, created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,CONSTRAINT check_price_positive CHECK (price >= 0) -- Fiyat asla eksi olamaz kalkanı!);-- 3. KURS BÖLÜMLERİ (Örn: C++ Döngüler) CREATE TABLE course_sections ( id UUID PRIMARY KEY DEFAULT uuid_generate_v4(), product_id UUID NOT NULL REFERENCES products(id) ON DELETE CASCADE, title VARCHAR(255) NOT NULL, sort_order INT NOT NULL, -- Uygulamada hangi sırada görünecek? (1, 2, 3)UNIQUE(product_id, sort_order) -- Aynı kurs içinde aynı sıra numarası yanlışlıkla girilmesin);-- 4. KURS DERSLERİ / VİDEOLARI (Örn: For Döngüsü) CREATE TABLE course_lessons ( id UUID PRIMARY KEY DEFAULT uuid_generate_v4(), section_id UUID NOT NULL REFERENCES course_sections(id) ON DELETE CASCADE, title VARCHAR(255) NOT NULL, video_url TEXT, document_url TEXT, -- Varsa ders notu (PDF) duration_seconds INT DEFAULT 0, is_free_preview BOOLEAN DEFAULT FALSE, -- Ücretsiz tanıtım videosu mu? sort_order INT NOT NULL, status media_status DEFAULT 'ready', -- Video işlenme durumuUNIQUE(section_id, sort_order));-- 5. DEĞERLENDİRMELER (Yıldız ve Yorum - Kesin Kurallı) CREATE TABLE reviews ( id UUID PRIMARY KEY DEFAULT uuid_generate_v4(), product_id UUID NOT NULL REFERENCES products(id) ON DELETE CASCADE, user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE, rating INT NOT NULL, comment TEXT, seller_reply TEXT, -- Satıcının tek bir yanıt hakkı var (Uzatılamaz) created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,CONSTRAINT check_rating_range CHECK (rating >= 1 AND rating <= 5), -- Yıldız 1-5 arası olmak ZORUNDA CONSTRAINT unique_user_review UNIQUE (product_id, user_id) -- 1 Kullanıcı ürüne SADECE 1 KERE puan verebilir);-- 6. SORU VE CEVAP (Kullanıcı ve Satıcı Karşılıklı Sohbeti) CREATE TABLE product_qa ( id UUID PRIMARY KEY DEFAULT uuid_generate_v4(), product_id UUID NOT NULL REFERENCES products(id) ON DELETE CASCADE, user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE, parent_id UUID REFERENCES product_qa(id) ON DELETE CASCADE, -- Eğer yanıtsa hangi mesaja yanıt? message TEXT NOT NULL, created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP );-- ========================================================================= -- CRAFTORA VERİTABANI KURULUMU - BÖLÜM 5 (MEDYA, REELS VE OYUNLAŞTIRMA) -- =========================================================================-- 1. MEDYA VE ETKİLEŞİM TABLOLARI (SOSYAL MEDYA MOTORU)-- REELS VİDEOLARI CREATE TABLE media ( id UUID PRIMARY KEY DEFAULT uuid_generate_v4(), shop_id UUID NOT NULL REFERENCES shops(id) ON DELETE CASCADE, product_id UUID REFERENCES products(id) ON DELETE SET NULL, -- Videoda satılan ürün video_url TEXT NOT NULL, thumbnail_url TEXT, view_count INT DEFAULT 0, like_count INT DEFAULT 0, save_count INT DEFAULT 0, comment_count INT DEFAULT 0, -- CTO DOKUNUŞU: Yorum sayacı created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP, is_active BOOLEAN DEFAULT TRUE );-- REELS BEĞENİLERİ CREATE TABLE media_likes ( id UUID PRIMARY KEY DEFAULT uuid_generate_v4(), media_id UUID NOT NULL REFERENCES media(id) ON DELETE CASCADE, user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE, created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP, UNIQUE(media_id, user_id) );-- REELS KAYDETMELERİ CREATE TABLE media_saves ( id UUID PRIMARY KEY DEFAULT uuid_generate_v4(), media_id UUID NOT NULL REFERENCES media(id) ON DELETE CASCADE, user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE, created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP, UNIQUE(media_id, user_id) );-- REELS YORUMLARI (CTO DOKUNUŞU) CREATE TABLE media_comments ( id UUID PRIMARY KEY DEFAULT uuid_generate_v4(), media_id UUID NOT NULL REFERENCES media(id) ON DELETE CASCADE, user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE, comment_text TEXT NOT NULL, created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP );-- İZLEME GEÇMİŞİ (Günlük Puan Limiti ve Algoritma İçin) CREATE TABLE media_watch_history ( id UUID PRIMARY KEY DEFAULT uuid_generate_v4(), user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE, media_id UUID NOT NULL REFERENCES media(id) ON DELETE CASCADE, watched_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP, is_point_earned BOOLEAN DEFAULT FALSE, UNIQUE(user_id, media_id) -- Keşfet'te aynı video bir daha çıkmasın diye );-- 2. OYUNLAŞTIRMA VE LİDERLİK TABLOLARI (GAMIFICATION)-- KULLANICI PUAN CÜZDANI CREATE TABLE user_points ( id UUID PRIMARY KEY DEFAULT uuid_generate_v4(), user_id UUID UNIQUE NOT NULL REFERENCES users(id) ON DELETE CASCADE, total_points DECIMAL(12,2) DEFAULT 0.0, current_rank INT DEFAULT 0, current_streak INT DEFAULT 0, -- CTO DOKUNUŞU: Kaç gündür üst üste giriyor (Ateş serisi) updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP );-- PUAN KAYIT DEFTERİ (Geçmiş) CREATE TABLE point_logs ( id UUID PRIMARY KEY DEFAULT uuid_generate_v4(), user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE, action_type VARCHAR(50) NOT NULL, points_earned DECIMAL(10,2) NOT NULL, reference_id UUID, created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP );-- YARIŞMALAR VE SONUÇLAR (Senin yakaladığın efsane köprü!) CREATE TABLE contests ( id UUID PRIMARY KEY DEFAULT uuid_generate_v4(), title VARCHAR(255) NOT NULL, start_date TIMESTAMP WITH TIME ZONE NOT NULL, end_date TIMESTAMP WITH TIME ZONE NOT NULL, prize_pool TEXT, is_active BOOLEAN DEFAULT TRUE );CREATE TABLE contest_results ( id UUID PRIMARY KEY DEFAULT uuid_generate_v4(), contest_id UUID NOT NULL REFERENCES contests(id) ON DELETE CASCADE, user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE, final_rank INT, total_score DECIMAL(12,2), reward_claimed BOOLEAN DEFAULT FALSE, created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP, UNIQUE(contest_id, user_id) );-- 3. OTOPİLOT ROBOTLARI VE İNDEKS KAVŞAKLARICREATE INDEX idx_media_shop ON media(shop_id); CREATE INDEX idx_media_product ON media(product_id); CREATE INDEX idx_point_logs_user_date ON point_logs(user_id, created_at);-- OTOPİLOT 1: MEDYA SAYAÇLARI (Like, Save ve Yorumları Otomatik Sayar) CREATE OR REPLACE FUNCTION sync_media_counters() RETURNS TRIGGER AS $$ BEGIN IF TG_TABLE_NAME = 'media_likes' THEN IF TG_OP = 'INSERT' THEN UPDATE media SET like_count = like_count + 1 WHERE id = NEW.media_id; ELSIF TG_OP = 'DELETE' THEN UPDATE media SET like_count = like_count - 1 WHERE id = OLD.media_id; END IF; ELSIF TG_TABLE_NAME = 'media_saves' THEN IF TG_OP = 'INSERT' THEN UPDATE media SET save_count = save_count + 1 WHERE id = NEW.media_id; ELSIF TG_OP = 'DELETE' THEN UPDATE media SET save_count = save_count - 1 WHERE id = OLD.media_id; END IF; ELSIF TG_TABLE_NAME = 'media_comments' THEN IF TG_OP = 'INSERT' THEN UPDATE media SET comment_count = comment_count + 1 WHERE id = NEW.media_id; ELSIF TG_OP = 'DELETE' THEN UPDATE media SET comment_count = comment_count - 1 WHERE id = OLD.media_id; END IF; END IF; RETURN NULL; END; $$ LANGUAGE plpgsql;CREATE TRIGGER trg_media_like_counter AFTER INSERT OR DELETE ON media_likes FOR EACH ROW EXECUTE FUNCTION sync_media_counters(); CREATE TRIGGER trg_media_save_counter AFTER INSERT OR DELETE ON media_saves FOR EACH ROW EXECUTE FUNCTION sync_media_counters(); CREATE TRIGGER trg_media_comment_counter AFTER INSERT OR DELETE ON media_comments FOR EACH ROW EXECUTE FUNCTION sync_media_counters();-- OTOPİLOT 2: SATICI PUAN ROBOTU (Like Aldıkça 0.5 Kazanır, UPSERT mantığıyla) CREATE OR REPLACE FUNCTION award_seller_points() RETURNS TRIGGER AS $$ DECLARE v_seller_id UUID; BEGIN SELECT s.user_id INTO v_seller_id FROM media m JOIN shops s ON m.shop_id = s.id WHERE m.id = NEW.media_id;INSERT INTO point_logs (user_id, action_type, points_earned, reference_id) VALUES (v_seller_id, 'receive_like', 0.5, NEW.media_id); -- ON CONFLICT: Cüzdanı yoksa yarat, varsa üstüne ekle (UPSERT) INSERT INTO user_points (user_id, total_points) VALUES (v_seller_id, 0.5) ON CONFLICT (user_id) DO UPDATE SET total_points = user_points.total_points + 0.5, updated_at = CURRENT_TIMESTAMP; RETURN NEW;END; $$ LANGUAGE plpgsql; CREATE TRIGGER trg_points_on_like AFTER INSERT ON media_likes FOR EACH ROW EXECUTE FUNCTION award_seller_points();-- OTOPİLOT 3: İZLEYİCİ PUAN ROBOTU (Günlük Limit: 120) CREATE OR REPLACE FUNCTION award_viewer_points() RETURNS TRIGGER AS $$ DECLARE v_daily_points DECIMAL; BEGIN SELECT COALESCE(SUM(points_earned), 0) INTO v_daily_points FROM point_logs WHERE user_id = NEW.user_id AND action_type = 'watch_reels' AND created_at::date = CURRENT_DATE;IF v_daily_points < 120 THEN INSERT INTO point_logs (user_id, action_type, points_earned, reference_id) VALUES (NEW.user_id, 'watch_reels', 1.0, NEW.media_id); INSERT INTO user_points (user_id, total_points) VALUES (NEW.user_id, 1.0) ON CONFLICT (user_id) DO UPDATE SET total_points = user_points.total_points + 1.0, updated_at = CURRENT_TIMESTAMP; NEW.is_point_earned := TRUE; END IF; RETURN NEW;END; $$ LANGUAGE plpgsql; CREATE TRIGGER trg_points_on_watch BEFORE INSERT ON media_watch_history FOR EACH ROW EXECUTE FUNCTION award_viewer_points();-- 4. ÇELİK YELEKLER (RLS POLICIES) - SENİN YAKALADIĞIN EKSİK!ALTER TABLE media ENABLE ROW LEVEL SECURITY; ALTER TABLE media_likes ENABLE ROW LEVEL SECURITY; ALTER TABLE media_saves ENABLE ROW LEVEL SECURITY; ALTER TABLE media_comments ENABLE ROW LEVEL SECURITY; ALTER TABLE media_watch_history ENABLE ROW LEVEL SECURITY; ALTER TABLE user_points ENABLE ROW LEVEL SECURITY; ALTER TABLE point_logs ENABLE ROW LEVEL SECURITY;-- MEDYA (REELS) CREATE POLICY "Aktif videolar herkese açık" ON media FOR SELECT USING (is_active = TRUE); CREATE POLICY "Satıcı kendi videosunu yönetebilir" ON media FOR ALL USING (shop_id IN (SELECT id FROM shops WHERE user_id = current_setting('app.current_user_id', true)::uuid));-- BEĞENİ VE KAYDETMELER (GİZLİLİK) CREATE POLICY "Herkes kendi beğeni/kayıtlarını görebilir" ON media_likes FOR SELECT USING (user_id = current_setting('app.current_user_id', true)::uuid); CREATE POLICY "Herkes kendi beğeni/kayıtlarını yapabilir" ON media_likes FOR ALL USING (user_id = current_setting('app.current_user_id', true)::uuid);CREATE POLICY "Herkes kendi kaydettiklerini görebilir" ON media_saves FOR SELECT USING (user_id = current_setting('app.current_user_id', true)::uuid); CREATE POLICY "Herkes kendi kaydettiklerini yönetebilir" ON media_saves FOR ALL USING (user_id = current_setting('app.current_user_id', true)::uuid);-- YORUMLAR CREATE POLICY "Yorumları herkes okuyabilir" ON media_comments FOR SELECT USING (true); CREATE POLICY "Kullanıcı kendi yorumunu silebilir/düzenleyebilir" ON media_comments FOR ALL USING (user_id = current_setting('app.current_user_id', true)::uuid);-- OYUNLAŞTIRMA VE LİDERLİK TABLOSU GÜVENLİĞİ CREATE POLICY "Liderlik tablosunu herkes görebilir" ON user_points FOR SELECT USING (true); -- DİKKAT: user_points tablosuna UPDATE kuralı yazmıyoruz! Çünkü puanları API değil, sadece veritabanı Trigger'ları (Robotlar) verebilir. Hacker puanını artıramaz!CREATE POLICY "Kullanıcı sadece kendi puan geçmişini görebilir" ON point_logs FOR SELECT USING (user_id = current_setting('app.current_user_id', true)::uuid);-- ========================================================================= -- CRAFTORA VERİTABANI KURULUMU - BÖLÜM 6 (SİPARİŞLER VE FİNANS) -- =========================================================================-- 1. SİPARİŞ DURUMLARI (ENUM) CREATE TYPE order_status AS ENUM ('pending', 'completed', 'failed', 'refunded');-- 2. SİPARİŞLER TABLOSU (ORDERS) CREATE TABLE orders ( id UUID PRIMARY KEY DEFAULT uuid_generate_v4(), buyer_id UUID NOT NULL REFERENCES users(id) ON DELETE RESTRICT, -- MÜHENDİSLİK: Kullanıcı silinse bile fatura silinmez! product_id UUID NOT NULL REFERENCES products(id) ON DELETE RESTRICT, -- Ürün silinse bile sipariş geçmişi kalır! shop_id UUID NOT NULL REFERENCES shops(id) ON DELETE RESTRICT, order_number VARCHAR(50) UNIQUE NOT NULL, -- Örn: CRAFT-2026-XYZ123-- FİNANSAL BÖLÜNME (MUHASEBE) amount DECIMAL(10,2) NOT NULL, -- Müşterinin ödediği toplam para (Örn: 100.00) currency VARCHAR(3) DEFAULT 'USD', platform_fee DECIMAL(10,2) DEFAULT 0.00, -- Craftora'nın cebine giren komisyon (Örn: 10.00) seller_earnings DECIMAL(10,2) DEFAULT 0.00, -- Satıcının Stripe hesabına yatacak para (Örn: 90.00) status order_status DEFAULT 'pending', stripe_payment_id VARCHAR(255), -- İade ve iptaller için banka işlem numarası invoice_pdf_url TEXT, -- Kesilen e-faturanın PDF linki created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP, -- GÜVENLİK KALKANLARI CONSTRAINT check_amount_positive CHECK (amount >= 0), CONSTRAINT check_fee_logic CHECK (platform_fee + seller_earnings = amount) -- Toplam tutar, kesintilerle eşleşmek ZORUNDA!);-- 3. İNDEKS KAVŞAKLARI (PERFORMANS VE ARAMA HIZI) CREATE INDEX idx_orders_buyer ON orders(buyer_id); -- Müşterinin "Siparişlerim" sayfasını hızlandırır CREATE INDEX idx_orders_shop ON orders(shop_id); -- Satıcının "Gelen Siparişler" tablosunu hızlandırır CREATE INDEX idx_orders_number ON orders(order_number); -- Müşteri hizmetlerinin fatura no ile arama yapması için CREATE INDEX idx_orders_status ON orders(status);-- 4. OTOPİLOT ROBOTLARI (OTOMASYON)-- Saat Güncelleyici CREATE TRIGGER set_orders_updated_at BEFORE UPDATE ON orders FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();-- EFSANE ROBOT: Sipariş "Completed" (Tamamlandı) olunca çalışır! CREATE OR REPLACE FUNCTION process_completed_order() RETURNS TRIGGER AS $$ DECLARE v_seller_id UUID; BEGIN -- Eğer sipariş durumu 'completed' olarak güncellendiyse (veya direkt eklendiyse) IF (NEW.status = 'completed' AND (TG_OP = 'INSERT' OR OLD.status != 'completed')) THEN -- 1. Ürünün satış sayacını (sales_count) 1 artır UPDATE products SET sales_count = sales_count + 1 WHERE id = NEW.product_id; -- 2. Satıcıyı bul SELECT user_id INTO v_seller_id FROM shops WHERE id = NEW.shop_id; -- 3. Satıcıya Oyunlaştırma Modülünden 20 PUAN kazandır! (make_sale aksiyonu) INSERT INTO point_logs (user_id, action_type, points_earned, reference_id) VALUES (v_seller_id, 'make_sale', 20.0, NEW.id); UPDATE user_points SET total_points = total_points + 20.0, updated_at = CURRENT_TIMESTAMP WHERE user_id = v_seller_id; END IF; RETURN NEW;END; $$ LANGUAGE plpgsql;-- Robotu Siparişler Tablosuna Bağlayalım CREATE TRIGGER trg_on_order_completed AFTER INSERT OR UPDATE ON orders FOR EACH ROW EXECUTE FUNCTION process_completed_order();-- 5. ÇELİK YELEKLER (RLS - FİNANSAL GİZLİLİK) ALTER TABLE orders ENABLE ROW LEVEL SECURITY;-- KURAL 1: Alıcı (Müşteri) SADECE kendi verdiği siparişleri ve faturalarını görebilir CREATE POLICY "Alıcılar kendi siparişlerini görebilir" ON orders FOR SELECT USING (buyer_id = current_setting('app.current_user_id', true)::uuid);-- KURAL 2: Satıcı SADECE kendi dükkanına gelen siparişleri görebilir CREATE POLICY "Satıcılar kendi mağaza siparişlerini görebilir" ON orders FOR SELECT USING (shop_id IN (SELECT id FROM shops WHERE user_id = current_setting('app.current_user_id', true)::uuid));-- DİKKAT (CTO KURALI): Kullanıcılar (Alıcı veya Satıcı) sipariş silebilir veya durumunu değiştirebilir mi? ASLA! -- RLS kalkanında INSERT, UPDATE ve DELETE kurallarını YAZMIYORUZ. -- Bu sayede sadece Backend Sunucumuz (Stripe'dan ödeme onayı alınca) siparişi güncelleyebilir. Hacker fiyata veya duruma müdahale edemez.-- 1. ÖDEME DURUMLARI (ENUM) CREATE TYPE payment_status_type AS ENUM ('processing', 'succeeded', 'failed', 'refunded');-- 2. ANA ÖDEMELER TABLOSU (PAYMENTS) CREATE TABLE payments ( id UUID PRIMARY KEY DEFAULT uuid_generate_v4(), order_id UUID UNIQUE NOT NULL REFERENCES orders(id) ON DELETE RESTRICT, -- UNIQUE: Bir siparişin SADECE BİR ödeme kaydı olur! payment_provider VARCHAR(50) NOT NULL, -- 'stripe', 'iyzico', 'paypal' provider_transaction_id VARCHAR(255) UNIQUE, -- Bankanın verdiği efsanevi, kopyalanamaz dekont/işlem numarasıgross_amount DECIMAL(10,2) NOT NULL, -- Karttan çekilen brüt para platform_fee_amount DECIMAL(10,2) NOT NULL, -- Banka+Craftora kesintisi net_earnings DECIMAL(10,2) NOT NULL, -- Satıcının hesabına yatacak net para status payment_status_type DEFAULT 'processing', error_message TEXT, -- Eğer işlem failed olursa bankanın gönderdiği hata kodu ("Bakiye yetersiz" vb.) created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP, -- GÜVENLİK KALKANLARI CONSTRAINT check_gross_positive CHECK (gross_amount >= 0), CONSTRAINT check_payment_math CHECK (gross_amount = platform_fee_amount + net_earnings) -- Muhasebe matematiği ASLA şaşamaz!);-- 3. İNDEKS KAVŞAKLARI (PERFORMANS) CREATE INDEX idx_payments_transaction_id ON payments(provider_transaction_id); -- Bankadan gelen Webhook'ları salisede bulmak için CREATE INDEX idx_payments_status ON payments(status);-- 4. OTOPİLOT ROBOTLARI (DOMİNO ETKİSİ)-- Saat Güncelleyici CREATE TRIGGER set_payments_updated_at BEFORE UPDATE ON payments FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();-- DOMİNO ROBOTU: Ödeme başarılı olursa, Siparişi de Tamamla! CREATE OR REPLACE FUNCTION sync_order_status_from_payment() RETURNS TRIGGER AS $$ BEGIN -- Eğer banka ödemesi 'succeeded' olduysa IF (NEW.status = 'succeeded' AND (TG_OP = 'INSERT' OR OLD.status != 'succeeded')) THEN -- Gidip Orders (Sipariş) tablosundaki durumu da 'completed' yapıyoruz. -- DİKKAT: Bu UPDATE işlemi, bir önceki aşamada yazdığımız Puan Dağıtma robotunu tetikleyecek! UPDATE orders SET status = 'completed' WHERE id = NEW.order_id; -- Eğer banka 'refunded' (İade) dediyse, siparişi de iptal et ELSIF (NEW.status = 'refunded' AND OLD.status != 'refunded') THEN UPDATE orders SET status = 'refunded' WHERE id = NEW.order_id; END IF; RETURN NEW;END; $$ LANGUAGE plpgsql;CREATE TRIGGER trg_sync_order_on_payment AFTER INSERT OR UPDATE ON payments FOR EACH ROW EXECUTE FUNCTION sync_order_status_from_payment();-- 5. ÇELİK YELEKLER (RLS - FİNANSAL GİZLİLİK) ALTER TABLE payments ENABLE ROW LEVEL SECURITY;-- KURAL 1: Alıcı sadece KENDİ siparişine bağlı ödeme dekontunu görebilir CREATE POLICY "Alıcılar dekontunu görebilir" ON payments FOR SELECT USING (order_id IN (SELECT id FROM orders WHERE buyer_id = current_setting('app.current_user_id', true)::uuid));-- KURAL 2: Satıcı sadece KENDİ dükkanına ait satışların ödeme/komisyon dökümünü görebilir CREATE POLICY "Satıcılar kendi gelir dökümlerini görebilir" ON payments FOR SELECT USING (order_id IN (SELECT id FROM orders WHERE shop_id IN (SELECT id FROM shops WHERE user_id = current_setting('app.current_user_id', true)::uuid)));-- DİKKAT: INSERT, UPDATE, DELETE KESİNLİKLE YOK! Ödeme durumunu sadece Stripe webhook'larından gelen veriyi işleyen arka uç (Backend) kodumuz yapabilir.INSERT INTO payments (order_id, payment_provider, provider_transaction_id, gross_amount, platform_fee_amount, net_earnings, status) VALUES ( (SELECT id FROM orders WHERE order_number = 'PENDING-ORD-002'), 'stripe', 'ch_basarili_islem_123', 100.00, 10.00, 90.00, 'succeeded' -- İŞTE BU KELİME DOMİNOYI BAŞLATACAK! );SELECT order_number, status FROM orders WHERE order_number = 'PENDING-ORD-002';-- SONUÇ 2: C++ Kursunun satış sayısı tekrar artmış mı? SELECT title, sales_count FROM products WHERE title = 'Sıfırdan İleri Seviye C++ Eğitimi';-- SONUÇ 3: Ahmet'in cüzdanına ekstra 20 puan daha (Toplam 40.50) gelmiş mi? SELECT total_points FROM user_points WHERE user_id = (SELECT id FROM users WHERE email = 'ahmet.yilmaz@gmail.com');-- ========================================================================= -- CRAFTORA VERİTABANI KURULUMU - BÖLÜM 7 (KÜTÜPHANE VE EĞİTİM) -- =========================================================================-- 1. TABLOLAR (MİMARİ)-- KULLANICI KÜTÜPHANESİ (SATIN ALINANLAR) CREATE TABLE user_library ( id UUID PRIMARY KEY DEFAULT uuid_generate_v4(), user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE, product_id UUID NOT NULL REFERENCES products(id) ON DELETE CASCADE, purchased_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP, last_accessed_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP, -- CTO DOKUNUŞU: Kaldığın yerden devam et!UNIQUE(user_id, product_id) -- Bir kullanıcı aynı ürüne iki kere sahip olamaz);-- DERS İLERLEMESİ (VİDEO İZLEME SÜRELERİ) CREATE TABLE lesson_progress ( id UUID PRIMARY KEY DEFAULT uuid_generate_v4(), user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE, lesson_id UUID NOT NULL REFERENCES course_lessons(id) ON DELETE CASCADE, is_completed BOOLEAN DEFAULT FALSE, watched_seconds INT DEFAULT 0, completed_at TIMESTAMP WITH TIME ZONE, -- Ne zaman bitirdi? updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,UNIQUE(user_id, lesson_id) -- Bir kullanıcı bir ders için sadece bir kayıt tutabilir);-- 2. İNDEKS KAVŞAKLARI (PERFORMANS)CREATE INDEX idx_user_library_accessed ON user_library(user_id, last_accessed_at DESC); -- "Devam Et" rafını saniyede yükler CREATE INDEX idx_lesson_progress_user ON lesson_progress(user_id, lesson_id);-- 3. OTOPİLOT ROBOTLARI (OTOMATİK TESLİMAT VE PUAN)-- ROBOT 1: Saat Güncelleyici CREATE TRIGGER set_progress_updated_at BEFORE UPDATE ON lesson_progress FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();-- EFSANE ROBOT 2: OTOMATİK DİJİTAL TESLİMAT (Sipariş Onaylanınca Çalışır) CREATE OR REPLACE FUNCTION deliver_product_to_library() RETURNS TRIGGER AS $$ BEGIN -- Sipariş 'completed' statüsüne geçtiyse: IF (NEW.status = 'completed' AND (TG_OP = 'INSERT' OR OLD.status != 'completed')) THEN -- Ürünü alıcının kütüphanesine ekle (Eğer zaten varsa hata verme, sessizce geç: ON CONFLICT DO NOTHING) INSERT INTO user_library (user_id, product_id) VALUES (NEW.buyer_id, NEW.product_id) ON CONFLICT (user_id, product_id) DO NOTHING; END IF; RETURN NEW; END; $$ LANGUAGE plpgsql;CREATE TRIGGER trg_auto_deliver_product AFTER INSERT OR UPDATE ON orders FOR EACH ROW EXECUTE FUNCTION deliver_product_to_library();-- EFSANE ROBOT 3: ÖĞRENCİ PUAN SİSTEMİ (Ders Bitince 2 Puan Verir) CREATE OR REPLACE FUNCTION reward_lesson_completion() RETURNS TRIGGER AS $$ BEGIN -- Eğer ders ŞU AN tamamlandıysa (Önceden false idi, şimdi true olduysa) IF (NEW.is_completed = TRUE AND OLD.is_completed = FALSE) THEN -- Müşteriye 2 Puan ver (action_type: 'complete_lesson') INSERT INTO point_logs (user_id, action_type, points_earned, reference_id) VALUES (NEW.user_id, 'complete_lesson', 2.0, NEW.lesson_id); -- Cüzdanı güncelle (UPSERT - Cüzdanı yoksa yarat) INSERT INTO user_points (user_id, total_points) VALUES (NEW.user_id, 2.0) ON CONFLICT (user_id) DO UPDATE SET total_points = user_points.total_points + 2.0, updated_at = CURRENT_TIMESTAMP; -- Tamamlanma saatini şu anki saat yap NEW.completed_at = CURRENT_TIMESTAMP; END IF; RETURN NEW;END; $$ LANGUAGE plpgsql;-- Bu robotu sadece UPDATE işleminde çalıştırıyoruz (Videoyu izledikçe güncellenecek çünkü) CREATE TRIGGER trg_reward_on_lesson_complete BEFORE UPDATE ON lesson_progress FOR EACH ROW EXECUTE FUNCTION reward_lesson_completion();-- 4. ÇELİK YELEKLER (RLS - KORSAN KALKANI)ALTER TABLE user_library ENABLE ROW LEVEL SECURITY; ALTER TABLE lesson_progress ENABLE ROW LEVEL SECURITY;-- KÜTÜPHANE GÜVENLİĞİ: Kullanıcı KENDİ kütüphanesini görebilir. -- DİKKAT: INSERT veya DELETE yok! Ürünü sadece sistem (Orders tablosundaki Trigger) ekleyebilir. CREATE POLICY "Kullanıcı kendi kütüphanesini görebilir" ON user_library FOR SELECT USING (user_id = current_setting('app.current_user_id', true)::uuid);-- DERS İLERLEMESİ GÜVENLİĞİ CREATE POLICY "Kullanıcı kendi ilerlemesini görebilir" ON lesson_progress FOR SELECT USING (user_id = current_setting('app.current_user_id', true)::uuid);-- Kullanıcı sadece kendi ders ilerlemesini yaratabilir ve güncelleyebilir (İzlediği saniyeyi kaydetmek için) CREATE POLICY "Kullanıcı kendi ilerlemesini güncelleyebilir" ON lesson_progress FOR ALL USING (user_id = current_setting('app.current_user_id', true)::uuid);-- ========================================================================= -- CRAFTORA VERİTABANI KURULUMU - BÖLÜM 8 (SATICI ABONELİKLERİ / SAAS) -- =========================================================================-- 1. ABONELİK DURUMLARI (ENUM) CREATE TYPE sub_status AS ENUM ('active', 'past_due', 'canceled', 'unpaid');-- 2. SATICI ABONELİKLERİ TABLOSU CREATE TABLE seller_subscriptions ( id UUID PRIMARY KEY DEFAULT uuid_generate_v4(), shop_id UUID UNIQUE NOT NULL REFERENCES shops(id) ON DELETE CASCADE, -- Bir mağazanın tek abonelik kaydı olur stripe_subscription_id VARCHAR(255) UNIQUE, -- CTO DOKUNUŞU: Bankadaki (Stripe) otomatik çekim talimatının kodustatus sub_status DEFAULT 'active', current_period_end TIMESTAMP WITH TIME ZONE NOT NULL, -- Bu ayki paketin bitiş tarihi grace_period_end TIMESTAMP WITH TIME ZONE, -- 7 Günlük ek süre (Fatura ödenmezse dükkanı hemen kapatmamak için) amount DECIMAL(10,2) DEFAULT 25.00, -- Aylık ücret currency VARCHAR(3) DEFAULT 'USD', created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP, CONSTRAINT check_sub_amount_positive CHECK (amount >= 0));-- 3. OTOPİLOT ROBOTU (SAAT GÜNCELLEYİCİ) CREATE TRIGGER set_seller_sub_updated_at BEFORE UPDATE ON seller_subscriptions FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();-- 4. ÇELİK YELEK (RLS - FİNANSAL GİZLİLİK) ALTER TABLE seller_subscriptions ENABLE ROW LEVEL SECURITY;-- KURAL: Satıcı SADECE kendi dükkanının abonelik faturasını/durumunu görebilir. -- DİKKAT: INSERT, UPDATE, DELETE yok! Aboneliği sadece Stripe'dan gelen Webhook (Backend) güncelleyebilir. CREATE POLICY "Satıcılar kendi abonelik durumlarını görebilir" ON seller_subscriptions FOR SELECT USING (shop_id IN (SELECT id FROM shops WHERE user_id = current_setting('app.current_user_id', true)::uuid));-- 1. Sütunun adındaki "Stripe" kelimesini atıp evrensel (Provider) ismine çeviriyoruz: ALTER TABLE seller_subscriptions RENAME COLUMN stripe_subscription_id TO provider_subscription_id;-- 2. Bu aboneliğin hangi bankadan (Iyzico mu, Stripe mı) yapıldığını bilmek için sağlayıcı sütununu ekliyoruz: ALTER TABLE seller_subscriptions ADD COLUMN payment_provider VARCHAR(50) DEFAULT 'stripe'; -- Satıcının kaydolduğu pos firması (Örn: 'iyzico')-- ========================================================================= -- CRAFTORA VERİTABANI KURULUMU - BÖLÜM 9 (AKILLI SEPET / CART ITEMS) -- =========================================================================-- 1. SEPET ÜRÜNLERİ TABLOSU CREATE TABLE cart_items ( id UUID PRIMARY KEY DEFAULT uuid_generate_v4(), user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE, product_id UUID NOT NULL REFERENCES products(id) ON DELETE CASCADE, quantity INT DEFAULT 1, created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,-- GÜVENLİK VE MANTIK KALKANLARI CONSTRAINT check_quantity_positive CHECK (quantity > 0), -- Miktar eksi veya sıfır olamaz! UNIQUE(user_id, product_id) -- Aynı ürün sepete ikinci kez ayrı satır olarak eklenmesin);-- 2. İNDEKS (PERFORMANS) CREATE INDEX idx_cart_items_user ON cart_items(user_id); -- Sepet sayfasını salisede açmak için-- 3. OTOPİLOT ROBOTLARI-- Robot A: Saat Güncelleyici (Terk edilmiş sepetleri bulmak için çok kritik) CREATE TRIGGER set_cart_updated_at BEFORE UPDATE ON cart_items FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();-- Robot B: ZEKİ MÜŞTERİ KORUMASI (Zaten sahip olunan ürünü sepete aldırtmaz!) CREATE OR REPLACE FUNCTION prevent_duplicate_purchase() RETURNS TRIGGER AS $$ BEGIN -- Kullanıcının kütüphanesinde bu ürün var mı diye kontrol et IF EXISTS (SELECT 1 FROM user_library WHERE user_id = NEW.user_id AND product_id = NEW.product_id) THEN RAISE EXCEPTION 'Bu ürün zaten kütüphanenizde mevcut!'; END IF; RETURN NEW; END; $$ LANGUAGE plpgsql;CREATE TRIGGER trg_check_already_owned BEFORE INSERT OR UPDATE ON cart_items FOR EACH ROW EXECUTE FUNCTION prevent_duplicate_purchase();-- 4. ÇELİK YELEKLER (RLS - GÜVENLİK) ALTER TABLE cart_items ENABLE ROW LEVEL SECURITY;-- KURAL 1: Kullanıcı sadece KENDİ sepetindeki ürünleri görebilir CREATE POLICY "Kullanıcılar kendi sepetini görebilir" ON cart_items FOR SELECT USING (user_id = current_setting('app.current_user_id', true)::uuid);-- KURAL 2: Kullanıcı sadece KENDİ sepetine ürün ekleyebilir/çıkarabilir/miktar güncelleyebilir CREATE POLICY "Kullanıcılar kendi sepetini yönetebilir" ON cart_items FOR ALL USING (user_id = current_setting('app.current_user_id', true)::uuid);CREATE TABLE coupons ( id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),-- Hangi ürüne ait? product_id UUID NOT NULL REFERENCES products(id) ON DELETE CASCADE, -- Kuponu kim oluşturdu? (Güvenlik için) shop_id UUID NOT NULL REFERENCES shops(id) ON DELETE CASCADE, -- Kupon Kodu code VARCHAR(50) NOT NULL, -- İndirim Tipi discount_type VARCHAR(10) NOT NULL, -- 'percent' veya 'fixed' discount_value DECIMAL(10,2) NOT NULL, -- %20 için 20.00, 10$ için 10.00 -- Kullanım Limiti max_uses INT DEFAULT NULL, -- NULL = sınırsız used_count INT DEFAULT 0, -- Kaç kişi kullandı? -- Geçerlilik Tarihi starts_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP, expires_at TIMESTAMP WITH TIME ZONE DEFAULT NULL, -- NULL = süresiz is_active BOOLEAN DEFAULT TRUE, created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP, -- Güvenlik Kalkanlari CONSTRAINT check_discount_type CHECK (discount_type IN ('percent', 'fixed')), CONSTRAINT check_discount_value CHECK (discount_value > 0), CONSTRAINT check_percent_max CHECK (discount_type != 'percent' OR discount_value <= 100), CONSTRAINT unique_coupon_per_product UNIQUE (product_id, code) -- Aynı üründe aynı kod olamaz);-- Kişi başı 1 kez kullanım takibi CREATE TABLE coupon_uses ( id UUID PRIMARY KEY DEFAULT uuid_generate_v4(), coupon_id UUID NOT NULL REFERENCES coupons(id) ON DELETE CASCADE, user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE, order_id UUID NOT NULL REFERENCES orders(id) ON DELETE CASCADE, used_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,UNIQUE(coupon_id, user_id) -- Kişi başı 1 kez!);-- İndeksler CREATE INDEX idx_coupons_product ON coupons(product_id); CREATE INDEX idx_coupons_code ON coupons(code);-- Otopilot: Kullanıldıkça sayacı artır CREATE OR REPLACE FUNCTION increment_coupon_usage() RETURNS TRIGGER AS $$ BEGIN UPDATE coupons SET used_count = used_count + 1 WHERE id = NEW.coupon_id; RETURN NEW; END; $$ LANGUAGE plpgsql;CREATE TRIGGER trg_increment_coupon_usage AFTER INSERT ON coupon_uses FOR EACH ROW EXECUTE FUNCTION increment_coupon_usage();-- RLS ALTER TABLE coupons ENABLE ROW LEVEL SECURITY; ALTER TABLE coupon_uses ENABLE ROW LEVEL SECURITY;-- Kuponları herkes görebilir (Sepette kod girerken) CREATE POLICY "Aktif kuponlar herkese açık" ON coupons FOR SELECT USING (is_active = TRUE);-- Sadece mağaza sahibi kendi ürününe kupon ekleyebilir CREATE POLICY "Satıcı kendi kuponlarını yönetebilir" ON coupons FOR ALL USING (shop_id IN ( SELECT id FROM shops WHERE user_id = current_setting('app.current_user_id', true)::uuid ));-- Kupon kullanım geçmişi sadece alıcıya özel CREATE POLICY "Kullanıcı kendi kupon geçmişini görebilir" ON coupon_uses FOR SELECT USING (user_id = current_setting('app.current_user_id', true)::uuid);CREATE TABLE notifications ( id UUID PRIMARY KEY DEFAULT uuid_generate_v4(), user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,-- Bildirim Tipi type VARCHAR(50) NOT NULL, -- 'sale_completed', 'new_follower', 'new_review', -- 'new_question', 'media_liked', 'media_commented', -- 'contest_result', 'order_completed' -- Bildirim İçeriği title VARCHAR(255) NOT NULL, -- "Yeni Satış! 🎉" body TEXT NOT NULL, -- "Ali, C++ Kursunu satın aldı" -- Hangi içeriğe ait? (Tıklayınca nereye gitsin?) reference_type VARCHAR(50), -- 'order', 'media', 'product', 'shop', 'contest' reference_id UUID, -- İlgili kaydın ID'si -- Durum is_read BOOLEAN DEFAULT FALSE, read_at TIMESTAMP WITH TIME ZONE, created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP, -- Güvenlik CONSTRAINT check_notification_type CHECK (type IN ( 'sale_completed', 'new_follower', 'new_review', 'new_question', 'media_liked', 'media_commented', 'contest_result', 'order_completed' )));-- İndeksler CREATE INDEX idx_notifications_user ON notifications(user_id, created_at DESC); CREATE INDEX idx_notifications_unread ON notifications(user_id, is_read) WHERE is_read = FALSE; -- Sadece okunmamışları hızlı bulmak içinCREATE TABLE notification_deliveries ( id UUID PRIMARY KEY DEFAULT uuid_generate_v4(), notification_id UUID NOT NULL REFERENCES notifications(id) ON DELETE CASCADE,-- Kanal channel VARCHAR(20) NOT NULL, -- 'push', 'email', 'in_app' -- Durum status VARCHAR(20) DEFAULT 'pending', -- 'pending', 'sent', 'failed' -- Gönderim Detayı provider VARCHAR(50), -- 'firebase', 'sendgrid', 'resend' provider_message_id VARCHAR(255), -- Sağlayıcının verdiği mesaj ID'si error_message TEXT, -- Başarısız olursa neden? sent_at TIMESTAMP WITH TIME ZONE, created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP, CONSTRAINT check_channel CHECK (channel IN ('push', 'email', 'in_app')), CONSTRAINT check_status CHECK (status IN ('pending', 'sent', 'failed')));CREATE INDEX idx_deliveries_notification ON notification_deliveries(notification_id); CREATE INDEX idx_deliveries_pending ON notification_deliveries(status) WHERE status = 'pending'; -- Bekleyen gönderimleri hızlı bulmak içinCREATE TABLE user_device_tokens ( id UUID PRIMARY KEY DEFAULT uuid_generate_v4(), user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,token TEXT NOT NULL, -- Firebase FCM token device_type VARCHAR(20) NOT NULL, -- 'ios', 'android', 'web' device_id VARCHAR(255), -- Cihaz ID'si is_active BOOLEAN DEFAULT TRUE, last_used_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP, created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP, UNIQUE(user_id, device_id), -- Aynı cihaz 2 kez kayıt olmasın CONSTRAINT check_device_type CHECK (device_type IN ('ios', 'android', 'web')));CREATE INDEX idx_device_tokens_user ON user_device_tokens(user_id) WHERE is_active = TRUE;ALTER TABLE notifications ENABLE ROW LEVEL SECURITY; ALTER TABLE notification_deliveries ENABLE ROW LEVEL SECURITY; ALTER TABLE user_device_tokens ENABLE ROW LEVEL SECURITY;-- Kullanıcı sadece kendi bildirimlerini görebilir CREATE POLICY "Kullanıcı kendi bildirimlerini görebilir" ON notifications FOR SELECT USING (user_id = current_setting('app.current_user_id', true)::uuid);-- Kullanıcı kendi bildirimini okundu yapabilir CREATE POLICY "Kullanıcı bildirimini okundu yapabilir" ON notifications FOR UPDATE USING (user_id = current_setting('app.current_user_id', true)::uuid);-- Gönderim geçmişi sadece sistem görür (Policy yok = sadece backend erişir)-- Kullanıcı kendi cihaz tokenlarını yönetebilir CREATE POLICY "Kullanıcı kendi tokenlarını yönetebilir" ON user_device_tokens FOR ALL USING (user_id = current_setting('app.current_user_id', true)::uuid);DOCKER CONTAINER DURUMU Container Port Durum postgres_server 5432 ■ Healthy craftora_minio 9000/9001 ■ Healthy craftora_redis 6379 ■ Healthy craftora_rabbitmq 5672/15672 ■ Healthy craftora_elasticsearch 9200 ■ Healthy craftora_nginx 80/443 ■ Kurulu craftora_api 8080 ■ Henüz yokA■AMA 1 — ALTYAPI'n■n sonuna geldik. dotnet build ba■ar■yla tamamland■. S■radaki ad■m: UserRole ve di■er ENUM'lar■ entity'lere ba■lamak, ard■ndan ServiceExtensions'a AppDbContext'i ekleyip A■AMA 2 AUTH'a geçmek. ■ TAMAMLANAN ADIMLAR ■ Docker Compose kurulumu (PostgreSQL, MinIO, Redis, RabbitMQ, Elasticsearch, Nginx) ■ .NET 9 projesi olu■turuldu ve klasör yap■s■ kuruldu ■ appsettings.json, appsettings.Development.json, appsettings.Production.json yaz■ld■ ■ .gitignore hassas dosyalar için güncellendi ■ Extensions/ServiceExtensions.cs — tüm servis kay■tlar■ (JWT, Redis, RabbitMQ, MinIO, CORS, Rate Limiting) ■ Extensions/MiddlewareExtensions.cs — middleware pipeline (Security headers, CORS, Auth, Swagger vb.) ■ Program.cs — Serilog yap■land■rmas■, Kestrel ayarlar■, uygulama ba■lang■c■ ■ Middleware/CraftoraExceptions.cs — 9 özel exception s■n■f■ (NotFoundException, UnauthorizedException vb.) ■ Middleware/ExceptionMiddleware.cs — Global hata yakalay■c■ (Dev/Prod ayr■m■, Serilog entegrasyonu) ■ Data/AppDbContext.cs — Scaffold ile DB'den otomatik üretildi (28 tablo, tüm ili■kiler) ■ Models/Entities/ — 31 entity s■n■f■ scaffold ile üretildi ■ Models/Enums/ — UserRole, ProductType, MediaStatus, OrderStatus, PaymentStatus, SubStatus ■ dotnet build — Ba■ar■l■! ■■ ■UAN YAPILIYOR ■ ENUM'lar■ entity'lere ba■lama (UserRole → User.cs, ProductType → Product.cs vb.) ■ AppDbContext'e ENUM mapping'lerini ekleme ■ ServiceExtensions'a AppDbContext kayd■n■ aktif etme ■ RLS Middleware (her request'te SET app.current_user_id)Craftora API projemizde (.NET 9) AŞAMA 1 altyapısının son adımındayız. PostgreSQL veritabanında oluşturduğumuz özel ENUM tiplerini C# tarafına bağlamamız gerekiyor. Scaffold komutu bunları string olarak çekti, şimdi onları gerçek C# enum'larına çevireceğiz.Lütfen bana şu 4 adımın kodlarını eksiksiz olarak ver:Models/Enums klasöründe oluşturulacak şu 6 Enum sınıfının kodları:UserRole (user, seller, admin)ProductType (digital_file, course)MediaStatus (processing, ready, failed)OrderStatus (pending, completed, failed, refunded)PaymentStatusType (processing, succeeded, failed, refunded)SubStatus (active, past_due, canceled, unpaid)Scaffold edilmiş Entity'lerdeki değişiklikler (Sadece değişen satırları göster):User.cs (string Role -> UserRole Role)Product.cs (string Type -> ProductType Type)CourseLesson.cs (string Status -> MediaStatus Status)Order.cs (string Status -> OrderStatus Status)Payment.cs (string Status -> PaymentStatusType Status)SellerSubscription.cs (string Status -> SubStatus Status)Data/AppDbContext.cs dosyası içinde OnModelCreating metodunda PostgreSQL Enum eşleştirmeleri (HasPostgresEnum).Extensions/ServiceExtensions.cs dosyası içinde Npgsql veritabanı bağlantısı kurulurken NpgsqlDataSourceBuilder ile bu Enum'ların global olarak sisteme kaydedilmesi (MapEnum).Lütfen sadece eklenecek/değişecek kodları ve dosya yollarını ver, gereksiz açıklamalardan kaçın. Clean code prensiplerine sadık kal.
-No tasks in progress
-
-
- CRAFTORA BACKEND
-Geli■tirme Plan■ ve ■lerleme Raporu
-TikTok + Shopify + Udemy Benzeri Sosyal Ticaret Platformu
-■ TEKNOLOJ■ STACK
-Teknoloji Görev Durum
-.NET 9 (C#) Ana Backend API ■ Kurulu
-PostgreSQL 16 Ana Veritaban■ (28 tablo) ■ Kurulu
-Redis 7 Cache + Token Blacklist ■ Kurulu
-RabbitMQ 3 Mesaj Kuyru■u ■ Kurulu
-MinIO Dosya Depolama (S3 uyumlu) ■ Kurulu
-Elasticsearch 8.13 Arama Motoru ■ Kurulu
-Nginx Reverse Proxy ■ Kurulu
-Serilog Structured Logging ■ Kurulu
-EF Core 9 ORM (Database First) ■ Kurulu
-MassTransit RabbitMQ Entegrasyonu ■ Kurulu
-JWT Bearer Kimlik Do■rulama ■ Kurulu
-FluentValidation Input Validasyonu ■ Kurulu
-■ PROJE HAKKINDA
-Craftora, kullan■c■lar■n video izlerken ürün sat■n alabildi■i sosyal ticaret platformudur. TikTok'un video
-ak■■■, Shopify'■n ma■aza altyap■s■ ve Udemy'nin kurs sistemi tek çat■ alt■nda birle■tirilmi■tir.
-Sat■c■lar video yükleyerek ürünlerini tan■t■r, izleyiciler an■nda sat■n alabilir.
-■■ VER■TABANI ÖZET■ (28 Tablo)
-Bölüm Tablolar
-Kullan■c■ Sistemi users, user_sessions, login_attempts
-Ma■aza shops, subscriptions, shop_visits
-Ürünler products, course_sections, course_lessons, reviews, product_qa
-Medya/Reels media, media_likes, media_saves, media_comments, media_watch_history
-Oyunla■t■rma user_points, point_logs, contests, contest_results
-Sipari■/Ödeme orders, payments
-Kütüphane user_library, lesson_progress
-SaaS Abonelik seller_subscriptions
-Sepet cart_items
-Kupon coupons, coupon_uses
-Bildirim notifications, notification_deliveries, user_device_tokens
-
-
-
--- 1. EKLENTİLER (EXTENSIONS)
-CREATE EXTENSION IF NOT EXISTS "uuid-ossp"; -- UUID (rastgele benzersiz ID) oluşturmak için gerekli eklenti
-CREATE EXTENSION IF NOT EXISTS "citext"; -- Büyük/küçük harf duyarsız, süper hızlı metin (email) araması için eklenti
-
--- 2. ÖZEL VERİ TİPLERİ (ENUMS)
-CREATE TYPE user_role AS ENUM ('user', 'seller', 'admin'); -- Kullanıcı yetki seviyelerini belirlediğimiz sabit liste
-
--- 3. KULLANICILAR TABLOSU (USERS)
-CREATE TABLE users (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(), -- Her kullanıcıya özel, tahmin edilemez şifreli kimlik numarası
-    email CITEXT UNIQUE NOT NULL, -- Kullanıcının e-posta adresi (CITEXT: AHMET@gmail.com ile ahmet@gmail.com aynı sayılır)
-    full_name VARCHAR(100), -- Kullanıcının ad ve soyadı bilgisi
-    avatar_url TEXT, -- Profil fotoğrafının tutulduğu bulut (Storage) linki
-    role user_role DEFAULT 'user', -- Sisteme kayıt olan herkes varsayılan olarak 'user' (normal müşteri) başlar
-    auth_provider VARCHAR(50) DEFAULT 'email', -- Sisteme nereden kayıt oldu? (email, google, apple, facebook)
-    provider_id VARCHAR(255) UNIQUE, -- Google/Apple gibi yerlerden gelen özel ID numarası
-    password_hash TEXT, -- Eğer email ile kayıt olduysa, şifresinin kriptolanmış (kırılmaz) hali
-    is_email_verified BOOLEAN DEFAULT FALSE, -- Email adresine giden kodu (OTP) doğru girdi mi?
-    locked_until TIMESTAMP WITH TIME ZONE, -- Hacker saldırısı olursa hesabı şu saate kadar dondur (Brute-Force koruması)
-    stripe_customer_id VARCHAR(255), -- Stripe (Ödeme) tarafındaki müşteri cüzdan kodu (Alışveriş için)
-    stripe_account_id VARCHAR(255), -- Satıcı ise paranın yatacağı Stripe IBAN/Hesap kodu
-    preferences JSONB DEFAULT '{}'::jsonb, -- Tema, dil, bildirim gibi mobil uygulama ayarlarının tutulduğu esnek depo
-    is_active BOOLEAN DEFAULT TRUE, -- Hesap silinirse FALSE olur (Soft Delete), veriler gerçekten silinmez
-    last_login_at TIMESTAMP WITH TIME ZONE, -- Sisteme en son ne zaman giriş yaptı?
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP, -- Hesabın oluşturulma (kayıt) tarihi
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP, -- Profilde yapılan en son değişikliğin tarihi
-    
-    -- AKILLI GÜVENLİK KURALI: 
-    -- Eğer Google/Apple ile değil de normal email ile giriyorsa, şifre boş OLAMAZ!
-    CONSTRAINT check_password_if_email CHECK (
-        (auth_provider = 'email' AND password_hash IS NOT NULL) OR 
-        (auth_provider != 'email')
-    )
-);
-
--- 4. KULLANICI OTURUMLARI TABLOSU (USER SESSIONS)
-CREATE TABLE user_sessions (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(), -- Oturuma ait benzersiz ID
-    user_id UUID REFERENCES users(id) ON DELETE CASCADE, -- Bu oturum hangi kullanıcıya ait? (Kullanıcı silinirse oturum da silinir)
-    refresh_token TEXT NOT NULL, -- Kullanıcıyı her seferinde şifre girmekten kurtaran uzun yetki anahtarı
-    device_id VARCHAR(255), -- Kullanıcının girdiği telefonun veya bilgisayarın benzersiz cihaz kodu
-    ip_address INET, -- Güvenlik için kullanıcının girdiği internet IP adresi
-    user_agent TEXT, -- Hangi tarayıcıdan (Chrome/Safari) veya işletim sisteminden (iOS/Android) giriyor?
-    expires_at TIMESTAMP WITH TIME ZONE NOT NULL, -- Bu oturumun (token'ın) son kullanma tarihi (Örn: 30 gün sonra biter)
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP -- Bu oturumun açıldığı anın tarihi
-);
-
--- 5. HATALI GİRİŞ DENEMELERİ TABLOSU (LOGIN ATTEMPTS)
-CREATE TABLE login_attempts (
-    email CITEXT PRIMARY KEY, -- Hangi e-posta adresine saldırı yapılıyor/deneniyor?
-    attempt_count INT DEFAULT 1, -- Kaç kere yanlış şifre girildi?
-    last_attempt_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP -- En son hatalı giriş denemesi ne zaman yapıldı?
-);
-
-
--- BİSMİLLAH: CRAFTORA VERİTABANI KURULUMU - BÖLÜM 2
-
--- ==========================================
--- 1. İNDEKS KAVŞAKLARI (PERFORMANS VE HIZ)
--- Milyonlarca veri içinde aramaları milisaniyelere düşüren arama motorları
--- ==========================================
-
--- Sosyal medya ile giriş yapanları anında bulmak için B-Tree İndeksi
-CREATE INDEX idx_users_provider_id ON users(provider_id);
-
--- Mobil JSON ayarlarında ("Karanlık mod açık mı?") süper hızlı arama yapmak için GIN İndeksi
-CREATE INDEX idx_users_preferences ON users USING GIN (preferences);
-
--- Bir kullanıcının açık olan oturumlarını şıp diye bulmak için
-CREATE INDEX idx_user_sessions_user_id ON user_sessions(user_id);
-
--- Gelen Refresh Token'ın veritabanında olup olmadığını saliselik sürede doğrulamak için
-CREATE INDEX idx_user_sessions_token ON user_sessions(refresh_token);
-
-
--- ==========================================
--- 2. TETİKLEYİCİLER (OTOMASYON - TRIGGERS)
--- Geliştirici hata yapsa bile veritabanının kendi kendini düzeltmesini sağlayan robotlar
--- ==========================================
-
--- Önce bir "Tarih Güncelleyen Robot (Fonksiyon)" üretiyoruz
-CREATE OR REPLACE FUNCTION update_updated_at_column()
-RETURNS TRIGGER AS $$
-BEGIN
-    NEW.updated_at = CURRENT_TIMESTAMP; -- Yeni verinin updated_at sütununu şu anki saat yap
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
--- Şimdi bu robotu 'users' tablosuna bağlıyoruz: "Her UPDATE işleminden hemen ÖNCE bu robotu çalıştır"
-CREATE TRIGGER set_users_updated_at
-BEFORE UPDATE ON users
-FOR EACH ROW
-EXECUTE FUNCTION update_updated_at_column();
-
-
--- ==========================================
--- 3. SATIR BAZLI GÜVENLİK (RLS - ROW LEVEL SECURITY)
--- Hackerları veritabanı kapısında durduran çelik yeleğimiz
--- ==========================================
-
--- Tablolarda RLS kalkanını aktif ediyoruz
-ALTER TABLE users ENABLE ROW LEVEL SECURITY;
-ALTER TABLE user_sessions ENABLE ROW LEVEL SECURITY;
-
--- KURAL 1: Kullanıcı Profillerini Görme (SELECT)
--- Herkes (sisteme giriş yapmamış anonim biri dahil) aktif kullanıcıların profilini görebilir
-CREATE POLICY "Aktif kullanıcıları herkes görebilir" 
-ON users FOR SELECT 
-USING (is_active = TRUE);
-
--- KURAL 2: Profil Güncelleme (UPDATE)
--- (Not: Backend kodumuzda, sisteme giriş yapan kişinin ID'sini 'app.current_user_id' adında bir veritabanı değişkenine atayacağız)
--- Kullanıcı SADECE kendi satırındaki verileri (kendi ID'si eşleşiyorsa) değiştirebilir
-CREATE POLICY "Kullanıcı sadece kendi profilini güncelleyebilir" 
-ON users FOR UPDATE 
-USING (id = current_setting('app.current_user_id', true)::uuid);
-
--- KURAL 3: Oturumları Görme ve Silme (SESSION GİZLİLİĞİ)
--- Oturumlar (Token'lar) aşırı gizlidir. Sadece sahibi kendi token'ını görebilir ve silebilir (Çıkış yapma)
-CREATE POLICY "Kullanıcı sadece kendi oturumlarını görebilir" 
-ON user_sessions FOR SELECT 
-USING (user_id = current_setting('app.current_user_id', true)::uuid);
-
-CREATE POLICY "Kullanıcı sadece kendi oturumlarını silebilir" 
-ON user_sessions FOR DELETE 
-USING (user_id = current_setting('app.current_user_id', true)::uuid);
-
-
-
-SELECT full_name, created_at, updated_at FROM users;
-
-
-
-
-
-
--- CRAFTORA VERİTABANI KURULUMU - BÖLÜM 3 (MAĞAZA EKOSİSTEMİ)
-
--- 1. MAĞAZALAR TABLOSU (SHOPS)
-CREATE TABLE shops (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(), -- Mağaza kimlik numarası
-    user_id UUID UNIQUE NOT NULL REFERENCES users(id) ON DELETE CASCADE, -- Mağaza sahibi (1 kullanıcı = 1 mağaza kuralı UNIQUE ile sağlandı)
-    shop_name VARCHAR(100) NOT NULL, -- Mağazanın görünen adı
-    slug CITEXT UNIQUE NOT NULL, -- URL adresi (Örn: craftora.com/magza-adi). CITEXT sayesinde büyük/küçük harf duyarsız ve hızlıdır.
-    external_url VARCHAR(255), -- Varsa harici web sitesi linki
-    short_description VARCHAR(255), -- Mağaza kartlarında görünecek kısa özet
-    description TEXT, -- Mağaza ana açıklama metni
-    about_content TEXT, -- HTML destekli zengin "Hakkımızda" içeriği
-    social_links JSONB DEFAULT '{}'::jsonb, -- Instagram, TikTok vb. linklerin tutulduğu esnek JSON deposu
-    logo_url TEXT, -- Mağaza logosunun bulut linki
-    banner_url TEXT, -- Mağaza kapak fotoğrafının bulut linki
-    follower_count INT DEFAULT 0, -- PERFORMANS: Her seferinde sayım yapmamak için otomatik güncellenen takipçi sayısı
-    rating DECIMAL(3,2) DEFAULT 0.0, -- PERFORMANS: Mağaza puan ortalaması (Örn: 4.85)
-    is_verified BOOLEAN DEFAULT FALSE, -- CTO DOKUNUŞU: Mavi Tik (Onaylı Mağaza) durumu
-    is_active BOOLEAN DEFAULT TRUE, -- Mağaza donduruldu mu?
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP, -- Kuruluş tarihi
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP -- Son düzenleme tarihi
-);
-
--- 2. ABONELİKLER TABLOSU (SUBSCRIPTIONS)
-CREATE TABLE subscriptions (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    shop_id UUID NOT NULL REFERENCES shops(id) ON DELETE CASCADE, -- Takip edilen mağaza
-    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE, -- Takip eden kullanıcı
-    wants_notifications BOOLEAN DEFAULT TRUE, -- CTO DOKUNUŞU: Zil butonu (Yeni ürün bildirimi gelsin mi?)
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    
-    -- Bir kullanıcı bir mağazayı sadece bir kez takip edebilir:
-    CONSTRAINT unique_subscription UNIQUE (shop_id, user_id)
-);
-
--- 3. MAĞAZA ZİYARETLERİ TABLOSU (SHOP_VISITS)
-CREATE TABLE shop_visits (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    shop_id UUID NOT NULL REFERENCES shops(id) ON DELETE CASCADE,
-    user_id UUID REFERENCES users(id) ON DELETE SET NULL, -- Üye olan ziyaretçi (Nullable: Üye olmayanlar için boş kalabilir)
-    ip_address INET, -- CTO DOKUNUŞU: Üye olmayan anonim ziyaretçileri IP üzerinden takip etmek için
-    visited_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP -- Ziyaret saati
-);
-
-
--- 4. İNDEKS KAVŞAKLARI (HIZ)
-CREATE INDEX idx_shops_slug ON shops(slug); -- Mağaza URL aramalarını ışık hızına çıkarır
-CREATE INDEX idx_shop_visits_composite ON shop_visits(shop_id, visited_at); -- Satıcı paneli grafiklerini hızlandırır
--- Kullanıcıların arama çubuğunda mağaza adıyla arama yapmasını hızlandırmak için:
-CREATE INDEX idx_shops_name ON shops(shop_name);
-
--- 5. OTOMATİK ABONE SAYACI (TRIGGER FUNCTION)
-CREATE OR REPLACE FUNCTION sync_follower_count()
-RETURNS TRIGGER AS $$
+$$;
+
+CREATE FUNCTION public.sync_follower_count() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
 BEGIN
     IF (TG_OP = 'INSERT') THEN
         UPDATE shops SET follower_count = follower_count + 1 WHERE id = NEW.shop_id;
     ELSIF (TG_OP = 'DELETE') THEN
-        UPDATE shops SET follower_count = follower_count - 1 WHERE id = OLD.shop_id;
+        UPDATE shops SET follower_count = GREATEST(follower_count - 1, 0) WHERE id = OLD.shop_id;
     END IF;
     RETURN NULL;
 END;
-$$ LANGUAGE plpgsql;
+$$;
 
--- Takip etme/çıkma anında sayacı çalıştır
-CREATE TRIGGER trg_sync_followers
-AFTER INSERT OR DELETE ON subscriptions
-FOR EACH ROW EXECUTE FUNCTION sync_follower_count();
-
--- Mağaza updated_at tetikleyicisi
-CREATE TRIGGER set_shops_updated_at
-BEFORE UPDATE ON shops
-FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
-
-
-
--- 6. GÜVENLİK KALKANLARI (RLS)
-ALTER TABLE shops ENABLE ROW LEVEL SECURITY;
-ALTER TABLE subscriptions ENABLE ROW LEVEL SECURITY;
-ALTER TABLE shop_visits ENABLE ROW LEVEL SECURITY;
-
--- Mağazaları herkes görebilir ama sadece sahibi düzenleyebilir
-CREATE POLICY "Aktif mağazalar herkese açıktır" ON shops FOR SELECT USING (is_active = TRUE);
-CREATE POLICY "Mağaza sahibi dükkanını yönetebilir" ON shops FOR UPDATE 
-USING (user_id = current_setting('app.current_user_id', true)::uuid);
-
--- Abonelik ve Ziyaret gizliliği: Sadece mağaza sahibi görebilir
-CREATE POLICY "Satıcı kendi abonelerini görebilir" ON subscriptions FOR SELECT 
-USING (shop_id IN (SELECT id FROM shops WHERE user_id = current_setting('app.current_user_id', true)::uuid));
-
-CREATE POLICY "Satıcı kendi trafiğini görebilir" ON shop_visits FOR SELECT 
-USING (shop_id IN (SELECT id FROM shops WHERE user_id = current_setting('app.current_user_id', true)::uuid));
-
-
-
-
--- SADECE YARIŞMALAR TABLOSUNU SİSTEME BAĞLAMA YAMASI (İzole adayı kurtarıyoruz)
-ALTER TABLE contests
-ADD COLUMN created_by UUID REFERENCES users(id) ON DELETE SET NULL;
-
-
-
-
--- CRAFTORA VERİTABANI KURULUMU - BÖLÜM 4 (ÜRÜNLER VE KURSLAR)
-
--- 1. YENİ VERİ TİPLERİ (ENUMS)
-CREATE TYPE product_type AS ENUM ('digital_file', 'course');
-CREATE TYPE media_status AS ENUM ('processing', 'ready', 'failed'); -- Videolar işlenirken bozuk görünmesin diye
-
--- 2. ANA ÜRÜNLER TABLOSU (PRODUCTS)
-CREATE TABLE products (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    shop_id UUID NOT NULL REFERENCES shops(id) ON DELETE CASCADE,
-    type product_type DEFAULT 'digital_file',
-    title VARCHAR(255) NOT NULL,
-    description TEXT,
-    metadata JSONB DEFAULT '{}'::jsonb, -- CTO DOKUNUŞU: E-kitap sayfası, 3D model formatı gibi sınırsız özellikleri buraya gömeceğiz
-    price DECIMAL(10,2) NOT NULL,
-    currency VARCHAR(3) DEFAULT 'USD',
-    cover_image_url TEXT,
-    file_url TEXT, -- Dijital dosya ise indirme linki (Kurs ise NULL kalır)
-    rating_average DECIMAL(3,2) DEFAULT 0.0, -- OTOPİLOT: Müşteri ana sayfada gezerken hesap yapmakla uğraşmayacak
-    review_count INT DEFAULT 0, -- OTOPİLOT: Toplam yorum sayısı
-    sales_count INT DEFAULT 0, -- Çok satanları bulmak için
-    is_active BOOLEAN DEFAULT TRUE, -- Satıcı ürünü silse bile kütüphaneler bozulmasın diye Soft Delete yapıyoruz
-    is_featured BOOLEAN DEFAULT FALSE,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    
-    CONSTRAINT check_price_positive CHECK (price >= 0) -- Fiyat asla eksi olamaz kalkanı!
-);
-
-
--- 3. KURS BÖLÜMLERİ (Örn: C++ Döngüler)
-CREATE TABLE course_sections (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    product_id UUID NOT NULL REFERENCES products(id) ON DELETE CASCADE,
-    title VARCHAR(255) NOT NULL,
-    sort_order INT NOT NULL, -- Uygulamada hangi sırada görünecek? (1, 2, 3)
-    
-    UNIQUE(product_id, sort_order) -- Aynı kurs içinde aynı sıra numarası yanlışlıkla girilmesin
-);
-
--- 4. KURS DERSLERİ / VİDEOLARI (Örn: For Döngüsü)
-CREATE TABLE course_lessons (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    section_id UUID NOT NULL REFERENCES course_sections(id) ON DELETE CASCADE,
-    title VARCHAR(255) NOT NULL,
-    video_url TEXT,
-    document_url TEXT, -- Varsa ders notu (PDF)
-    duration_seconds INT DEFAULT 0,
-    is_free_preview BOOLEAN DEFAULT FALSE, -- Ücretsiz tanıtım videosu mu?
-    sort_order INT NOT NULL,
-    status media_status DEFAULT 'ready', -- Video işlenme durumu
-    
-    UNIQUE(section_id, sort_order)
-);
-
-
--- 5. DEĞERLENDİRMELER (Yıldız ve Yorum - Kesin Kurallı)
-CREATE TABLE reviews (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    product_id UUID NOT NULL REFERENCES products(id) ON DELETE CASCADE,
-    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    rating INT NOT NULL,
-    comment TEXT,
-    seller_reply TEXT, -- Satıcının tek bir yanıt hakkı var (Uzatılamaz)
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    
-    CONSTRAINT check_rating_range CHECK (rating >= 1 AND rating <= 5), -- Yıldız 1-5 arası olmak ZORUNDA
-    CONSTRAINT unique_user_review UNIQUE (product_id, user_id) -- 1 Kullanıcı ürüne SADECE 1 KERE puan verebilir
-);
-
--- 6. SORU VE CEVAP (Kullanıcı ve Satıcı Karşılıklı Sohbeti)
-CREATE TABLE product_qa (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    product_id UUID NOT NULL REFERENCES products(id) ON DELETE CASCADE,
-    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    parent_id UUID REFERENCES product_qa(id) ON DELETE CASCADE, -- Eğer yanıtsa hangi mesaja yanıt?
-    message TEXT NOT NULL,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-);
-
-
-
-
--- =========================================================================
--- CRAFTORA VERİTABANI KURULUMU - BÖLÜM 5 (MEDYA, REELS VE OYUNLAŞTIRMA)
--- =========================================================================
-
--- -------------------------------------------------------------------------
--- 1. MEDYA VE ETKİLEŞİM TABLOLARI (SOSYAL MEDYA MOTORU)
--- -------------------------------------------------------------------------
-
--- REELS VİDEOLARI
-CREATE TABLE media (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    shop_id UUID NOT NULL REFERENCES shops(id) ON DELETE CASCADE,
-    product_id UUID REFERENCES products(id) ON DELETE SET NULL, -- Videoda satılan ürün
-    video_url TEXT NOT NULL,
-    thumbnail_url TEXT,
-    view_count INT DEFAULT 0, 
-    like_count INT DEFAULT 0, 
-    save_count INT DEFAULT 0, 
-    comment_count INT DEFAULT 0, -- CTO DOKUNUŞU: Yorum sayacı
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    is_active BOOLEAN DEFAULT TRUE
-);
-
--- REELS BEĞENİLERİ
-CREATE TABLE media_likes (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    media_id UUID NOT NULL REFERENCES media(id) ON DELETE CASCADE,
-    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(media_id, user_id) 
-);
-
--- REELS KAYDETMELERİ
-CREATE TABLE media_saves (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    media_id UUID NOT NULL REFERENCES media(id) ON DELETE CASCADE,
-    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(media_id, user_id)
-);
-
--- REELS YORUMLARI (CTO DOKUNUŞU)
-CREATE TABLE media_comments (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    media_id UUID NOT NULL REFERENCES media(id) ON DELETE CASCADE,
-    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    comment_text TEXT NOT NULL,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-);
-
--- İZLEME GEÇMİŞİ (Günlük Puan Limiti ve Algoritma İçin)
-CREATE TABLE media_watch_history (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    media_id UUID NOT NULL REFERENCES media(id) ON DELETE CASCADE,
-    watched_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    is_point_earned BOOLEAN DEFAULT FALSE,
-    UNIQUE(user_id, media_id) -- Keşfet'te aynı video bir daha çıkmasın diye
-);
-
--- -------------------------------------------------------------------------
--- 2. OYUNLAŞTIRMA VE LİDERLİK TABLOLARI (GAMIFICATION)
--- -------------------------------------------------------------------------
-
--- KULLANICI PUAN CÜZDANI
-CREATE TABLE user_points (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    user_id UUID UNIQUE NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    total_points DECIMAL(12,2) DEFAULT 0.0, 
-    current_rank INT DEFAULT 0, 
-    current_streak INT DEFAULT 0, -- CTO DOKUNUŞU: Kaç gündür üst üste giriyor (Ateş serisi)
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-);
-
--- PUAN KAYIT DEFTERİ (Geçmiş)
-CREATE TABLE point_logs (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    action_type VARCHAR(50) NOT NULL, 
-    points_earned DECIMAL(10,2) NOT NULL,
-    reference_id UUID, 
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-);
-
--- YARIŞMALAR VE SONUÇLAR (Senin yakaladığın efsane köprü!)
-CREATE TABLE contests (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    title VARCHAR(255) NOT NULL,
-    start_date TIMESTAMP WITH TIME ZONE NOT NULL,
-    end_date TIMESTAMP WITH TIME ZONE NOT NULL,
-    prize_pool TEXT,
-    is_active BOOLEAN DEFAULT TRUE
-);
-
-CREATE TABLE contest_results (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    contest_id UUID NOT NULL REFERENCES contests(id) ON DELETE CASCADE,
-    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    final_rank INT,
-    total_score DECIMAL(12,2),
-    reward_claimed BOOLEAN DEFAULT FALSE,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(contest_id, user_id)
-);
-
--- -------------------------------------------------------------------------
--- 3. OTOPİLOT ROBOTLARI VE İNDEKS KAVŞAKLARI
--- -------------------------------------------------------------------------
-
-CREATE INDEX idx_media_shop ON media(shop_id);
-CREATE INDEX idx_media_product ON media(product_id);
-CREATE INDEX idx_point_logs_user_date ON point_logs(user_id, created_at);
-
--- OTOPİLOT 1: MEDYA SAYAÇLARI (Like, Save ve Yorumları Otomatik Sayar)
-CREATE OR REPLACE FUNCTION sync_media_counters() RETURNS TRIGGER AS $$
+CREATE FUNCTION public.sync_media_counters() RETURNS trigger
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path TO 'public'
+    AS $$
 BEGIN
     IF TG_TABLE_NAME = 'media_likes' THEN
-        IF TG_OP = 'INSERT' THEN UPDATE media SET like_count = like_count + 1 WHERE id = NEW.media_id;
-        ELSIF TG_OP = 'DELETE' THEN UPDATE media SET like_count = like_count - 1 WHERE id = OLD.media_id; END IF;
+        IF TG_OP = 'INSERT' THEN 
+            UPDATE media SET like_count = like_count + 1 WHERE id = NEW.media_id;
+        ELSIF TG_OP = 'DELETE' THEN 
+            UPDATE media SET like_count = GREATEST(like_count - 1, 0) WHERE id = OLD.media_id; 
+        END IF;
     ELSIF TG_TABLE_NAME = 'media_saves' THEN
-        IF TG_OP = 'INSERT' THEN UPDATE media SET save_count = save_count + 1 WHERE id = NEW.media_id;
-        ELSIF TG_OP = 'DELETE' THEN UPDATE media SET save_count = save_count - 1 WHERE id = OLD.media_id; END IF;
+        IF TG_OP = 'INSERT' THEN 
+            UPDATE media SET save_count = save_count + 1 WHERE id = NEW.media_id;
+        ELSIF TG_OP = 'DELETE' THEN 
+            UPDATE media SET save_count = GREATEST(save_count - 1, 0) WHERE id = OLD.media_id; 
+        END IF;
     ELSIF TG_TABLE_NAME = 'media_comments' THEN
-        IF TG_OP = 'INSERT' THEN UPDATE media SET comment_count = comment_count + 1 WHERE id = NEW.media_id;
-        ELSIF TG_OP = 'DELETE' THEN UPDATE media SET comment_count = comment_count - 1 WHERE id = OLD.media_id; END IF;
+        IF TG_OP = 'INSERT' THEN 
+            UPDATE media SET comment_count = comment_count + 1 WHERE id = NEW.media_id;
+        ELSIF TG_OP = 'DELETE' THEN 
+            UPDATE media SET comment_count = GREATEST(comment_count - 1, 0) WHERE id = OLD.media_id; 
+        END IF;
     END IF;
     RETURN NULL;
 END;
-$$ LANGUAGE plpgsql;
+$$;
 
-CREATE TRIGGER trg_media_like_counter AFTER INSERT OR DELETE ON media_likes FOR EACH ROW EXECUTE FUNCTION sync_media_counters();
-CREATE TRIGGER trg_media_save_counter AFTER INSERT OR DELETE ON media_saves FOR EACH ROW EXECUTE FUNCTION sync_media_counters();
-CREATE TRIGGER trg_media_comment_counter AFTER INSERT OR DELETE ON media_comments FOR EACH ROW EXECUTE FUNCTION sync_media_counters();
-
--- OTOPİLOT 2: SATICI PUAN ROBOTU (Like Aldıkça 0.5 Kazanır, UPSERT mantığıyla)
-CREATE OR REPLACE FUNCTION award_seller_points() RETURNS TRIGGER AS $$
-DECLARE v_seller_id UUID;
+CREATE FUNCTION public.sync_order_status_from_payment() RETURNS trigger
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path TO 'public'
+    AS $$
 BEGIN
-    SELECT s.user_id INTO v_seller_id FROM media m JOIN shops s ON m.shop_id = s.id WHERE m.id = NEW.media_id;
-    
-    INSERT INTO point_logs (user_id, action_type, points_earned, reference_id) VALUES (v_seller_id, 'receive_like', 0.5, NEW.media_id);
-    
-    -- ON CONFLICT: Cüzdanı yoksa yarat, varsa üstüne ekle (UPSERT)
-    INSERT INTO user_points (user_id, total_points) VALUES (v_seller_id, 0.5)
-    ON CONFLICT (user_id) DO UPDATE SET total_points = user_points.total_points + 0.5, updated_at = CURRENT_TIMESTAMP;
-    
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-CREATE TRIGGER trg_points_on_like AFTER INSERT ON media_likes FOR EACH ROW EXECUTE FUNCTION award_seller_points();
-
--- OTOPİLOT 3: İZLEYİCİ PUAN ROBOTU (Günlük Limit: 120)
-CREATE OR REPLACE FUNCTION award_viewer_points() RETURNS TRIGGER AS $$
-DECLARE v_daily_points DECIMAL;
-BEGIN
-    SELECT COALESCE(SUM(points_earned), 0) INTO v_daily_points FROM point_logs 
-    WHERE user_id = NEW.user_id AND action_type = 'watch_reels' AND created_at::date = CURRENT_DATE;
-
-    IF v_daily_points < 120 THEN
-        INSERT INTO point_logs (user_id, action_type, points_earned, reference_id) VALUES (NEW.user_id, 'watch_reels', 1.0, NEW.media_id);
-        
-        INSERT INTO user_points (user_id, total_points) VALUES (NEW.user_id, 1.0)
-        ON CONFLICT (user_id) DO UPDATE SET total_points = user_points.total_points + 1.0, updated_at = CURRENT_TIMESTAMP;
-        
-        NEW.is_point_earned := TRUE;
-    END IF;
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-CREATE TRIGGER trg_points_on_watch BEFORE INSERT ON media_watch_history FOR EACH ROW EXECUTE FUNCTION award_viewer_points();
-
-
--- -------------------------------------------------------------------------
--- 4. ÇELİK YELEKLER (RLS POLICIES) - SENİN YAKALADIĞIN EKSİK!
--- -------------------------------------------------------------------------
-ALTER TABLE media ENABLE ROW LEVEL SECURITY;
-ALTER TABLE media_likes ENABLE ROW LEVEL SECURITY;
-ALTER TABLE media_saves ENABLE ROW LEVEL SECURITY;
-ALTER TABLE media_comments ENABLE ROW LEVEL SECURITY;
-ALTER TABLE media_watch_history ENABLE ROW LEVEL SECURITY;
-ALTER TABLE user_points ENABLE ROW LEVEL SECURITY;
-ALTER TABLE point_logs ENABLE ROW LEVEL SECURITY;
-
--- MEDYA (REELS)
-CREATE POLICY "Aktif videolar herkese açık" ON media FOR SELECT USING (is_active = TRUE);
-CREATE POLICY "Satıcı kendi videosunu yönetebilir" ON media FOR ALL 
-USING (shop_id IN (SELECT id FROM shops WHERE user_id = current_setting('app.current_user_id', true)::uuid));
-
--- BEĞENİ VE KAYDETMELER (GİZLİLİK)
-CREATE POLICY "Herkes kendi beğeni/kayıtlarını görebilir" ON media_likes FOR SELECT USING (user_id = current_setting('app.current_user_id', true)::uuid);
-CREATE POLICY "Herkes kendi beğeni/kayıtlarını yapabilir" ON media_likes FOR ALL USING (user_id = current_setting('app.current_user_id', true)::uuid);
-
-CREATE POLICY "Herkes kendi kaydettiklerini görebilir" ON media_saves FOR SELECT USING (user_id = current_setting('app.current_user_id', true)::uuid);
-CREATE POLICY "Herkes kendi kaydettiklerini yönetebilir" ON media_saves FOR ALL USING (user_id = current_setting('app.current_user_id', true)::uuid);
-
--- YORUMLAR
-CREATE POLICY "Yorumları herkes okuyabilir" ON media_comments FOR SELECT USING (true);
-CREATE POLICY "Kullanıcı kendi yorumunu silebilir/düzenleyebilir" ON media_comments FOR ALL USING (user_id = current_setting('app.current_user_id', true)::uuid);
-
--- OYUNLAŞTIRMA VE LİDERLİK TABLOSU GÜVENLİĞİ
-CREATE POLICY "Liderlik tablosunu herkes görebilir" ON user_points FOR SELECT USING (true);
--- DİKKAT: user_points tablosuna UPDATE kuralı yazmıyoruz! Çünkü puanları API değil, sadece veritabanı Trigger'ları (Robotlar) verebilir. Hacker puanını artıramaz!
-
-CREATE POLICY "Kullanıcı sadece kendi puan geçmişini görebilir" ON point_logs FOR SELECT USING (user_id = current_setting('app.current_user_id', true)::uuid);
-
-
-
-
-
--- =========================================================================
--- CRAFTORA VERİTABANI KURULUMU - BÖLÜM 6 (SİPARİŞLER VE FİNANS)
--- =========================================================================
-
--- 1. SİPARİŞ DURUMLARI (ENUM)
-CREATE TYPE order_status AS ENUM ('pending', 'completed', 'failed', 'refunded');
-
--- 2. SİPARİŞLER TABLOSU (ORDERS)
-CREATE TABLE orders (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    buyer_id UUID NOT NULL REFERENCES users(id) ON DELETE RESTRICT, -- MÜHENDİSLİK: Kullanıcı silinse bile fatura silinmez!
-    product_id UUID NOT NULL REFERENCES products(id) ON DELETE RESTRICT, -- Ürün silinse bile sipariş geçmişi kalır!
-    shop_id UUID NOT NULL REFERENCES shops(id) ON DELETE RESTRICT,
-    order_number VARCHAR(50) UNIQUE NOT NULL, -- Örn: CRAFT-2026-XYZ123
-    
-    -- FİNANSAL BÖLÜNME (MUHASEBE)
-    amount DECIMAL(10,2) NOT NULL, -- Müşterinin ödediği toplam para (Örn: 100.00)
-    currency VARCHAR(3) DEFAULT 'USD',
-    platform_fee DECIMAL(10,2) DEFAULT 0.00, -- Craftora'nın cebine giren komisyon (Örn: 10.00)
-    seller_earnings DECIMAL(10,2) DEFAULT 0.00, -- Satıcının Stripe hesabına yatacak para (Örn: 90.00)
-    
-    status order_status DEFAULT 'pending',
-    stripe_payment_id VARCHAR(255), -- İade ve iptaller için banka işlem numarası
-    invoice_pdf_url TEXT, -- Kesilen e-faturanın PDF linki
-    
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    
-    -- GÜVENLİK KALKANLARI
-    CONSTRAINT check_amount_positive CHECK (amount >= 0),
-    CONSTRAINT check_fee_logic CHECK (platform_fee + seller_earnings = amount) -- Toplam tutar, kesintilerle eşleşmek ZORUNDA!
-);
-
--- 3. İNDEKS KAVŞAKLARI (PERFORMANS VE ARAMA HIZI)
-CREATE INDEX idx_orders_buyer ON orders(buyer_id); -- Müşterinin "Siparişlerim" sayfasını hızlandırır
-CREATE INDEX idx_orders_shop ON orders(shop_id); -- Satıcının "Gelen Siparişler" tablosunu hızlandırır
-CREATE INDEX idx_orders_number ON orders(order_number); -- Müşteri hizmetlerinin fatura no ile arama yapması için
-CREATE INDEX idx_orders_status ON orders(status);
-
--- 4. OTOPİLOT ROBOTLARI (OTOMASYON)
-
--- Saat Güncelleyici
-CREATE TRIGGER set_orders_updated_at
-BEFORE UPDATE ON orders
-FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
-
--- EFSANE ROBOT: Sipariş "Completed" (Tamamlandı) olunca çalışır!
-CREATE OR REPLACE FUNCTION process_completed_order()
-RETURNS TRIGGER AS $$
-DECLARE 
-    v_seller_id UUID;
-BEGIN
-    -- Eğer sipariş durumu 'completed' olarak güncellendiyse (veya direkt eklendiyse)
-    IF (NEW.status = 'completed' AND (TG_OP = 'INSERT' OR OLD.status != 'completed')) THEN
-        
-        -- 1. Ürünün satış sayacını (sales_count) 1 artır
-        UPDATE products SET sales_count = sales_count + 1 WHERE id = NEW.product_id;
-        
-        -- 2. Satıcıyı bul
-        SELECT user_id INTO v_seller_id FROM shops WHERE id = NEW.shop_id;
-        
-        -- 3. Satıcıya Oyunlaştırma Modülünden 20 PUAN kazandır! (make_sale aksiyonu)
-        INSERT INTO point_logs (user_id, action_type, points_earned, reference_id) 
-        VALUES (v_seller_id, 'make_sale', 20.0, NEW.id);
-        
-        UPDATE user_points SET total_points = total_points + 20.0, updated_at = CURRENT_TIMESTAMP 
-        WHERE user_id = v_seller_id;
-        
-    END IF;
-    
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
--- Robotu Siparişler Tablosuna Bağlayalım
-CREATE TRIGGER trg_on_order_completed
-AFTER INSERT OR UPDATE ON orders
-FOR EACH ROW EXECUTE FUNCTION process_completed_order();
-
-
--- 5. ÇELİK YELEKLER (RLS - FİNANSAL GİZLİLİK)
-ALTER TABLE orders ENABLE ROW LEVEL SECURITY;
-
--- KURAL 1: Alıcı (Müşteri) SADECE kendi verdiği siparişleri ve faturalarını görebilir
-CREATE POLICY "Alıcılar kendi siparişlerini görebilir" ON orders FOR SELECT 
-USING (buyer_id = current_setting('app.current_user_id', true)::uuid);
-
--- KURAL 2: Satıcı SADECE kendi dükkanına gelen siparişleri görebilir
-CREATE POLICY "Satıcılar kendi mağaza siparişlerini görebilir" ON orders FOR SELECT 
-USING (shop_id IN (SELECT id FROM shops WHERE user_id = current_setting('app.current_user_id', true)::uuid));
-
--- DİKKAT (CTO KURALI): Kullanıcılar (Alıcı veya Satıcı) sipariş silebilir veya durumunu değiştirebilir mi? ASLA!
--- RLS kalkanında INSERT, UPDATE ve DELETE kurallarını YAZMIYORUZ. 
--- Bu sayede sadece Backend Sunucumuz (Stripe'dan ödeme onayı alınca) siparişi güncelleyebilir. Hacker fiyata veya duruma müdahale edemez.
-
-
-
-
--- 1. ÖDEME DURUMLARI (ENUM)
-CREATE TYPE payment_status_type AS ENUM ('processing', 'succeeded', 'failed', 'refunded');
-
--- 2. ANA ÖDEMELER TABLOSU (PAYMENTS)
-CREATE TABLE payments (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    order_id UUID UNIQUE NOT NULL REFERENCES orders(id) ON DELETE RESTRICT, -- UNIQUE: Bir siparişin SADECE BİR ödeme kaydı olur!
-    payment_provider VARCHAR(50) NOT NULL, -- 'stripe', 'iyzico', 'paypal'
-    provider_transaction_id VARCHAR(255) UNIQUE, -- Bankanın verdiği efsanevi, kopyalanamaz dekont/işlem numarası
-    
-    gross_amount DECIMAL(10,2) NOT NULL, -- Karttan çekilen brüt para
-    platform_fee_amount DECIMAL(10,2) NOT NULL, -- Banka+Craftora kesintisi
-    net_earnings DECIMAL(10,2) NOT NULL, -- Satıcının hesabına yatacak net para
-    
-    status payment_status_type DEFAULT 'processing',
-    error_message TEXT, -- Eğer işlem failed olursa bankanın gönderdiği hata kodu ("Bakiye yetersiz" vb.)
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    
-    -- GÜVENLİK KALKANLARI
-    CONSTRAINT check_gross_positive CHECK (gross_amount >= 0),
-    CONSTRAINT check_payment_math CHECK (gross_amount = platform_fee_amount + net_earnings) -- Muhasebe matematiği ASLA şaşamaz!
-);
-
--- 3. İNDEKS KAVŞAKLARI (PERFORMANS)
-CREATE INDEX idx_payments_transaction_id ON payments(provider_transaction_id); -- Bankadan gelen Webhook'ları salisede bulmak için
-CREATE INDEX idx_payments_status ON payments(status);
-
--- 4. OTOPİLOT ROBOTLARI (DOMİNO ETKİSİ)
-
--- Saat Güncelleyici
-CREATE TRIGGER set_payments_updated_at
-BEFORE UPDATE ON payments
-FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
-
--- DOMİNO ROBOTU: Ödeme başarılı olursa, Siparişi de Tamamla!
-CREATE OR REPLACE FUNCTION sync_order_status_from_payment()
-RETURNS TRIGGER AS $$
-BEGIN
-    -- Eğer banka ödemesi 'succeeded' olduysa
+    -- Ã–deme baÅŸarÄ±lÄ± â†’ sipariÅŸi tamamla
     IF (NEW.status = 'succeeded' AND (TG_OP = 'INSERT' OR OLD.status != 'succeeded')) THEN
-        
-        -- Gidip Orders (Sipariş) tablosundaki durumu da 'completed' yapıyoruz.
-        -- DİKKAT: Bu UPDATE işlemi, bir önceki aşamada yazdığımız Puan Dağıtma robotunu tetikleyecek!
         UPDATE orders SET status = 'completed' WHERE id = NEW.order_id;
         
-    -- Eğer banka 'refunded' (İade) dediyse, siparişi de iptal et
+    -- Ã–deme iade â†’ sipariÅŸi iade et
     ELSIF (NEW.status = 'refunded' AND OLD.status != 'refunded') THEN
         UPDATE orders SET status = 'refunded' WHERE id = NEW.order_id;
     END IF;
     
     RETURN NEW;
 END;
-$$ LANGUAGE plpgsql;
+$$;
 
-CREATE TRIGGER trg_sync_order_on_payment
-AFTER INSERT OR UPDATE ON payments
-FOR EACH ROW EXECUTE FUNCTION sync_order_status_from_payment();
-
-
--- 5. ÇELİK YELEKLER (RLS - FİNANSAL GİZLİLİK)
-ALTER TABLE payments ENABLE ROW LEVEL SECURITY;
-
--- KURAL 1: Alıcı sadece KENDİ siparişine bağlı ödeme dekontunu görebilir
-CREATE POLICY "Alıcılar dekontunu görebilir" ON payments FOR SELECT 
-USING (order_id IN (SELECT id FROM orders WHERE buyer_id = current_setting('app.current_user_id', true)::uuid));
-
--- KURAL 2: Satıcı sadece KENDİ dükkanına ait satışların ödeme/komisyon dökümünü görebilir
-CREATE POLICY "Satıcılar kendi gelir dökümlerini görebilir" ON payments FOR SELECT 
-USING (order_id IN (SELECT id FROM orders WHERE shop_id IN (SELECT id FROM shops WHERE user_id = current_setting('app.current_user_id', true)::uuid)));
-
--- DİKKAT: INSERT, UPDATE, DELETE KESİNLİKLE YOK! Ödeme durumunu sadece Stripe webhook'larından gelen veriyi işleyen arka uç (Backend) kodumuz yapabilir.
-
-
-INSERT INTO payments (order_id, payment_provider, provider_transaction_id, gross_amount, platform_fee_amount, net_earnings, status)
-VALUES (
-    (SELECT id FROM orders WHERE order_number = 'PENDING-ORD-002'),
-    'stripe',
-    'ch_basarili_islem_123',
-    100.00,
-    10.00,
-    90.00,
-    'succeeded' -- İŞTE BU KELİME DOMİNOYI BAŞLATACAK!
-);
-
-
-SELECT order_number, status FROM orders WHERE order_number = 'PENDING-ORD-002';
-
--- SONUÇ 2: C++ Kursunun satış sayısı tekrar artmış mı?
-SELECT title, sales_count FROM products WHERE title = 'Sıfırdan İleri Seviye C++ Eğitimi';
-
--- SONUÇ 3: Ahmet'in cüzdanına ekstra 20 puan daha (Toplam 40.50) gelmiş mi?
-SELECT total_points FROM user_points WHERE user_id = (SELECT id FROM users WHERE email = 'ahmet.yilmaz@gmail.com');
-
-
-
-
--- =========================================================================
--- CRAFTORA VERİTABANI KURULUMU - BÖLÜM 7 (KÜTÜPHANE VE EĞİTİM)
--- =========================================================================
-
--- -------------------------------------------------------------------------
--- 1. TABLOLAR (MİMARİ)
--- -------------------------------------------------------------------------
-
--- KULLANICI KÜTÜPHANESİ (SATIN ALINANLAR)
-CREATE TABLE user_library (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    product_id UUID NOT NULL REFERENCES products(id) ON DELETE CASCADE,
-    purchased_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    last_accessed_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP, -- CTO DOKUNUŞU: Kaldığın yerden devam et!
-    
-    UNIQUE(user_id, product_id) -- Bir kullanıcı aynı ürüne iki kere sahip olamaz
-);
-
--- DERS İLERLEMESİ (VİDEO İZLEME SÜRELERİ)
-CREATE TABLE lesson_progress (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    lesson_id UUID NOT NULL REFERENCES course_lessons(id) ON DELETE CASCADE,
-    is_completed BOOLEAN DEFAULT FALSE,
-    watched_seconds INT DEFAULT 0,
-    completed_at TIMESTAMP WITH TIME ZONE, -- Ne zaman bitirdi?
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    
-    UNIQUE(user_id, lesson_id) -- Bir kullanıcı bir ders için sadece bir kayıt tutabilir
-);
-
--- -------------------------------------------------------------------------
--- 2. İNDEKS KAVŞAKLARI (PERFORMANS)
--- -------------------------------------------------------------------------
-
-CREATE INDEX idx_user_library_accessed ON user_library(user_id, last_accessed_at DESC); -- "Devam Et" rafını saniyede yükler
-CREATE INDEX idx_lesson_progress_user ON lesson_progress(user_id, lesson_id);
-
--- -------------------------------------------------------------------------
--- 3. OTOPİLOT ROBOTLARI (OTOMATİK TESLİMAT VE PUAN)
--- -------------------------------------------------------------------------
-
--- ROBOT 1: Saat Güncelleyici
-CREATE TRIGGER set_progress_updated_at
-BEFORE UPDATE ON lesson_progress
-FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
-
--- EFSANE ROBOT 2: OTOMATİK DİJİTAL TESLİMAT (Sipariş Onaylanınca Çalışır)
-CREATE OR REPLACE FUNCTION deliver_product_to_library()
-RETURNS TRIGGER AS $$
+CREATE FUNCTION public.update_updated_at_column() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
 BEGIN
-    -- Sipariş 'completed' statüsüne geçtiyse:
-    IF (NEW.status = 'completed' AND (TG_OP = 'INSERT' OR OLD.status != 'completed')) THEN
-        -- Ürünü alıcının kütüphanesine ekle (Eğer zaten varsa hata verme, sessizce geç: ON CONFLICT DO NOTHING)
-        INSERT INTO user_library (user_id, product_id)
-        VALUES (NEW.buyer_id, NEW.product_id)
-        ON CONFLICT (user_id, product_id) DO NOTHING;
-    END IF;
+    NEW.updated_at = CURRENT_TIMESTAMP;
     RETURN NEW;
 END;
-$$ LANGUAGE plpgsql;
-
-CREATE TRIGGER trg_auto_deliver_product
-AFTER INSERT OR UPDATE ON orders
-FOR EACH ROW EXECUTE FUNCTION deliver_product_to_library();
-
-
--- EFSANE ROBOT 3: ÖĞRENCİ PUAN SİSTEMİ (Ders Bitince 2 Puan Verir)
-CREATE OR REPLACE FUNCTION reward_lesson_completion()
-RETURNS TRIGGER AS $$
-BEGIN
-    -- Eğer ders ŞU AN tamamlandıysa (Önceden false idi, şimdi true olduysa)
-    IF (NEW.is_completed = TRUE AND OLD.is_completed = FALSE) THEN
-        
-        -- Müşteriye 2 Puan ver (action_type: 'complete_lesson')
-        INSERT INTO point_logs (user_id, action_type, points_earned, reference_id)
-        VALUES (NEW.user_id, 'complete_lesson', 2.0, NEW.lesson_id);
-        
-        -- Cüzdanı güncelle (UPSERT - Cüzdanı yoksa yarat)
-        INSERT INTO user_points (user_id, total_points) VALUES (NEW.user_id, 2.0)
-        ON CONFLICT (user_id) DO UPDATE SET total_points = user_points.total_points + 2.0, updated_at = CURRENT_TIMESTAMP;
-        
-        -- Tamamlanma saatini şu anki saat yap
-        NEW.completed_at = CURRENT_TIMESTAMP;
-        
-    END IF;
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
--- Bu robotu sadece UPDATE işleminde çalıştırıyoruz (Videoyu izledikçe güncellenecek çünkü)
-CREATE TRIGGER trg_reward_on_lesson_complete
-BEFORE UPDATE ON lesson_progress
-FOR EACH ROW EXECUTE FUNCTION reward_lesson_completion();
-
-
--- -------------------------------------------------------------------------
--- 4. ÇELİK YELEKLER (RLS - KORSAN KALKANI)
--- -------------------------------------------------------------------------
-
-ALTER TABLE user_library ENABLE ROW LEVEL SECURITY;
-ALTER TABLE lesson_progress ENABLE ROW LEVEL SECURITY;
-
--- KÜTÜPHANE GÜVENLİĞİ: Kullanıcı KENDİ kütüphanesini görebilir. 
--- DİKKAT: INSERT veya DELETE yok! Ürünü sadece sistem (Orders tablosundaki Trigger) ekleyebilir.
-CREATE POLICY "Kullanıcı kendi kütüphanesini görebilir" ON user_library FOR SELECT 
-USING (user_id = current_setting('app.current_user_id', true)::uuid);
-
--- DERS İLERLEMESİ GÜVENLİĞİ
-CREATE POLICY "Kullanıcı kendi ilerlemesini görebilir" ON lesson_progress FOR SELECT 
-USING (user_id = current_setting('app.current_user_id', true)::uuid);
-
--- Kullanıcı sadece kendi ders ilerlemesini yaratabilir ve güncelleyebilir (İzlediği saniyeyi kaydetmek için)
-CREATE POLICY "Kullanıcı kendi ilerlemesini güncelleyebilir" ON lesson_progress FOR ALL 
-USING (user_id = current_setting('app.current_user_id', true)::uuid);
-
-
+$$;
+SET default_tablespace = '';
+SET default_table_access_method = heap;
 
 
 -- =========================================================================
--- CRAFTORA VERİTABANI KURULUMU - BÖLÜM 8 (SATICI ABONELİKLERİ / SAAS)
+-- TABLES
 -- =========================================================================
 
--- 1. ABONELİK DURUMLARI (ENUM)
-CREATE TYPE sub_status AS ENUM ('active', 'past_due', 'canceled', 'unpaid');
-
--- 2. SATICI ABONELİKLERİ TABLOSU
-CREATE TABLE seller_subscriptions (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    shop_id UUID UNIQUE NOT NULL REFERENCES shops(id) ON DELETE CASCADE, -- Bir mağazanın tek abonelik kaydı olur
-    stripe_subscription_id VARCHAR(255) UNIQUE, -- CTO DOKUNUŞU: Bankadaki (Stripe) otomatik çekim talimatının kodu
-    
-    status sub_status DEFAULT 'active',
-    current_period_end TIMESTAMP WITH TIME ZONE NOT NULL, -- Bu ayki paketin bitiş tarihi
-    grace_period_end TIMESTAMP WITH TIME ZONE, -- 7 Günlük ek süre (Fatura ödenmezse dükkanı hemen kapatmamak için)
-    
-    amount DECIMAL(10,2) DEFAULT 25.00, -- Aylık ücret
-    currency VARCHAR(3) DEFAULT 'USD',
-    
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    
-    CONSTRAINT check_sub_amount_positive CHECK (amount >= 0)
+CREATE TABLE public."__EFMigrationsHistory" (
+    "MigrationId" character varying(150) NOT NULL,
+    "ProductVersion" character varying(32) NOT NULL
 );
 
--- 3. OTOPİLOT ROBOTU (SAAT GÜNCELLEYİCİ)
-CREATE TRIGGER set_seller_sub_updated_at
-BEFORE UPDATE ON seller_subscriptions
-FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+CREATE TABLE public.admin_audit_logs (
+    id uuid DEFAULT public.uuid_generate_v4() NOT NULL,
+    admin_user_id uuid,
+    action character varying(100) NOT NULL,
+    target_type character varying(50) NOT NULL,
+    target_id uuid,
+    metadata jsonb DEFAULT '{}'::jsonb,
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP
+);
 
--- 4. ÇELİK YELEK (RLS - FİNANSAL GİZLİLİK)
-ALTER TABLE seller_subscriptions ENABLE ROW LEVEL SECURITY;
+CREATE TABLE public.admin_competition_rewards (
+    id uuid DEFAULT public.uuid_generate_v4() NOT NULL,
+    contest_id uuid NOT NULL,
+    user_id uuid NOT NULL,
+    rank integer NOT NULL,
+    reward_type character varying(50) NOT NULL,
+    amount numeric(12,2),
+    currency character varying(3),
+    note text,
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP
+);
 
--- KURAL: Satıcı SADECE kendi dükkanının abonelik faturasını/durumunu görebilir.
--- DİKKAT: INSERT, UPDATE, DELETE yok! Aboneliği sadece Stripe'dan gelen Webhook (Backend) güncelleyebilir.
-CREATE POLICY "Satıcılar kendi abonelik durumlarını görebilir" ON seller_subscriptions FOR SELECT 
-USING (shop_id IN (SELECT id FROM shops WHERE user_id = current_setting('app.current_user_id', true)::uuid));
+CREATE TABLE public.admin_reports (
+    id uuid DEFAULT public.uuid_generate_v4() NOT NULL,
+    type character varying(50) NOT NULL,
+    target_id uuid NOT NULL,
+    target_title text,
+    reported_by_user_id uuid,
+    reason character varying(50) NOT NULL,
+    description text,
+    status character varying(20) DEFAULT 'open'::character varying NOT NULL,
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP,
+    updated_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP
+);
 
+CREATE TABLE public.admin_warnings (
+    id uuid DEFAULT public.uuid_generate_v4() NOT NULL,
+    user_id uuid NOT NULL,
+    admin_user_id uuid,
+    title character varying(255) NOT NULL,
+    message text NOT NULL,
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP
+);
 
--- 1. Sütunun adındaki "Stripe" kelimesini atıp evrensel (Provider) ismine çeviriyoruz:
-ALTER TABLE seller_subscriptions 
-RENAME COLUMN stripe_subscription_id TO provider_subscription_id;
+CREATE TABLE public.analytics_events (
+    id uuid DEFAULT public.uuid_generate_v4() NOT NULL,
+    shop_id uuid NOT NULL,
+    product_id uuid,
+    user_id uuid,
+    order_id uuid,
+    event_type public.analytics_event_type NOT NULL,
+    session_id character varying(100),
+    source character varying(100),
+    referrer text,
+    utm_source character varying(100),
+    utm_medium character varying(100),
+    utm_campaign character varying(150),
+    device_type character varying(30),
+    ip_address inet,
+    user_agent text,
+    metadata jsonb DEFAULT '{}'::jsonb,
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT check_analytics_order_events CHECK (((event_type <> 'purchase_completed'::public.analytics_event_type) OR (order_id IS NOT NULL))),
+    CONSTRAINT check_analytics_product_events CHECK (((event_type <> ALL (ARRAY['product_view'::public.analytics_event_type, 'add_to_cart'::public.analytics_event_type, 'download_clicked'::public.analytics_event_type])) OR (product_id IS NOT NULL))),
+    CONSTRAINT check_analytics_session_or_user CHECK (((user_id IS NOT NULL) OR (session_id IS NOT NULL) OR (ip_address IS NOT NULL)))
+);
 
--- 2. Bu aboneliğin hangi bankadan (Iyzico mu, Stripe mı) yapıldığını bilmek için sağlayıcı sütununu ekliyoruz:
-ALTER TABLE seller_subscriptions 
-ADD COLUMN payment_provider VARCHAR(50) DEFAULT 'stripe'; -- Satıcının kaydolduğu pos firması (Örn: 'iyzico')
+CREATE TABLE public.cart_items (
+    id uuid DEFAULT public.uuid_generate_v4() NOT NULL,
+    user_id uuid NOT NULL,
+    product_id uuid NOT NULL,
+    quantity integer DEFAULT 1,
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP,
+    updated_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP
+);
 
+CREATE TABLE public.categories (
+    id uuid DEFAULT public.uuid_generate_v4() NOT NULL,
+    name character varying(100) NOT NULL,
+    slug public.citext NOT NULL,
+    parent_id uuid,
+    is_active boolean DEFAULT true NOT NULL,
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL
+);
 
+CREATE TABLE public.contest_results (
+    id uuid DEFAULT public.uuid_generate_v4() NOT NULL,
+    contest_id uuid NOT NULL,
+    user_id uuid NOT NULL,
+    final_rank integer,
+    total_score numeric(12,2),
+    reward_claimed boolean DEFAULT false,
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP,
+    joined_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP
+);
 
+CREATE TABLE public.contests (
+    id uuid DEFAULT public.uuid_generate_v4() NOT NULL,
+    title character varying(255) NOT NULL,
+    start_date timestamp with time zone NOT NULL,
+    end_date timestamp with time zone NOT NULL,
+    prize_pool text,
+    is_active boolean DEFAULT true,
+    created_by uuid,
+    description text,
+    rewards_hidden boolean DEFAULT false
+);
 
+CREATE TABLE public.coupon_uses (
+    id uuid DEFAULT public.uuid_generate_v4() NOT NULL,
+    coupon_id uuid NOT NULL,
+    user_id uuid NOT NULL,
+    order_id uuid NOT NULL,
+    used_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE public.coupons (
+    id uuid DEFAULT public.uuid_generate_v4() NOT NULL,
+    product_id uuid NOT NULL,
+    shop_id uuid NOT NULL,
+    code character varying(50) NOT NULL,
+    discount_type character varying(10) NOT NULL,
+    discount_value numeric(10,2) NOT NULL,
+    minimum_cart_amount numeric(10,2) DEFAULT 0.0,
+    max_uses integer,
+    used_count integer DEFAULT 0,
+    starts_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP,
+    expires_at timestamp with time zone,
+    is_active boolean DEFAULT true,
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE public.course_lessons (
+    id uuid DEFAULT public.uuid_generate_v4() NOT NULL,
+    course_section_id uuid NOT NULL,
+    title character varying(255) NOT NULL,
+    video_url text,
+    duration_in_seconds integer DEFAULT 0 NOT NULL,
+    sort_order integer NOT NULL,
+    is_free_preview boolean DEFAULT false NOT NULL,
+    is_active boolean DEFAULT true NOT NULL,
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at timestamp with time zone
+);
+
+CREATE TABLE public.course_quizzes (
+    id uuid DEFAULT public.uuid_generate_v4() NOT NULL,
+    course_section_id uuid NOT NULL,
+    title character varying(255) NOT NULL,
+    passing_score integer NOT NULL,
+    is_active boolean DEFAULT true NOT NULL,
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at timestamp with time zone
+);
+
+CREATE TABLE public.course_sections (
+    id uuid DEFAULT public.uuid_generate_v4() NOT NULL,
+    course_id uuid NOT NULL,
+    title character varying(255) NOT NULL,
+    sort_order integer NOT NULL,
+    is_active boolean DEFAULT true NOT NULL,
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at timestamp with time zone
+);
+
+CREATE TABLE public.courses (
+    id uuid DEFAULT public.uuid_generate_v4() NOT NULL,
+    product_id uuid NOT NULL,
+    level character varying(50) NOT NULL,
+    total_duration_in_minutes integer DEFAULT 0 NOT NULL,
+    is_certificate_included boolean DEFAULT false NOT NULL,
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at timestamp with time zone
+);
+
+CREATE TABLE public.home_cards (
+    id character varying(80) NOT NULL,
+    title character varying(255) NOT NULL,
+    description text,
+    icon character varying(50),
+    action_type character varying(50),
+    sort_order integer DEFAULT 0 NOT NULL,
+    is_active boolean DEFAULT true NOT NULL,
+    updated_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE public.ip_login_attempts (
+    ip_address inet NOT NULL,
+    attempt_count integer DEFAULT 1,
+    last_attempt_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP,
+    locked_until timestamp with time zone
+);
+
+CREATE TABLE public.lesson_progress (
+    id uuid DEFAULT public.uuid_generate_v4() NOT NULL,
+    user_id uuid NOT NULL,
+    lesson_id uuid NOT NULL,
+    is_completed boolean DEFAULT false,
+    watched_seconds integer DEFAULT 0,
+    completed_at timestamp with time zone,
+    updated_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE public.lesson_resources (
+    id uuid DEFAULT public.uuid_generate_v4() NOT NULL,
+    course_lesson_id uuid NOT NULL,
+    title character varying(255) NOT NULL,
+    file_url text NOT NULL,
+    resource_type character varying(50) NOT NULL,
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at timestamp with time zone
+);
+
+CREATE TABLE public.login_attempts (
+    email public.citext NOT NULL,
+    attempt_count integer DEFAULT 1,
+    last_attempt_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP,
+    ip_address inet,
+    locked_until timestamp with time zone
+);
+
+CREATE TABLE public.media (
+    id uuid DEFAULT public.uuid_generate_v4() NOT NULL,
+    shop_id uuid NOT NULL,
+    product_id uuid,
+    video_url text NOT NULL,
+    thumbnail_url text,
+    view_count integer DEFAULT 0,
+    like_count integer DEFAULT 0,
+    save_count integer DEFAULT 0,
+    comment_count integer DEFAULT 0,
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP,
+    updated_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP,
+    is_active boolean DEFAULT true,
+    caption text,
+    hashtags text[] DEFAULT '{}'::text[],
+    duration_seconds integer DEFAULT 0,
+    status public.media_status DEFAULT 'processing'::public.media_status NOT NULL,
+    share_count integer DEFAULT 0
+);
+
+CREATE TABLE public.media_comments (
+    id uuid DEFAULT public.uuid_generate_v4() NOT NULL,
+    media_id uuid NOT NULL,
+    user_id uuid NOT NULL,
+    comment_text text NOT NULL,
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP,
+    updated_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP,
+    parent_comment_id uuid
+);
+
+CREATE TABLE public.media_likes (
+    id uuid DEFAULT public.uuid_generate_v4() NOT NULL,
+    media_id uuid NOT NULL,
+    user_id uuid NOT NULL,
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE public.media_saves (
+    id uuid DEFAULT public.uuid_generate_v4() NOT NULL,
+    media_id uuid NOT NULL,
+    user_id uuid NOT NULL,
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE public.media_watch_history (
+    id uuid DEFAULT public.uuid_generate_v4() NOT NULL,
+    user_id uuid NOT NULL,
+    media_id uuid NOT NULL,
+    watched_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP,
+    is_point_earned boolean DEFAULT false
+);
+
+CREATE TABLE public.notification_deliveries (
+    id uuid DEFAULT public.uuid_generate_v4() NOT NULL,
+    notification_id uuid NOT NULL,
+    channel character varying(20) NOT NULL,
+    status character varying(20) DEFAULT 'pending'::character varying,
+    provider character varying(50),
+    provider_message_id character varying(255),
+    error_message text,
+    sent_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE public.notifications (
+    id uuid DEFAULT public.uuid_generate_v4() NOT NULL,
+    user_id uuid NOT NULL,
+    type character varying(50) NOT NULL,
+    title character varying(255) NOT NULL,
+    body text NOT NULL,
+    reference_type character varying(50),
+    reference_id uuid,
+    is_read boolean DEFAULT false,
+    read_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT check_notification_type CHECK (((type)::text = ANY ((ARRAY['sale_completed'::character varying, 'new_follower'::character varying, 'new_review'::character varying, 'new_question'::character varying, 'media_liked'::character varying, 'media_commented'::character varying, 'contest_result'::character varying, 'order_completed'::character varying, 'new_video'::character varying, 'new_product'::character varying, 'system'::character varying])::text[])))
+);
+
+CREATE TABLE public.orders (
+    id uuid DEFAULT public.uuid_generate_v4() NOT NULL,
+    buyer_id uuid NOT NULL,
+    product_id uuid NOT NULL,
+    shop_id uuid NOT NULL,
+    order_number character varying(50) NOT NULL,
+    amount numeric(10,2) NOT NULL,
+    currency character varying(3) DEFAULT 'USD'::character varying,
+    platform_fee numeric(10,2) DEFAULT 0.00,
+    seller_earnings numeric(10,2) DEFAULT 0.00,
+    status public.order_status DEFAULT 'pending'::public.order_status NOT NULL,
+    stripe_payment_id character varying(255),
+    invoice_pdf_url text,
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP,
+    updated_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT check_fee_logic CHECK ((abs((amount - (platform_fee + seller_earnings))) <= 0.01))
+);
+
+CREATE TABLE public.payments (
+    id uuid DEFAULT public.uuid_generate_v4() NOT NULL,
+    order_id uuid NOT NULL,
+    payment_provider character varying(50) NOT NULL,
+    provider_transaction_id character varying(255),
+    gross_amount numeric(10,2) NOT NULL,
+    platform_fee_amount numeric(10,2) NOT NULL,
+    net_earnings numeric(10,2) NOT NULL,
+    status public.payment_status_type DEFAULT 'processing'::public.payment_status_type NOT NULL,
+    error_message text,
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP,
+    updated_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT check_payment_math CHECK ((abs((gross_amount - (platform_fee_amount + net_earnings))) <= 0.01))
+);
+
+CREATE TABLE public.point_logs (
+    id uuid DEFAULT public.uuid_generate_v4() NOT NULL,
+    user_id uuid NOT NULL,
+    action_type character varying(50) NOT NULL,
+    points_earned numeric(10,2) NOT NULL,
+    reference_id uuid,
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE public.product_images (
+    id uuid DEFAULT public.uuid_generate_v4() NOT NULL,
+    product_id uuid NOT NULL,
+    object_key text NOT NULL,
+    sort_order integer NOT NULL,
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE public.product_qa (
+    id uuid DEFAULT public.uuid_generate_v4() NOT NULL,
+    product_id uuid NOT NULL,
+    user_id uuid NOT NULL,
+    parent_id uuid,
+    message text NOT NULL,
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE public.products (
+    id uuid DEFAULT public.uuid_generate_v4() NOT NULL,
+    shop_id uuid NOT NULL,
+    category_id uuid NOT NULL,
+    type public.product_type DEFAULT 'digital_file'::public.product_type NOT NULL,
+    title character varying(255) NOT NULL,
+    description text,
+    metadata jsonb DEFAULT '{}'::jsonb,
+    price numeric(10,2) NOT NULL,
+    original_price numeric(10,2),
+    currency character varying(3) DEFAULT 'USD'::character varying,
+    cover_image_url text,
+    preview_video_url text,
+    file_url text,
+    rating_average numeric(3,2) DEFAULT 0.0,
+    review_count integer DEFAULT 0,
+    sales_count integer DEFAULT 0,
+    is_active boolean DEFAULT true,
+    is_featured boolean DEFAULT false,
+    status character varying(20) DEFAULT 'Draft'::character varying NOT NULL,
+    tags text[] NOT NULL,
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP,
+    updated_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP,
+    discount_price numeric(10,2),
+    discount_ends_at timestamp with time zone
+);
+
+CREATE TABLE public.pulse_news (
+    id uuid DEFAULT public.uuid_generate_v4() NOT NULL,
+    title character varying(255) NOT NULL,
+    description text,
+    meta character varying(100),
+    icon character varying(50),
+    is_published boolean DEFAULT false NOT NULL,
+    is_new_until timestamp with time zone,
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP,
+    updated_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE public.reviews (
+    id uuid DEFAULT public.uuid_generate_v4() NOT NULL,
+    product_id uuid NOT NULL,
+    user_id uuid NOT NULL,
+    rating integer NOT NULL,
+    comment text,
+    seller_reply text,
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP,
+    updated_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP,
+    images jsonb DEFAULT '[]'::jsonb
+);
+
+CREATE TABLE public.seller_subscriptions (
+    id uuid DEFAULT public.uuid_generate_v4() NOT NULL,
+    shop_id uuid NOT NULL,
+    provider_subscription_id character varying(255),
+    status public.sub_status DEFAULT 'active'::public.sub_status NOT NULL,
+    current_period_end timestamp with time zone NOT NULL,
+    grace_period_end timestamp with time zone,
+    amount numeric(10,2) DEFAULT 25.00,
+    currency character varying(3) DEFAULT 'USD'::character varying,
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP,
+    updated_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP,
+    payment_provider character varying(50) DEFAULT 'stripe'::character varying,
+    reminder_sent_at timestamp with time zone,
+    CONSTRAINT check_grace_after_period CHECK (((grace_period_end IS NULL) OR (grace_period_end >= current_period_end)))
+);
+
+CREATE TABLE public.shop_visits (
+    id uuid DEFAULT public.uuid_generate_v4() NOT NULL,
+    shop_id uuid NOT NULL,
+    user_id uuid,
+    ip_address inet,
+    visited_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE public.shops (
+    id uuid DEFAULT public.uuid_generate_v4() NOT NULL,
+    user_id uuid NOT NULL,
+    shop_name character varying(100) NOT NULL,
+    slug public.citext NOT NULL,
+    external_url character varying(255),
+    short_description character varying(255),
+    description text,
+    about_content text,
+    social_links jsonb DEFAULT '{}'::jsonb,
+    logo_url text,
+    banner_url text,
+    follower_count integer DEFAULT 0,
+    rating numeric(3,2) DEFAULT 0.0,
+    is_verified boolean DEFAULT false,
+    is_active boolean DEFAULT true,
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP,
+    updated_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE public.subscriptions (
+    id uuid DEFAULT public.uuid_generate_v4() NOT NULL,
+    shop_id uuid NOT NULL,
+    user_id uuid NOT NULL,
+    wants_notifications boolean DEFAULT true,
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE public.user_device_tokens (
+    id uuid DEFAULT public.uuid_generate_v4() NOT NULL,
+    user_id uuid NOT NULL,
+    token text NOT NULL,
+    device_type character varying(20) NOT NULL,
+    device_id character varying(255),
+    is_active boolean DEFAULT true,
+    last_used_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP,
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE public.user_lesson_progress (
+    id uuid DEFAULT public.uuid_generate_v4() NOT NULL,
+    user_id uuid NOT NULL,
+    course_lesson_id uuid NOT NULL,
+    is_completed boolean DEFAULT false NOT NULL,
+    watched_seconds integer DEFAULT 0 NOT NULL,
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at timestamp with time zone
+);
+
+CREATE TABLE public.user_library (
+    id uuid DEFAULT public.uuid_generate_v4() NOT NULL,
+    user_id uuid NOT NULL,
+    product_id uuid NOT NULL,
+    purchased_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP,
+    last_accessed_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE public.user_points (
+    id uuid DEFAULT public.uuid_generate_v4() NOT NULL,
+    user_id uuid NOT NULL,
+    total_points numeric(12,2) DEFAULT 0.0,
+    current_rank integer DEFAULT 0,
+    current_streak integer DEFAULT 0,
+    updated_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE public.user_sessions (
+    id uuid DEFAULT public.uuid_generate_v4() NOT NULL,
+    user_id uuid,
+    refresh_token text NOT NULL,
+    device_id character varying(255),
+    ip_address inet,
+    user_agent text,
+    expires_at timestamp with time zone NOT NULL,
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP,
+    is_revoked boolean DEFAULT false
+);
+
+CREATE TABLE public.users (
+    id uuid DEFAULT public.uuid_generate_v4() NOT NULL,
+    email public.citext NOT NULL,
+    full_name character varying(100),
+    avatar_url text,
+    role public.user_role DEFAULT 'user'::public.user_role NOT NULL,
+    auth_provider character varying(50) DEFAULT 'email'::character varying,
+    provider_id character varying(255),
+    password_hash text,
+    is_email_verified boolean DEFAULT false,
+    locked_until timestamp with time zone,
+    stripe_customer_id character varying(255),
+    stripe_account_id character varying(255),
+    preferences jsonb DEFAULT '{}'::jsonb,
+    is_active boolean DEFAULT true,
+    last_login_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP,
+    updated_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP,
+    deleted_at timestamp with time zone
+);
 
 
 -- =========================================================================
--- CRAFTORA VERİTABANI KURULUMU - BÖLÜM 9 (AKILLI SEPET / CART ITEMS)
+-- SEED DATA
 -- =========================================================================
 
--- 1. SEPET ÜRÜNLERİ TABLOSU
-CREATE TABLE cart_items (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    product_id UUID NOT NULL REFERENCES products(id) ON DELETE CASCADE,
-    quantity INT DEFAULT 1, 
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    
-    -- GÜVENLİK VE MANTIK KALKANLARI
-    CONSTRAINT check_quantity_positive CHECK (quantity > 0), -- Miktar eksi veya sıfır olamaz!
-    UNIQUE(user_id, product_id) -- Aynı ürün sepete ikinci kez ayrı satır olarak eklenmesin
-);
+COPY public."__EFMigrationsHistory" ("MigrationId", "ProductVersion") FROM stdin;
+20260521082539_AddPreviewVideoToProduct	9.0.0
+20260521091507_AddEcommerceFeaturesToProduct	9.0.0
+20260521122829_AddCourseModuleEntities	9.0.0
+20260521135244_AddCourseProgressTracking	9.0.0
+20260523154722_AddCouponMinimumCartAmount	9.0.0
+20260524152119_FinalSchemaUpdate	9.0.0
+20260524153943_InitialCreate	9.0.0
+20260524161125_FinalSetup	9.0.0
+20260608183145_AddReminderSentAtToSellerSubscription	9.0.0
+20260610182651_AddProductImages	9.0.0
+\.
 
--- 2. İNDEKS (PERFORMANS)
-CREATE INDEX idx_cart_items_user ON cart_items(user_id); -- Sepet sayfasını salisede açmak için
-
--- 3. OTOPİLOT ROBOTLARI 
-
--- Robot A: Saat Güncelleyici (Terk edilmiş sepetleri bulmak için çok kritik)
-CREATE TRIGGER set_cart_updated_at
-BEFORE UPDATE ON cart_items
-FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
-
--- Robot B: ZEKİ MÜŞTERİ KORUMASI (Zaten sahip olunan ürünü sepete aldırtmaz!)
-CREATE OR REPLACE FUNCTION prevent_duplicate_purchase()
-RETURNS TRIGGER AS $$
-BEGIN
-    -- Kullanıcının kütüphanesinde bu ürün var mı diye kontrol et
-    IF EXISTS (SELECT 1 FROM user_library WHERE user_id = NEW.user_id AND product_id = NEW.product_id) THEN
-        RAISE EXCEPTION 'Bu ürün zaten kütüphanenizde mevcut!';
-    END IF;
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
-CREATE TRIGGER trg_check_already_owned
-BEFORE INSERT OR UPDATE ON cart_items
-FOR EACH ROW EXECUTE FUNCTION prevent_duplicate_purchase();
-
--- 4. ÇELİK YELEKLER (RLS - GÜVENLİK)
-ALTER TABLE cart_items ENABLE ROW LEVEL SECURITY;
-
--- KURAL 1: Kullanıcı sadece KENDİ sepetindeki ürünleri görebilir
-CREATE POLICY "Kullanıcılar kendi sepetini görebilir" ON cart_items FOR SELECT 
-USING (user_id = current_setting('app.current_user_id', true)::uuid);
-
--- KURAL 2: Kullanıcı sadece KENDİ sepetine ürün ekleyebilir/çıkarabilir/miktar güncelleyebilir
-CREATE POLICY "Kullanıcılar kendi sepetini yönetebilir" ON cart_items FOR ALL 
-USING (user_id = current_setting('app.current_user_id', true)::uuid);
+COPY public.categories (id, name, slug, parent_id, is_active, created_at) FROM stdin;
+1bcc9c55-9cbf-45f8-aa1e-45e3bb310a49	Education	education	\N	t	2026-05-31 20:09:08.61454+00
+926f634d-b3c5-41d1-9217-de73c23bf1ef	Media & Video	media-video	\N	t	2026-05-31 20:09:08.61454+00
+6854ccd8-7726-4737-8e7f-7981d052df58	Software Development	software-development	\N	t	2026-05-31 20:09:08.614474+00
+282e01ad-6500-44af-9a2f-e99831464e7a	Design Assets	design-assets	\N	t	2026-05-31 20:09:08.614539+00
+686d2433-b518-4c18-94b3-a1ab155f4a20	Growth Marketing	growth-marketing	\N	t	2026-05-31 20:09:08.614539+00
+\.
 
 
-CREATE TABLE coupons (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    
-    -- Hangi ürüne ait?
-    product_id UUID NOT NULL REFERENCES products(id) ON DELETE CASCADE,
-    -- Kuponu kim oluşturdu? (Güvenlik için)
-    shop_id UUID NOT NULL REFERENCES shops(id) ON DELETE CASCADE,
-    
-    -- Kupon Kodu
-    code VARCHAR(50) NOT NULL,
-    
-    -- İndirim Tipi
-    discount_type VARCHAR(10) NOT NULL, -- 'percent' veya 'fixed'
-    discount_value DECIMAL(10,2) NOT NULL, -- %20 için 20.00, 10$ için 10.00
-    
-    -- Kullanım Limiti
-    max_uses INT DEFAULT NULL, -- NULL = sınırsız
-    used_count INT DEFAULT 0,  -- Kaç kişi kullandı?
-    
-    -- Geçerlilik Tarihi
-    starts_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    expires_at TIMESTAMP WITH TIME ZONE DEFAULT NULL, -- NULL = süresiz
-    
-    is_active BOOLEAN DEFAULT TRUE,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    
-    -- Güvenlik Kalkanlari
-    CONSTRAINT check_discount_type CHECK (discount_type IN ('percent', 'fixed')),
-    CONSTRAINT check_discount_value CHECK (discount_value > 0),
-    CONSTRAINT check_percent_max CHECK (discount_type != 'percent' OR discount_value <= 100),
-    CONSTRAINT unique_coupon_per_product UNIQUE (product_id, code) -- Aynı üründe aynı kod olamaz
-);
+-- =========================================================================
+-- CONSTRAINTS
+-- =========================================================================
 
--- Kişi başı 1 kez kullanım takibi
-CREATE TABLE coupon_uses (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    coupon_id UUID NOT NULL REFERENCES coupons(id) ON DELETE CASCADE,
-    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    order_id UUID NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
-    used_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    
-    UNIQUE(coupon_id, user_id) -- Kişi başı 1 kez!
-);
+ALTER TABLE ONLY public."__EFMigrationsHistory"
+    ADD CONSTRAINT "PK___EFMigrationsHistory" PRIMARY KEY ("MigrationId");
 
--- İndeksler
-CREATE INDEX idx_coupons_product ON coupons(product_id);
-CREATE INDEX idx_coupons_code ON coupons(code);
+ALTER TABLE ONLY public.admin_audit_logs
+    ADD CONSTRAINT admin_audit_logs_pkey PRIMARY KEY (id);
 
--- Otopilot: Kullanıldıkça sayacı artır
-CREATE OR REPLACE FUNCTION increment_coupon_usage()
-RETURNS TRIGGER AS $$
-BEGIN
-    UPDATE coupons SET used_count = used_count + 1 WHERE id = NEW.coupon_id;
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
+ALTER TABLE ONLY public.admin_competition_rewards
+    ADD CONSTRAINT admin_competition_rewards_pkey PRIMARY KEY (id);
 
-CREATE TRIGGER trg_increment_coupon_usage
-AFTER INSERT ON coupon_uses
-FOR EACH ROW EXECUTE FUNCTION increment_coupon_usage();
+ALTER TABLE ONLY public.admin_reports
+    ADD CONSTRAINT admin_reports_pkey PRIMARY KEY (id);
 
-ALTER TABLE coupons ENABLE ROW LEVEL SECURITY;
-ALTER TABLE coupon_uses ENABLE ROW LEVEL SECURITY;
+ALTER TABLE ONLY public.admin_warnings
+    ADD CONSTRAINT admin_warnings_pkey PRIMARY KEY (id);
 
--- Kuponları herkes görebilir (Sepette kod girerken)
-CREATE POLICY "Aktif kuponlar herkese açık" ON coupons FOR SELECT 
-USING (is_active = TRUE);
+ALTER TABLE ONLY public.analytics_events
+    ADD CONSTRAINT analytics_events_pkey PRIMARY KEY (id);
 
--- Sadece mağaza sahibi kendi ürününe kupon ekleyebilir
-CREATE POLICY "Satıcı kendi kuponlarını yönetebilir" ON coupons FOR ALL 
-USING (shop_id IN (
-    SELECT id FROM shops 
-    WHERE user_id = current_setting('app.current_user_id', true)::uuid
-));
+ALTER TABLE ONLY public.cart_items
+    ADD CONSTRAINT cart_items_pkey PRIMARY KEY (id);
 
--- Kupon kullanım geçmişi sadece alıcıya özel
-CREATE POLICY "Kullanıcı kendi kupon geçmişini görebilir" ON coupon_uses FOR SELECT 
-USING (user_id = current_setting('app.current_user_id', true)::uuid);
+ALTER TABLE ONLY public.categories
+    ADD CONSTRAINT categories_pkey PRIMARY KEY (id);
 
+ALTER TABLE ONLY public.contest_results
+    ADD CONSTRAINT contest_results_pkey PRIMARY KEY (id);
 
-CREATE TABLE notifications (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),yapay zeka 
-    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    type VARCHAR(50) NOT NULL,
-    title VARCHAR(255) NOT NULL,        -- "Yeni Satış! 🎉"
-    body TEXT NOT NULL,                 -- "Ali, C++ Kursunu satın aldı"
-    
-    -- Hangi içeriğe ait? (Tıklayınca nereye gitsin?)
-    reference_type VARCHAR(50),         -- 'order', 'media', 'product', 'shop', 'contest'
-    reference_id UUID,                  -- İlgili kaydın ID'si
-    
-    -- Durum
-    is_read BOOLEAN DEFAULT FALSE,
-    read_at TIMESTAMP WITH TIME ZONE,
-    
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    
-    -- Güvenlik
-    CONSTRAINT check_notification_type CHECK (type IN (
-        'sale_completed', 'new_follower', 'new_review',
-        'new_question', 'media_liked', 'media_commented',
-        'contest_result', 'order_completed'
-    ))
-);
+ALTER TABLE ONLY public.contests
+    ADD CONSTRAINT contests_pkey PRIMARY KEY (id);
 
--- İndeksler
-CREATE INDEX idx_notifications_user ON notifications(user_id, created_at DESC);
-CREATE INDEX idx_notifications_unread ON notifications(user_id, is_read) 
-    WHERE is_read = FALSE; -- Sadece okunmamışları hızlı bulmak için
+ALTER TABLE ONLY public.coupon_uses
+    ADD CONSTRAINT coupon_uses_pkey PRIMARY KEY (id);
 
+ALTER TABLE ONLY public.coupons
+    ADD CONSTRAINT coupons_pkey PRIMARY KEY (id);
 
-CREATE TABLE notification_deliveries (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    notification_id UUID NOT NULL REFERENCES notifications(id) ON DELETE CASCADE,
-    
-    -- Kanal
-    channel VARCHAR(20) NOT NULL, -- 'push', 'email', 'in_app'
-    
-    -- Durum
-    status VARCHAR(20) DEFAULT 'pending', -- 'pending', 'sent', 'failed'
-    
-    -- Gönderim Detayı
-    provider VARCHAR(50),         -- 'firebase', 'sendgrid', 'resend'
-    provider_message_id VARCHAR(255), -- Sağlayıcının verdiği mesaj ID'si
-    error_message TEXT,           -- Başarısız olursa neden?
-    
-    sent_at TIMESTAMP WITH TIME ZONE,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    
-    CONSTRAINT check_channel CHECK (channel IN ('push', 'email', 'in_app')),
-    CONSTRAINT check_status CHECK (status IN ('pending', 'sent', 'failed'))
-);
+ALTER TABLE ONLY public.course_lessons
+    ADD CONSTRAINT course_lessons_pkey PRIMARY KEY (id);
 
-CREATE INDEX idx_deliveries_notification ON notification_deliveries(notification_id);
-CREATE INDEX idx_deliveries_pending ON notification_deliveries(status) 
-    WHERE status = 'pending'; -- Bekleyen gönderimleri hızlı bulmak için
+ALTER TABLE ONLY public.course_quizzes
+    ADD CONSTRAINT course_quizzes_pkey PRIMARY KEY (id);
 
+ALTER TABLE ONLY public.course_sections
+    ADD CONSTRAINT course_sections_pkey PRIMARY KEY (id);
 
-CREATE TABLE user_device_tokens (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    
-    token TEXT NOT NULL,                    -- Firebase FCM token
-    device_type VARCHAR(20) NOT NULL,       -- 'ios', 'android', 'web'
-    device_id VARCHAR(255),                 -- Cihaz ID'si
-    
-    is_active BOOLEAN DEFAULT TRUE,
-    last_used_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    
-    UNIQUE(user_id, device_id),             -- Aynı cihaz 2 kez kayıt olmasın
-    CONSTRAINT check_device_type CHECK (device_type IN ('ios', 'android', 'web'))
-);
+ALTER TABLE ONLY public.courses
+    ADD CONSTRAINT courses_pkey PRIMARY KEY (id);
 
-CREATE INDEX idx_device_tokens_user ON user_device_tokens(user_id) 
-    WHERE is_active = TRUE;
+ALTER TABLE ONLY public.home_cards
+    ADD CONSTRAINT home_cards_pkey PRIMARY KEY (id);
 
-ALTER TABLE notifications ENABLE ROW LEVEL SECURITY;
-ALTER TABLE notification_deliveries ENABLE ROW LEVEL SECURITY;
-ALTER TABLE user_device_tokens ENABLE ROW LEVEL SECURITY;
-CREATE POLICY "Kullanıcı kendi bildirimlerini görebilir" 
-ON notifications FOR SELECT 
-USING (user_id = current_setting('app.current_user_id', true)::uuid);
-CREATE POLICY "Kullanıcı bildirimini okundu yapabilir" 
-ON notifications FOR UPDATE
-USING (user_id = current_setting('app.current_user_id', true)::uuid);
-CREATE POLICY "Kullanıcı kendi tokenlarını yönetebilir" 
-ON user_device_tokens FOR ALL
-USING (user_id = current_setting('app.current_user_id', true)::uuid);
+ALTER TABLE ONLY public.ip_login_attempts
+    ADD CONSTRAINT ip_login_attempts_pkey PRIMARY KEY (ip_address);
+
+ALTER TABLE ONLY public.lesson_progress
+    ADD CONSTRAINT lesson_progress_pkey PRIMARY KEY (id);
+
+ALTER TABLE ONLY public.lesson_resources
+    ADD CONSTRAINT lesson_resources_pkey PRIMARY KEY (id);
+
+ALTER TABLE ONLY public.login_attempts
+    ADD CONSTRAINT login_attempts_pkey PRIMARY KEY (email);
+
+ALTER TABLE ONLY public.media_comments
+    ADD CONSTRAINT media_comments_pkey PRIMARY KEY (id);
+
+ALTER TABLE ONLY public.media_likes
+    ADD CONSTRAINT media_likes_pkey PRIMARY KEY (id);
+
+ALTER TABLE ONLY public.media
+    ADD CONSTRAINT media_pkey PRIMARY KEY (id);
+
+ALTER TABLE ONLY public.media_saves
+    ADD CONSTRAINT media_saves_pkey PRIMARY KEY (id);
+
+ALTER TABLE ONLY public.media_watch_history
+    ADD CONSTRAINT media_watch_history_pkey PRIMARY KEY (id);
+
+ALTER TABLE ONLY public.notification_deliveries
+    ADD CONSTRAINT notification_deliveries_pkey PRIMARY KEY (id);
+
+ALTER TABLE ONLY public.notifications
+    ADD CONSTRAINT notifications_pkey PRIMARY KEY (id);
+
+ALTER TABLE ONLY public.orders
+    ADD CONSTRAINT orders_pkey PRIMARY KEY (id);
+
+ALTER TABLE ONLY public.payments
+    ADD CONSTRAINT payments_pkey PRIMARY KEY (id);
+
+ALTER TABLE ONLY public.point_logs
+    ADD CONSTRAINT point_logs_pkey PRIMARY KEY (id);
+
+ALTER TABLE ONLY public.product_images
+    ADD CONSTRAINT product_images_pkey PRIMARY KEY (id);
+
+ALTER TABLE ONLY public.product_qa
+    ADD CONSTRAINT product_qa_pkey PRIMARY KEY (id);
+
+ALTER TABLE ONLY public.products
+    ADD CONSTRAINT products_pkey PRIMARY KEY (id);
+
+ALTER TABLE ONLY public.pulse_news
+    ADD CONSTRAINT pulse_news_pkey PRIMARY KEY (id);
+
+ALTER TABLE ONLY public.reviews
+    ADD CONSTRAINT reviews_pkey PRIMARY KEY (id);
+
+ALTER TABLE ONLY public.seller_subscriptions
+    ADD CONSTRAINT seller_subscriptions_pkey PRIMARY KEY (id);
+
+ALTER TABLE ONLY public.shop_visits
+    ADD CONSTRAINT shop_visits_pkey PRIMARY KEY (id);
+
+ALTER TABLE ONLY public.shops
+    ADD CONSTRAINT shops_pkey PRIMARY KEY (id);
+
+ALTER TABLE ONLY public.subscriptions
+    ADD CONSTRAINT subscriptions_pkey PRIMARY KEY (id);
+
+ALTER TABLE ONLY public.user_device_tokens
+    ADD CONSTRAINT user_device_tokens_pkey PRIMARY KEY (id);
+
+ALTER TABLE ONLY public.user_lesson_progress
+    ADD CONSTRAINT user_lesson_progress_pkey PRIMARY KEY (id);
+
+ALTER TABLE ONLY public.user_library
+    ADD CONSTRAINT user_library_pkey PRIMARY KEY (id);
+
+ALTER TABLE ONLY public.user_points
+    ADD CONSTRAINT user_points_pkey PRIMARY KEY (id);
+
+ALTER TABLE ONLY public.user_sessions
+    ADD CONSTRAINT user_sessions_pkey PRIMARY KEY (id);
+
+ALTER TABLE ONLY public.users
+    ADD CONSTRAINT users_pkey PRIMARY KEY (id);
 
 
+-- =========================================================================
+-- INDEXES
+-- =========================================================================
+
+CREATE INDEX "IX_cart_items_product_id" ON public.cart_items USING btree (product_id);
+
+CREATE INDEX "IX_categories_parent_id" ON public.categories USING btree (parent_id);
+
+CREATE INDEX "IX_contest_results_user_id" ON public.contest_results USING btree (user_id);
+
+CREATE INDEX "IX_contests_created_by" ON public.contests USING btree (created_by);
+
+CREATE INDEX "IX_coupon_uses_order_id" ON public.coupon_uses USING btree (order_id);
+
+CREATE INDEX "IX_coupon_uses_user_id" ON public.coupon_uses USING btree (user_id);
+
+CREATE INDEX "IX_coupons_shop_id" ON public.coupons USING btree (shop_id);
+
+CREATE INDEX "IX_lesson_progress_lesson_id" ON public.lesson_progress USING btree (lesson_id);
+
+CREATE INDEX "IX_media_comments_media_id" ON public.media_comments USING btree (media_id);
+
+CREATE INDEX "IX_media_comments_user_id" ON public.media_comments USING btree (user_id);
+
+CREATE INDEX "IX_media_likes_user_id" ON public.media_likes USING btree (user_id);
+
+CREATE INDEX "IX_media_saves_user_id" ON public.media_saves USING btree (user_id);
+
+CREATE INDEX "IX_media_watch_history_media_id" ON public.media_watch_history USING btree (media_id);
+
+CREATE INDEX "IX_orders_product_id" ON public.orders USING btree (product_id);
+
+CREATE INDEX "IX_product_qa_parent_id" ON public.product_qa USING btree (parent_id);
+
+CREATE INDEX "IX_product_qa_product_id" ON public.product_qa USING btree (product_id);
+
+CREATE INDEX "IX_product_qa_user_id" ON public.product_qa USING btree (user_id);
+
+CREATE INDEX "IX_products_category_id" ON public.products USING btree (category_id);
+
+CREATE INDEX "IX_reviews_user_id" ON public.reviews USING btree (user_id);
+
+CREATE INDEX "IX_shop_visits_user_id" ON public.shop_visits USING btree (user_id);
+
+CREATE INDEX "IX_subscriptions_user_id" ON public.subscriptions USING btree (user_id);
+
+CREATE INDEX "IX_user_lesson_progress_course_lesson_id" ON public.user_lesson_progress USING btree (course_lesson_id);
+
+CREATE INDEX "IX_user_library_product_id" ON public.user_library USING btree (product_id);
+
+CREATE INDEX "IX_user_sessions_user_id" ON public.user_sessions USING btree (user_id);
+
+CREATE INDEX idx_admin_audit_logs_created ON public.admin_audit_logs USING btree (created_at DESC);
+
+CREATE INDEX idx_admin_reports_status_type ON public.admin_reports USING btree (status, type);
+
+CREATE INDEX idx_admin_warnings_user ON public.admin_warnings USING btree (user_id, created_at DESC);
+
+CREATE INDEX idx_analytics_metadata ON public.analytics_events USING gin (metadata);
+
+CREATE INDEX idx_analytics_order ON public.analytics_events USING btree (order_id) WHERE (order_id IS NOT NULL);
+
+CREATE INDEX idx_analytics_product_event_date ON public.analytics_events USING btree (product_id, event_type, created_at DESC) WHERE (product_id IS NOT NULL);
+
+CREATE INDEX idx_analytics_session_date ON public.analytics_events USING btree (session_id, created_at DESC) WHERE (session_id IS NOT NULL);
+
+CREATE INDEX idx_analytics_shop_date ON public.analytics_events USING btree (shop_id, created_at DESC);
+
+CREATE INDEX idx_analytics_shop_event_date ON public.analytics_events USING btree (shop_id, event_type, created_at DESC);
+
+CREATE INDEX idx_analytics_shop_source_date ON public.analytics_events USING btree (shop_id, source, created_at DESC) WHERE (source IS NOT NULL);
+
+CREATE INDEX idx_analytics_shop_utm_source_date ON public.analytics_events USING btree (shop_id, utm_source, created_at DESC) WHERE (utm_source IS NOT NULL);
+
+CREATE INDEX idx_analytics_user_date ON public.analytics_events USING btree (user_id, created_at DESC) WHERE (user_id IS NOT NULL);
+
+CREATE INDEX idx_cart_items_user ON public.cart_items USING btree (user_id);
+
+CREATE INDEX idx_coupons_code ON public.coupons USING btree (code);
+
+CREATE INDEX idx_coupons_product ON public.coupons USING btree (product_id);
+
+CREATE INDEX idx_course_lessons_section ON public.course_lessons USING btree (course_section_id);
+
+CREATE INDEX idx_course_quizzes_section ON public.course_quizzes USING btree (course_section_id);
+
+CREATE INDEX idx_course_sections_course ON public.course_sections USING btree (course_id);
+
+CREATE INDEX idx_courses_product ON public.courses USING btree (product_id);
+
+CREATE INDEX idx_deliveries_notification ON public.notification_deliveries USING btree (notification_id);
+
+CREATE INDEX idx_deliveries_pending ON public.notification_deliveries USING btree (status) WHERE ((status)::text = 'pending'::text);
+
+CREATE INDEX idx_device_tokens_user ON public.user_device_tokens USING btree (user_id) WHERE (is_active = true);
+
+CREATE INDEX idx_ip_attempts_locked_until ON public.ip_login_attempts USING btree (locked_until) WHERE (locked_until IS NOT NULL);
+
+CREATE INDEX idx_lesson_progress_user ON public.lesson_progress USING btree (user_id, lesson_id);
+
+CREATE INDEX idx_lesson_resources_lesson ON public.lesson_resources USING btree (course_lesson_id);
+
+CREATE INDEX idx_media_comments_media_parent_created ON public.media_comments USING btree (media_id, parent_comment_id, created_at);
+
+CREATE INDEX idx_media_comments_parent ON public.media_comments USING btree (parent_comment_id);
+
+CREATE INDEX idx_media_product ON public.media USING btree (product_id);
+
+CREATE INDEX idx_media_shop ON public.media USING btree (shop_id);
+
+CREATE INDEX idx_notifications_unread ON public.notifications USING btree (user_id, is_read) WHERE (is_read = false);
+
+CREATE INDEX idx_notifications_user ON public.notifications USING btree (user_id, created_at DESC);
+
+CREATE INDEX idx_orders_buyer ON public.orders USING btree (buyer_id);
+
+CREATE INDEX idx_orders_number ON public.orders USING btree (order_number);
+
+CREATE INDEX idx_orders_shop ON public.orders USING btree (shop_id);
+
+CREATE INDEX idx_orders_status ON public.orders USING btree (status);
+
+CREATE INDEX idx_payments_status ON public.payments USING btree (status);
+
+CREATE INDEX idx_payments_transaction_id ON public.payments USING btree (provider_transaction_id);
+
+CREATE INDEX idx_point_logs_user_date ON public.point_logs USING btree (user_id, created_at);
+
+CREATE INDEX idx_product_images_product ON public.product_images USING btree (product_id);
+
+CREATE INDEX idx_products_shop ON public.products USING btree (shop_id);
+
+CREATE INDEX idx_pulse_news_published ON public.pulse_news USING btree (is_published, created_at DESC);
+
+CREATE INDEX idx_seller_subs_grace ON public.seller_subscriptions USING btree (grace_period_end) WHERE (grace_period_end IS NOT NULL);
+
+CREATE INDEX idx_seller_subs_period ON public.seller_subscriptions USING btree (status, current_period_end);
+
+CREATE INDEX idx_shop_visits_composite ON public.shop_visits USING btree (shop_id, visited_at);
+
+CREATE INDEX idx_shops_name ON public.shops USING btree (shop_name);
+
+CREATE INDEX idx_shops_slug ON public.shops USING btree (slug);
+
+CREATE INDEX idx_user_library_accessed ON public.user_library USING btree (user_id, last_accessed_at DESC);
+
+
+-- =========================================================================
+-- TRIGGERS
+-- =========================================================================
+
+CREATE TRIGGER set_cart_updated_at BEFORE UPDATE ON public.cart_items FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
+
+CREATE TRIGGER set_media_comments_updated_at BEFORE UPDATE ON public.media_comments FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
+
+CREATE TRIGGER set_orders_updated_at BEFORE UPDATE ON public.orders FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
+
+CREATE TRIGGER set_payments_updated_at BEFORE UPDATE ON public.payments FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
+
+CREATE TRIGGER set_reviews_updated_at BEFORE UPDATE ON public.reviews FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
+
+CREATE TRIGGER set_seller_sub_updated_at BEFORE UPDATE ON public.seller_subscriptions FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
+
+CREATE TRIGGER set_shops_updated_at BEFORE UPDATE ON public.shops FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
+
+CREATE TRIGGER set_users_updated_at BEFORE UPDATE ON public.users FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
+
+CREATE TRIGGER trg_auto_deliver_product AFTER INSERT OR UPDATE ON public.orders FOR EACH ROW EXECUTE FUNCTION public.deliver_product_to_library();
+
+CREATE TRIGGER trg_check_already_owned BEFORE INSERT OR UPDATE ON public.cart_items FOR EACH ROW EXECUTE FUNCTION public.prevent_duplicate_purchase();
+
+CREATE TRIGGER trg_increment_coupon_usage AFTER INSERT ON public.coupon_uses FOR EACH ROW EXECUTE FUNCTION public.increment_coupon_usage();
+
+CREATE TRIGGER trg_media_comment_counter AFTER INSERT OR DELETE ON public.media_comments FOR EACH ROW EXECUTE FUNCTION public.sync_media_counters();
+
+CREATE TRIGGER trg_media_like_counter AFTER INSERT OR DELETE ON public.media_likes FOR EACH ROW EXECUTE FUNCTION public.sync_media_counters();
+
+CREATE TRIGGER trg_media_save_counter AFTER INSERT OR DELETE ON public.media_saves FOR EACH ROW EXECUTE FUNCTION public.sync_media_counters();
+
+CREATE TRIGGER trg_normalize_analytics_event_shop_id BEFORE INSERT ON public.analytics_events FOR EACH ROW EXECUTE FUNCTION public.normalize_analytics_event_shop_id();
+
+CREATE TRIGGER trg_on_order_completed AFTER INSERT OR UPDATE ON public.orders FOR EACH ROW EXECUTE FUNCTION public.process_completed_order();
+
+CREATE TRIGGER trg_points_on_like AFTER INSERT ON public.media_likes FOR EACH ROW EXECUTE FUNCTION public.award_seller_points();
+
+CREATE TRIGGER trg_points_on_watch BEFORE INSERT ON public.media_watch_history FOR EACH ROW EXECUTE FUNCTION public.award_viewer_points();
+
+CREATE TRIGGER trg_sync_followers AFTER INSERT OR DELETE ON public.subscriptions FOR EACH ROW EXECUTE FUNCTION public.sync_follower_count();
+
+CREATE TRIGGER trg_sync_order_on_payment AFTER INSERT OR UPDATE ON public.payments FOR EACH ROW EXECUTE FUNCTION public.sync_order_status_from_payment();
+
+
+-- =========================================================================
+-- ROW LEVEL SECURITY
+-- =========================================================================
+
+ALTER TABLE public.analytics_events ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE public.cart_items ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE public.categories ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE public.contest_results ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE public.contests ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE public.coupon_uses ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE public.coupons ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE public.course_lessons ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE public.course_sections ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE public.ip_login_attempts ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE public.lesson_progress ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE public.login_attempts ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE public.media ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE public.media_comments ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE public.media_likes ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE public.media_saves ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE public.media_watch_history ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE public.notification_deliveries ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE public.notifications ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE public.orders ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE public.payments ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE public.point_logs ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE public.product_qa ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE public.products ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE public.reviews ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE public.shop_visits ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE public.shops ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE public.subscriptions ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE public.user_device_tokens ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE public.user_library ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE public.user_points ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE public.user_sessions ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE public.users ENABLE ROW LEVEL SECURITY;
+
+
+-- =========================================================================
+-- RLS POLICIES
+-- =========================================================================
+
+CREATE POLICY "Aktif kullanÄ±cÄ±larÄ± herkes gÃ¶rebilir" ON public.users FOR SELECT USING (((is_active = true) AND (deleted_at IS NULL)));
+
+CREATE POLICY "Aktif Ã¼rÃ¼nler herkese aÃ§Ä±k" ON public.products FOR SELECT USING ((is_active = true));
+
+CREATE POLICY "AlÄ±cÄ±lar dekontunu gÃ¶rebilir" ON public.payments FOR SELECT USING ((order_id IN ( SELECT orders.id
+   FROM public.orders
+  WHERE (orders.buyer_id = (current_setting('app.current_user_id'::text, true))::uuid))));
+
+CREATE POLICY "AlÄ±cÄ±lar kendi sipariÅŸlerini gÃ¶rebilir" ON public.orders FOR SELECT USING ((buyer_id = (current_setting('app.current_user_id'::text, true))::uuid));
+
+CREATE POLICY "Herkes ziyaret kaydÄ± oluÅŸturabilir" ON public.shop_visits FOR INSERT WITH CHECK (((user_id IS NULL) OR (user_id = (current_setting('app.current_user_id'::text, true))::uuid)));
+
+CREATE POLICY "Kategoriler herkese aÃ§Ä±k" ON public.categories FOR SELECT USING ((is_active = true));
+
+CREATE POLICY "KullanÄ±cÄ± beÄŸeni yapabilir/silebilir" ON public.media_likes USING ((user_id = (current_setting('app.current_user_id'::text, true))::uuid)) WITH CHECK ((user_id = (current_setting('app.current_user_id'::text, true))::uuid));
+
+CREATE POLICY "KullanÄ±cÄ± beÄŸenileri gÃ¶rebilir" ON public.media_likes FOR SELECT USING ((user_id = (current_setting('app.current_user_id'::text, true))::uuid));
+
+CREATE POLICY "KullanÄ±cÄ± bildirimini okundu yapabilir" ON public.notifications FOR UPDATE USING ((user_id = (current_setting('app.current_user_id'::text, true))::uuid));
+
+CREATE POLICY "KullanÄ±cÄ± izleme geÃ§miÅŸi oluÅŸturabilir" ON public.media_watch_history FOR INSERT WITH CHECK ((user_id = (current_setting('app.current_user_id'::text, true))::uuid));
+
+CREATE POLICY "KullanÄ±cÄ± kaydedebilir/silebilir" ON public.media_saves USING ((user_id = (current_setting('app.current_user_id'::text, true))::uuid)) WITH CHECK ((user_id = (current_setting('app.current_user_id'::text, true))::uuid));
+
+CREATE POLICY "KullanÄ±cÄ± kayÄ±tlarÄ± gÃ¶rebilir" ON public.media_saves FOR SELECT USING ((user_id = (current_setting('app.current_user_id'::text, true))::uuid));
+
+CREATE POLICY "KullanÄ±cÄ± kendi adÄ±na kupon kullanabilir" ON public.coupon_uses FOR INSERT WITH CHECK ((user_id = (current_setting('app.current_user_id'::text, true))::uuid));
+
+CREATE POLICY "KullanÄ±cÄ± kendi analytics eventini oluÅŸturabilir" ON public.analytics_events FOR INSERT WITH CHECK (((user_id IS NULL) OR (user_id = (current_setting('app.current_user_id'::text, true))::uuid)));
+
+CREATE POLICY "KullanÄ±cÄ± kendi bildirimlerini gÃ¶rebilir" ON public.notifications FOR SELECT USING ((user_id = (current_setting('app.current_user_id'::text, true))::uuid));
+
+CREATE POLICY "KullanÄ±cÄ± kendi cihazlarÄ±nÄ± yÃ¶netebilir" ON public.user_device_tokens USING ((user_id = (current_setting('app.current_user_id'::text, true))::uuid)) WITH CHECK ((user_id = (current_setting('app.current_user_id'::text, true))::uuid));
+
+CREATE POLICY "KullanÄ±cÄ± kendi ilerlemesini gÃ¶rebilir" ON public.lesson_progress FOR SELECT USING ((user_id = (current_setting('app.current_user_id'::text, true))::uuid));
+
+CREATE POLICY "KullanÄ±cÄ± kendi ilerlemesini yÃ¶netebilir" ON public.lesson_progress USING ((user_id = (current_setting('app.current_user_id'::text, true))::uuid)) WITH CHECK ((user_id = (current_setting('app.current_user_id'::text, true))::uuid));
+
+CREATE POLICY "KullanÄ±cÄ± kendi izleme geÃ§miÅŸini gÃ¶rebilir" ON public.media_watch_history FOR SELECT USING ((user_id = (current_setting('app.current_user_id'::text, true))::uuid));
+
+CREATE POLICY "KullanÄ±cÄ± kendi kÃ¼tÃ¼phanesini gÃ¶rebilir" ON public.user_library FOR SELECT USING ((user_id = (current_setting('app.current_user_id'::text, true))::uuid));
+
+CREATE POLICY "KullanÄ±cÄ± kendi maÄŸazasÄ±nÄ± aÃ§abilir" ON public.shops FOR INSERT WITH CHECK ((user_id = (current_setting('app.current_user_id'::text, true))::uuid));
+
+CREATE POLICY "KullanÄ±cÄ± kendi puan geÃ§miÅŸini gÃ¶rebilir" ON public.point_logs FOR SELECT USING ((user_id = (current_setting('app.current_user_id'::text, true))::uuid));
+
+CREATE POLICY "KullanÄ±cÄ± kendi sepetini yÃ¶netebilir" ON public.cart_items USING ((user_id = (current_setting('app.current_user_id'::text, true))::uuid)) WITH CHECK ((user_id = (current_setting('app.current_user_id'::text, true))::uuid));
+
+CREATE POLICY "KullanÄ±cÄ± kendi sorusunu silebilir" ON public.product_qa FOR DELETE USING ((user_id = (current_setting('app.current_user_id'::text, true))::uuid));
+
+CREATE POLICY "KullanÄ±cÄ± kendi takibini silebilir" ON public.subscriptions FOR DELETE USING ((user_id = (current_setting('app.current_user_id'::text, true))::uuid));
+
+CREATE POLICY "KullanÄ±cÄ± kendi takip listesini gÃ¶rebilir" ON public.subscriptions FOR SELECT USING ((user_id = (current_setting('app.current_user_id'::text, true))::uuid));
+
+CREATE POLICY "KullanÄ±cÄ± kendi yarÄ±ÅŸma sonucunu gÃ¶rebilir" ON public.contest_results FOR INSERT WITH CHECK ((user_id = (current_setting('app.current_user_id'::text, true))::uuid));
+
+CREATE POLICY "KullanÄ±cÄ± kendi yorumunu gÃ¼ncelleyebilir" ON public.reviews FOR UPDATE USING ((user_id = (current_setting('app.current_user_id'::text, true))::uuid));
+
+CREATE POLICY "KullanÄ±cÄ± kendi yorumunu silebilir" ON public.reviews FOR DELETE USING ((user_id = (current_setting('app.current_user_id'::text, true))::uuid));
+
+CREATE POLICY "KullanÄ±cÄ± kendi yorumunu yÃ¶netebilir" ON public.media_comments USING ((user_id = (current_setting('app.current_user_id'::text, true))::uuid)) WITH CHECK ((user_id = (current_setting('app.current_user_id'::text, true))::uuid));
+
+CREATE POLICY "KullanÄ±cÄ± kendisi iÃ§in takip oluÅŸturabilir" ON public.subscriptions FOR INSERT WITH CHECK ((user_id = (current_setting('app.current_user_id'::text, true))::uuid));
+
+CREATE POLICY "KullanÄ±cÄ± soru sorabilir" ON public.product_qa FOR INSERT WITH CHECK ((user_id = (current_setting('app.current_user_id'::text, true))::uuid));
+
+CREATE POLICY "KullanÄ±cÄ± yorum yazabilir" ON public.media_comments FOR INSERT WITH CHECK ((user_id = (current_setting('app.current_user_id'::text, true))::uuid));
+
+CREATE POLICY "KullanÄ±cÄ± yorum yazabilir" ON public.reviews FOR INSERT WITH CHECK ((user_id = (current_setting('app.current_user_id'::text, true))::uuid));
+
+CREATE POLICY "Kurs bÃ¶lÃ¼mleri herkese aÃ§Ä±k" ON public.course_sections FOR SELECT USING (true);
+
+CREATE POLICY "Kurs dersleri herkese aÃ§Ä±k" ON public.course_lessons FOR SELECT USING (true);
+
+CREATE POLICY "Liderlik tablosunu herkes gÃ¶rebilir" ON public.user_points FOR SELECT USING (true);
+
+CREATE POLICY "SatÄ±cÄ± kendi analytics verilerini gÃ¶rebilir" ON public.analytics_events FOR SELECT USING ((shop_id IN ( SELECT shops.id
+   FROM public.shops
+  WHERE (shops.user_id = (current_setting('app.current_user_id'::text, true))::uuid))));
+
+CREATE POLICY "SatÄ±cÄ± kendi Ã¼rÃ¼nlerini yÃ¶netebilir" ON public.products USING ((shop_id IN ( SELECT shops.id
+   FROM public.shops
+  WHERE (shops.user_id = (current_setting('app.current_user_id'::text, true))::uuid))));
+
+CREATE POLICY "SatÄ±cÄ± kurs bÃ¶lÃ¼mlerini yÃ¶netebilir" ON public.course_sections USING ((course_id IN ( SELECT products.id
+   FROM public.products
+  WHERE (products.shop_id IN ( SELECT shops.id
+           FROM public.shops
+          WHERE (shops.user_id = (current_setting('app.current_user_id'::text, true))::uuid))))));
+
+CREATE POLICY "SatÄ±cÄ± kurs derslerini yÃ¶netebilir" ON public.course_lessons USING ((course_section_id IN ( SELECT course_sections.id
+   FROM public.course_sections
+  WHERE (course_sections.course_id IN ( SELECT courses.id
+           FROM public.courses
+          WHERE (courses.product_id IN ( SELECT products.id
+                   FROM public.products
+                  WHERE (products.shop_id IN ( SELECT shops.id
+                           FROM public.shops
+                          WHERE (shops.user_id = (current_setting('app.current_user_id'::text, true))::uuid))))))))));
+
+CREATE POLICY "SatÄ±cÄ±lar kendi abonelik durumlarÄ±nÄ± gÃ¶rebilir" ON public.seller_subscriptions FOR SELECT USING ((shop_id IN ( SELECT shops.id
+   FROM public.shops
+  WHERE (shops.user_id = (current_setting('app.current_user_id'::text, true))::uuid))));
+
+CREATE POLICY "SatÄ±cÄ±lar kendi gelir dÃ¶kÃ¼mlerini gÃ¶rebilir" ON public.payments FOR SELECT USING ((order_id IN ( SELECT orders.id
+   FROM public.orders
+  WHERE (orders.shop_id IN ( SELECT shops.id
+           FROM public.shops
+          WHERE (shops.user_id = (current_setting('app.current_user_id'::text, true))::uuid))))));
+
+CREATE POLICY "SatÄ±cÄ±lar kendi maÄŸaza sipariÅŸlerini gÃ¶rebilir" ON public.orders FOR SELECT USING ((shop_id IN ( SELECT shops.id
+   FROM public.shops
+  WHERE (shops.user_id = (current_setting('app.current_user_id'::text, true))::uuid))));
+
+CREATE POLICY "Sorular herkese aÃ§Ä±k" ON public.product_qa FOR SELECT USING (true);
+
+CREATE POLICY "YarÄ±ÅŸma sonuÃ§larÄ± herkese aÃ§Ä±k" ON public.contest_results FOR SELECT USING (true);
+
+CREATE POLICY "YarÄ±ÅŸmalar herkese aÃ§Ä±k" ON public.contests FOR SELECT USING ((is_active = true));
+
+CREATE POLICY "Yorumlar herkese aÃ§Ä±k" ON public.reviews FOR SELECT USING (true);
+
+CREATE POLICY "YorumlarÄ± herkes okuyabilir" ON public.media_comments FOR SELECT USING (true);
+
+CREATE POLICY ip_login_attempts_backend_only ON public.ip_login_attempts USING (false);
+
+CREATE POLICY login_attempts_backend_only ON public.login_attempts USING (false);
+
+CREATE POLICY media_select_active ON public.media FOR SELECT USING ((is_active = true));
+
+CREATE POLICY notification_deliveries_backend_only ON public.notification_deliveries USING (false);
+
+CREATE POLICY sessions_delete_own ON public.user_sessions FOR DELETE USING ((user_id = (current_setting('app.current_user_id'::text, true))::uuid));
+
+CREATE POLICY sessions_select_own ON public.user_sessions FOR SELECT USING ((user_id = (current_setting('app.current_user_id'::text, true))::uuid));
+
+CREATE POLICY shops_select_active ON public.shops FOR SELECT USING ((is_active = true));
+
+CREATE POLICY shops_update_owner ON public.shops FOR UPDATE USING ((user_id = (current_setting('app.current_user_id'::text, true))::uuid));
+
+CREATE POLICY users_update_own ON public.users FOR UPDATE USING ((id = (current_setting('app.current_user_id'::text, true))::uuid));
+
+
+-- =========================================================================
+-- FOREIGN KEYS
+-- =========================================================================
+
+ALTER TABLE ONLY public.admin_audit_logs
+    ADD CONSTRAINT admin_audit_logs_admin_user_id_fkey FOREIGN KEY (admin_user_id) REFERENCES public.users(id) ON DELETE SET NULL;
+
+ALTER TABLE ONLY public.admin_competition_rewards
+    ADD CONSTRAINT admin_competition_rewards_contest_id_fkey FOREIGN KEY (contest_id) REFERENCES public.contests(id) ON DELETE CASCADE;
+
+ALTER TABLE ONLY public.admin_competition_rewards
+    ADD CONSTRAINT admin_competition_rewards_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+ALTER TABLE ONLY public.admin_reports
+    ADD CONSTRAINT admin_reports_reported_by_user_id_fkey FOREIGN KEY (reported_by_user_id) REFERENCES public.users(id) ON DELETE SET NULL;
+
+ALTER TABLE ONLY public.admin_warnings
+    ADD CONSTRAINT admin_warnings_admin_user_id_fkey FOREIGN KEY (admin_user_id) REFERENCES public.users(id) ON DELETE SET NULL;
+
+ALTER TABLE ONLY public.admin_warnings
+    ADD CONSTRAINT admin_warnings_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+ALTER TABLE ONLY public.analytics_events
+    ADD CONSTRAINT analytics_events_order_id_fkey FOREIGN KEY (order_id) REFERENCES public.orders(id) ON DELETE SET NULL;
+
+ALTER TABLE ONLY public.analytics_events
+    ADD CONSTRAINT analytics_events_product_id_fkey FOREIGN KEY (product_id) REFERENCES public.products(id) ON DELETE SET NULL;
+
+ALTER TABLE ONLY public.analytics_events
+    ADD CONSTRAINT analytics_events_shop_id_fkey FOREIGN KEY (shop_id) REFERENCES public.shops(id) ON DELETE CASCADE;
+
+ALTER TABLE ONLY public.analytics_events
+    ADD CONSTRAINT analytics_events_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE SET NULL;
+
+ALTER TABLE ONLY public.cart_items
+    ADD CONSTRAINT cart_items_product_id_fkey FOREIGN KEY (product_id) REFERENCES public.products(id) ON DELETE CASCADE;
+
+ALTER TABLE ONLY public.cart_items
+    ADD CONSTRAINT cart_items_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+ALTER TABLE ONLY public.categories
+    ADD CONSTRAINT categories_parent_id_fkey FOREIGN KEY (parent_id) REFERENCES public.categories(id);
+
+ALTER TABLE ONLY public.contest_results
+    ADD CONSTRAINT contest_results_contest_id_fkey FOREIGN KEY (contest_id) REFERENCES public.contests(id) ON DELETE CASCADE;
+
+ALTER TABLE ONLY public.contest_results
+    ADD CONSTRAINT contest_results_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+ALTER TABLE ONLY public.contests
+    ADD CONSTRAINT contests_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id) ON DELETE SET NULL;
+
+ALTER TABLE ONLY public.coupon_uses
+    ADD CONSTRAINT coupon_uses_coupon_id_fkey FOREIGN KEY (coupon_id) REFERENCES public.coupons(id) ON DELETE CASCADE;
+
+ALTER TABLE ONLY public.coupon_uses
+    ADD CONSTRAINT coupon_uses_order_id_fkey FOREIGN KEY (order_id) REFERENCES public.orders(id) ON DELETE CASCADE;
+
+ALTER TABLE ONLY public.coupon_uses
+    ADD CONSTRAINT coupon_uses_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+ALTER TABLE ONLY public.coupons
+    ADD CONSTRAINT coupons_product_id_fkey FOREIGN KEY (product_id) REFERENCES public.products(id) ON DELETE CASCADE;
+
+ALTER TABLE ONLY public.coupons
+    ADD CONSTRAINT coupons_shop_id_fkey FOREIGN KEY (shop_id) REFERENCES public.shops(id) ON DELETE CASCADE;
+
+ALTER TABLE ONLY public.course_lessons
+    ADD CONSTRAINT course_lessons_section_id_fkey FOREIGN KEY (course_section_id) REFERENCES public.course_sections(id) ON DELETE CASCADE;
+
+ALTER TABLE ONLY public.course_quizzes
+    ADD CONSTRAINT course_quizzes_section_id_fkey FOREIGN KEY (course_section_id) REFERENCES public.course_sections(id) ON DELETE CASCADE;
+
+ALTER TABLE ONLY public.course_sections
+    ADD CONSTRAINT course_sections_course_id_fkey FOREIGN KEY (course_id) REFERENCES public.courses(id) ON DELETE CASCADE;
+
+ALTER TABLE ONLY public.courses
+    ADD CONSTRAINT courses_product_id_fkey FOREIGN KEY (product_id) REFERENCES public.products(id) ON DELETE CASCADE;
+
+ALTER TABLE ONLY public.lesson_progress
+    ADD CONSTRAINT lesson_progress_lesson_id_fkey FOREIGN KEY (lesson_id) REFERENCES public.course_lessons(id) ON DELETE CASCADE;
+
+ALTER TABLE ONLY public.lesson_progress
+    ADD CONSTRAINT lesson_progress_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+ALTER TABLE ONLY public.lesson_resources
+    ADD CONSTRAINT lesson_resources_lesson_id_fkey FOREIGN KEY (course_lesson_id) REFERENCES public.course_lessons(id) ON DELETE CASCADE;
+
+ALTER TABLE ONLY public.media_comments
+    ADD CONSTRAINT media_comments_media_id_fkey FOREIGN KEY (media_id) REFERENCES public.media(id) ON DELETE CASCADE;
+
+ALTER TABLE ONLY public.media_comments
+    ADD CONSTRAINT media_comments_parent_comment_id_fkey FOREIGN KEY (parent_comment_id) REFERENCES public.media_comments(id) ON DELETE CASCADE;
+
+ALTER TABLE ONLY public.media_comments
+    ADD CONSTRAINT media_comments_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+ALTER TABLE ONLY public.media_likes
+    ADD CONSTRAINT media_likes_media_id_fkey FOREIGN KEY (media_id) REFERENCES public.media(id) ON DELETE CASCADE;
+
+ALTER TABLE ONLY public.media_likes
+    ADD CONSTRAINT media_likes_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+ALTER TABLE ONLY public.media
+    ADD CONSTRAINT media_product_id_fkey FOREIGN KEY (product_id) REFERENCES public.products(id) ON DELETE SET NULL;
+
+ALTER TABLE ONLY public.media_saves
+    ADD CONSTRAINT media_saves_media_id_fkey FOREIGN KEY (media_id) REFERENCES public.media(id) ON DELETE CASCADE;
+
+ALTER TABLE ONLY public.media_saves
+    ADD CONSTRAINT media_saves_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+ALTER TABLE ONLY public.media
+    ADD CONSTRAINT media_shop_id_fkey FOREIGN KEY (shop_id) REFERENCES public.shops(id) ON DELETE CASCADE;
+
+ALTER TABLE ONLY public.media_watch_history
+    ADD CONSTRAINT media_watch_history_media_id_fkey FOREIGN KEY (media_id) REFERENCES public.media(id) ON DELETE CASCADE;
+
+ALTER TABLE ONLY public.media_watch_history
+    ADD CONSTRAINT media_watch_history_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+ALTER TABLE ONLY public.notification_deliveries
+    ADD CONSTRAINT notification_deliveries_notification_id_fkey FOREIGN KEY (notification_id) REFERENCES public.notifications(id) ON DELETE CASCADE;
+
+ALTER TABLE ONLY public.notifications
+    ADD CONSTRAINT notifications_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+ALTER TABLE ONLY public.orders
+    ADD CONSTRAINT orders_buyer_id_fkey FOREIGN KEY (buyer_id) REFERENCES public.users(id) ON DELETE RESTRICT;
+
+ALTER TABLE ONLY public.orders
+    ADD CONSTRAINT orders_product_id_fkey FOREIGN KEY (product_id) REFERENCES public.products(id) ON DELETE RESTRICT;
+
+ALTER TABLE ONLY public.orders
+    ADD CONSTRAINT orders_shop_id_fkey FOREIGN KEY (shop_id) REFERENCES public.shops(id) ON DELETE RESTRICT;
+
+ALTER TABLE ONLY public.payments
+    ADD CONSTRAINT payments_order_id_fkey FOREIGN KEY (order_id) REFERENCES public.orders(id) ON DELETE RESTRICT;
+
+ALTER TABLE ONLY public.point_logs
+    ADD CONSTRAINT point_logs_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+ALTER TABLE ONLY public.product_images
+    ADD CONSTRAINT product_images_product_id_fkey FOREIGN KEY (product_id) REFERENCES public.products(id) ON DELETE CASCADE;
+
+ALTER TABLE ONLY public.product_qa
+    ADD CONSTRAINT product_qa_parent_id_fkey FOREIGN KEY (parent_id) REFERENCES public.product_qa(id) ON DELETE CASCADE;
+
+ALTER TABLE ONLY public.product_qa
+    ADD CONSTRAINT product_qa_product_id_fkey FOREIGN KEY (product_id) REFERENCES public.products(id) ON DELETE CASCADE;
+
+ALTER TABLE ONLY public.product_qa
+    ADD CONSTRAINT product_qa_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+ALTER TABLE ONLY public.products
+    ADD CONSTRAINT products_category_id_fkey FOREIGN KEY (category_id) REFERENCES public.categories(id) ON DELETE CASCADE;
+
+ALTER TABLE ONLY public.products
+    ADD CONSTRAINT products_shop_id_fkey FOREIGN KEY (shop_id) REFERENCES public.shops(id) ON DELETE CASCADE;
+
+ALTER TABLE ONLY public.reviews
+    ADD CONSTRAINT reviews_product_id_fkey FOREIGN KEY (product_id) REFERENCES public.products(id) ON DELETE CASCADE;
+
+ALTER TABLE ONLY public.reviews
+    ADD CONSTRAINT reviews_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+ALTER TABLE ONLY public.seller_subscriptions
+    ADD CONSTRAINT seller_subscriptions_shop_id_fkey FOREIGN KEY (shop_id) REFERENCES public.shops(id) ON DELETE CASCADE;
+
+ALTER TABLE ONLY public.shop_visits
+    ADD CONSTRAINT shop_visits_shop_id_fkey FOREIGN KEY (shop_id) REFERENCES public.shops(id) ON DELETE CASCADE;
+
+ALTER TABLE ONLY public.shop_visits
+    ADD CONSTRAINT shop_visits_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE SET NULL;
+
+ALTER TABLE ONLY public.shops
+    ADD CONSTRAINT shops_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+ALTER TABLE ONLY public.subscriptions
+    ADD CONSTRAINT subscriptions_shop_id_fkey FOREIGN KEY (shop_id) REFERENCES public.shops(id) ON DELETE CASCADE;
+
+ALTER TABLE ONLY public.subscriptions
+    ADD CONSTRAINT subscriptions_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+ALTER TABLE ONLY public.user_device_tokens
+    ADD CONSTRAINT user_device_tokens_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+ALTER TABLE ONLY public.user_lesson_progress
+    ADD CONSTRAINT user_lesson_progress_course_lesson_id_fkey FOREIGN KEY (course_lesson_id) REFERENCES public.course_lessons(id) ON DELETE CASCADE;
+
+ALTER TABLE ONLY public.user_lesson_progress
+    ADD CONSTRAINT user_lesson_progress_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+ALTER TABLE ONLY public.user_library
+    ADD CONSTRAINT user_library_product_id_fkey FOREIGN KEY (product_id) REFERENCES public.products(id) ON DELETE CASCADE;
+
+ALTER TABLE ONLY public.user_library
+    ADD CONSTRAINT user_library_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+ALTER TABLE ONLY public.user_points
+    ADD CONSTRAINT user_points_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+ALTER TABLE ONLY public.user_sessions
+    ADD CONSTRAINT user_sessions_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+
+COMMIT;
 

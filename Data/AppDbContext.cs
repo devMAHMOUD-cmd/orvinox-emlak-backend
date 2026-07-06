@@ -1,8 +1,10 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Text.Json;
 using CraftoraApi.Models.Entities;
 using CraftoraApi.Models.Enums;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.ChangeTracking;
 
 namespace CraftoraApi.Data;
 
@@ -14,6 +16,8 @@ public partial class AppDbContext : DbContext
     }
 
     public virtual DbSet<CartItem> CartItems { get; set; }
+
+    public virtual DbSet<AnalyticsEvent> AnalyticsEvents { get; set; }
 
     public virtual DbSet<Category> Categories { get; set; }
 
@@ -39,6 +43,8 @@ public partial class AppDbContext : DbContext
 
     public virtual DbSet<LoginAttempt> LoginAttempts { get; set; }
 
+    public virtual DbSet<IpLoginAttempt> IpLoginAttempts { get; set; }
+
     public virtual DbSet<MediaComment> MediaComments { get; set; }
 
     public virtual DbSet<MediaLike> MediaLikes { get; set; }
@@ -60,6 +66,8 @@ public partial class AppDbContext : DbContext
     public virtual DbSet<PointLog> PointLogs { get; set; }
 
     public virtual DbSet<Product> Products { get; set; }
+
+    public virtual DbSet<ProductImage> ProductImages { get; set; }
 
     public virtual DbSet<ProductQa> ProductQas { get; set; }
 
@@ -90,6 +98,104 @@ public partial class AppDbContext : DbContext
         modelBuilder
             .HasPostgresExtension("citext")
             .HasPostgresExtension("uuid-ossp");
+
+        modelBuilder.Entity<AnalyticsEvent>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("analytics_events_pkey");
+
+            entity.ToTable("analytics_events");
+
+            entity.HasIndex(e => new { e.ShopId, e.CreatedAt }, "idx_analytics_shop_date")
+                .IsDescending(false, true);
+
+            entity.HasIndex(e => new { e.ShopId, e.EventType, e.CreatedAt }, "idx_analytics_shop_event_date")
+                .IsDescending(false, false, true);
+
+            entity.HasIndex(e => new { e.ProductId, e.EventType, e.CreatedAt }, "idx_analytics_product_event_date")
+                .IsDescending(false, false, true)
+                .HasFilter("product_id IS NOT NULL");
+
+            entity.HasIndex(e => e.OrderId, "idx_analytics_order")
+                .HasFilter("order_id IS NOT NULL");
+
+            entity.HasIndex(e => new { e.UserId, e.CreatedAt }, "idx_analytics_user_date")
+                .IsDescending(false, true)
+                .HasFilter("user_id IS NOT NULL");
+
+            entity.HasIndex(e => new { e.SessionId, e.CreatedAt }, "idx_analytics_session_date")
+                .IsDescending(false, true)
+                .HasFilter("session_id IS NOT NULL");
+
+            entity.HasIndex(e => new { e.ShopId, e.Source, e.CreatedAt }, "idx_analytics_shop_source_date")
+                .IsDescending(false, false, true)
+                .HasFilter("source IS NOT NULL");
+
+            entity.HasIndex(e => new { e.ShopId, e.UtmSource, e.CreatedAt }, "idx_analytics_shop_utm_source_date")
+                .IsDescending(false, false, true)
+                .HasFilter("utm_source IS NOT NULL");
+
+            entity.HasIndex(e => e.Metadata, "idx_analytics_metadata_gin")
+                .HasMethod("gin");
+
+            entity.Property(e => e.Id)
+                .HasDefaultValueSql("uuid_generate_v4()")
+                .HasColumnName("id");
+            entity.Property(e => e.ShopId).HasColumnName("shop_id");
+            entity.Property(e => e.ProductId).HasColumnName("product_id");
+            entity.Property(e => e.UserId).HasColumnName("user_id");
+            entity.Property(e => e.OrderId).HasColumnName("order_id");
+            entity.Property(e => e.EventType)
+                .HasColumnType("analytics_event_type")
+                .HasColumnName("event_type");
+            entity.Property(e => e.SessionId)
+                .HasMaxLength(100)
+                .HasColumnName("session_id");
+            entity.Property(e => e.Source)
+                .HasMaxLength(100)
+                .HasColumnName("source");
+            entity.Property(e => e.Referrer).HasColumnName("referrer");
+            entity.Property(e => e.UtmSource)
+                .HasMaxLength(100)
+                .HasColumnName("utm_source");
+            entity.Property(e => e.UtmMedium)
+                .HasMaxLength(100)
+                .HasColumnName("utm_medium");
+            entity.Property(e => e.UtmCampaign)
+                .HasMaxLength(150)
+                .HasColumnName("utm_campaign");
+            entity.Property(e => e.DeviceType)
+                .HasMaxLength(30)
+                .HasColumnName("device_type");
+            entity.Property(e => e.IpAddress).HasColumnName("ip_address");
+            entity.Property(e => e.UserAgent).HasColumnName("user_agent");
+            entity.Property(e => e.Metadata)
+                .HasDefaultValueSql("'{}'::jsonb")
+                .HasColumnType("jsonb")
+                .HasColumnName("metadata");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("CURRENT_TIMESTAMP")
+                .HasColumnName("created_at");
+
+            entity.HasOne(d => d.Shop).WithMany()
+                .HasForeignKey(d => d.ShopId)
+                .OnDelete(DeleteBehavior.Cascade)
+                .HasConstraintName("analytics_events_shop_id_fkey");
+
+            entity.HasOne(d => d.Product).WithMany()
+                .HasForeignKey(d => d.ProductId)
+                .OnDelete(DeleteBehavior.SetNull)
+                .HasConstraintName("analytics_events_product_id_fkey");
+
+            entity.HasOne(d => d.User).WithMany()
+                .HasForeignKey(d => d.UserId)
+                .OnDelete(DeleteBehavior.SetNull)
+                .HasConstraintName("analytics_events_user_id_fkey");
+
+            entity.HasOne(d => d.Order).WithMany()
+                .HasForeignKey(d => d.OrderId)
+                .OnDelete(DeleteBehavior.SetNull)
+                .HasConstraintName("analytics_events_order_id_fkey");
+        });
 
         modelBuilder.Entity<CartItem>(entity =>
         {
@@ -165,11 +271,15 @@ public partial class AppDbContext : DbContext
                 .HasDefaultValueSql("uuid_generate_v4()")
                 .HasColumnName("id");
             entity.Property(e => e.CreatedBy).HasColumnName("created_by");
+            entity.Property(e => e.Description).HasColumnName("description");
             entity.Property(e => e.EndDate).HasColumnName("end_date");
             entity.Property(e => e.IsActive)
                 .HasDefaultValue(true)
                 .HasColumnName("is_active");
             entity.Property(e => e.PrizePool).HasColumnName("prize_pool");
+            entity.Property(e => e.RewardsHidden)
+                .HasDefaultValue(false)
+                .HasColumnName("rewards_hidden");
             entity.Property(e => e.StartDate).HasColumnName("start_date");
             entity.Property(e => e.Title)
                 .HasMaxLength(255)
@@ -193,6 +303,9 @@ public partial class AppDbContext : DbContext
                 .HasDefaultValueSql("uuid_generate_v4()")
                 .HasColumnName("id");
             entity.Property(e => e.ContestId).HasColumnName("contest_id");
+            entity.Property(e => e.JoinedAt)
+                .HasDefaultValueSql("CURRENT_TIMESTAMP")
+                .HasColumnName("joined_at");
             entity.Property(e => e.CreatedAt)
                 .HasDefaultValueSql("CURRENT_TIMESTAMP")
                 .HasColumnName("created_at");
@@ -547,6 +660,23 @@ public partial class AppDbContext : DbContext
             entity.Property(e => e.LastAttemptAt)
                 .HasDefaultValueSql("CURRENT_TIMESTAMP")
                 .HasColumnName("last_attempt_at");
+            entity.Property(e => e.IpAddress).HasColumnName("ip_address");
+            entity.Property(e => e.LockedUntil).HasColumnName("locked_until");
+        });
+
+        modelBuilder.Entity<IpLoginAttempt>(entity =>
+        {
+            entity.HasKey(e => e.IpAddress).HasName("ip_login_attempts_pkey");
+            entity.ToTable("ip_login_attempts");
+            entity.Property(e => e.IpAddress)
+                .HasConversion(
+                    value => System.Net.IPAddress.Parse(value),
+                    value => value.ToString())
+                .HasColumnType("inet")
+                .HasColumnName("ip_address");
+            entity.Property(e => e.AttemptCount).HasDefaultValue(1).HasColumnName("attempt_count");
+            entity.Property(e => e.LastAttemptAt).HasDefaultValueSql("CURRENT_TIMESTAMP").HasColumnName("last_attempt_at");
+            entity.Property(e => e.LockedUntil).HasColumnName("locked_until");
         });
 
         modelBuilder.Entity<MediaComment>(entity =>
@@ -563,6 +693,7 @@ public partial class AppDbContext : DbContext
                 .HasDefaultValueSql("CURRENT_TIMESTAMP")
                 .HasColumnName("created_at");
             entity.Property(e => e.MediaId).HasColumnName("media_id");
+            entity.Property(e => e.ParentCommentId).HasColumnName("parent_comment_id");
             entity.Property(e => e.UpdatedAt)
                 .HasDefaultValueSql("CURRENT_TIMESTAMP")
                 .HasColumnName("updated_at");
@@ -575,6 +706,11 @@ public partial class AppDbContext : DbContext
             entity.HasOne(d => d.User).WithMany(p => p.MediaComments)
                 .HasForeignKey(d => d.UserId)
                 .HasConstraintName("media_comments_user_id_fkey");
+
+            entity.HasOne(d => d.ParentComment).WithMany(p => p.Replies)
+                .HasForeignKey(d => d.ParentCommentId)
+                .OnDelete(DeleteBehavior.Cascade)
+                .HasConstraintName("media_comments_parent_comment_id_fkey");
         });
 
         modelBuilder.Entity<MediaLike>(entity =>
@@ -694,6 +830,9 @@ public partial class AppDbContext : DbContext
             entity.Property(e => e.SaveCount)
                 .HasDefaultValue(0)
                 .HasColumnName("save_count");
+            entity.Property(e => e.ShareCount)
+                .HasDefaultValue(0)
+                .HasColumnName("share_count");
             entity.Property(e => e.ShopId).HasColumnName("shop_id");
             entity.Property(e => e.Status)
                 .HasColumnType("media_status")
@@ -1026,6 +1165,31 @@ public partial class AppDbContext : DbContext
                 .HasConstraintName("products_category_id_fkey");
         });
 
+        modelBuilder.Entity<ProductImage>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("product_images_pkey");
+
+            entity.ToTable("product_images");
+
+            entity.HasIndex(e => e.ProductId, "idx_product_images_product");
+
+            entity.HasIndex(e => new { e.ProductId, e.ObjectKey }, "product_images_product_id_object_key_key").IsUnique();
+
+            entity.Property(e => e.Id)
+                .HasDefaultValueSql("uuid_generate_v4()")
+                .HasColumnName("id");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("CURRENT_TIMESTAMP")
+                .HasColumnName("created_at");
+            entity.Property(e => e.ObjectKey).HasColumnName("object_key");
+            entity.Property(e => e.ProductId).HasColumnName("product_id");
+            entity.Property(e => e.SortOrder).HasColumnName("sort_order");
+
+            entity.HasOne(d => d.Product).WithMany(p => p.ProductImages)
+                .HasForeignKey(d => d.ProductId)
+                .HasConstraintName("product_images_product_id_fkey");
+        });
+
         modelBuilder.Entity<ProductQa>(entity =>
         {
             entity.HasKey(e => e.Id).HasName("product_qa_pkey");
@@ -1072,6 +1236,17 @@ public partial class AppDbContext : DbContext
             entity.Property(e => e.CreatedAt)
                 .HasDefaultValueSql("CURRENT_TIMESTAMP")
                 .HasColumnName("created_at");
+            entity.Property(e => e.Images)
+                .HasDefaultValueSql("'[]'::jsonb")
+                .HasColumnType("jsonb")
+                .HasColumnName("images")
+                .HasConversion(
+                    v => JsonSerializer.Serialize(v, (JsonSerializerOptions?)null),
+                    v => JsonSerializer.Deserialize<List<string>>(v, (JsonSerializerOptions?)null) ?? new List<string>())
+                .Metadata.SetValueComparer(new ValueComparer<List<string>>(
+                    (left, right) => left != null && right != null && left.SequenceEqual(right),
+                    value => value.Aggregate(0, (hash, item) => HashCode.Combine(hash, item.GetHashCode())),
+                    value => value.ToList()));
             entity.Property(e => e.ProductId).HasColumnName("product_id");
             entity.Property(e => e.Rating).HasColumnName("rating");
             entity.Property(e => e.SellerReply).HasColumnName("seller_reply");
@@ -1115,6 +1290,7 @@ public partial class AppDbContext : DbContext
                 .HasColumnName("currency");
             entity.Property(e => e.CurrentPeriodEnd).HasColumnName("current_period_end");
             entity.Property(e => e.GracePeriodEnd).HasColumnName("grace_period_end");
+            entity.Property(e => e.ReminderSentAt).HasColumnName("reminder_sent_at");
             entity.Property(e => e.PaymentProvider)
                 .HasMaxLength(50)
                 .HasDefaultValueSql("'stripe'::character varying")
@@ -1188,7 +1364,11 @@ public partial class AppDbContext : DbContext
             entity.Property(e => e.SocialLinks)
                 .HasDefaultValueSql("'{}'::jsonb")
                 .HasColumnType("jsonb")
-                .HasColumnName("social_links");
+                .HasColumnName("social_links")
+                .HasConversion(
+                    v => JsonSerializer.Serialize(v, (JsonSerializerOptions?)null),
+                    v => JsonSerializer.Deserialize<ShopSocialLinks>(v, (JsonSerializerOptions?)null)
+                );
             entity.Property(e => e.UpdatedAt)
                 .HasDefaultValueSql("CURRENT_TIMESTAMP")
                 .HasColumnName("updated_at");
@@ -1264,7 +1444,11 @@ public partial class AppDbContext : DbContext
 
             entity.HasIndex(e => e.Email, "users_email_key").IsUnique();
 
-            entity.HasIndex(e => e.ProviderId, "users_provider_id_key").IsUnique();
+            entity.HasIndex(e => e.ProviderId, "idx_provider_id_not_null")
+                .IsUnique()
+                .HasFilter("provider_id IS NOT NULL");
+            entity.Property(e => e.DeletedAt)
+                .HasColumnName("deleted_at");
 
             entity.Property(e => e.Id)
                 .HasDefaultValueSql("uuid_generate_v4()")
@@ -1417,7 +1601,11 @@ public partial class AppDbContext : DbContext
             entity.HasKey(e => e.Id).HasName("user_sessions_pkey");
 
             entity.ToTable("user_sessions");
-
+            entity.Property(e => e.IsRevoked)
+                .HasDefaultValue(false)
+                .HasColumnName("is_revoked");
+            entity.Property(e => e.IpAddress)
+                .HasColumnName("ip_address");
             entity.Property(e => e.Id)
                 .HasDefaultValueSql("uuid_generate_v4()")
                 .HasColumnName("id");
