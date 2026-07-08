@@ -1364,11 +1364,7 @@ public partial class AppDbContext : DbContext
             entity.Property(e => e.SocialLinks)
                 .HasDefaultValueSql("'{}'::jsonb")
                 .HasColumnType("jsonb")
-                .HasColumnName("social_links")
-                .HasConversion(
-                    v => JsonSerializer.Serialize(v, (JsonSerializerOptions?)null),
-                    v => JsonSerializer.Deserialize<ShopSocialLinks>(v, (JsonSerializerOptions?)null)
-                );
+                .HasColumnName("social_links");
             entity.Property(e => e.UpdatedAt)
                 .HasDefaultValueSql("CURRENT_TIMESTAMP")
                 .HasColumnName("updated_at");

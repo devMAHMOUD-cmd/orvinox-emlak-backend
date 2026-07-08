@@ -18,6 +18,8 @@ public partial class SellerSubscription
 
     public DateTime? GracePeriodEnd { get; set; }
 
+    public DateTime? ReminderSentAt { get; set; }
+
     public decimal? Amount { get; set; }
 
     public string? Currency { get; set; }

@@ -66,6 +66,8 @@ public partial class Product
 
     public virtual ICollection<ProductQa> ProductQas { get; set; } = new List<ProductQa>();
 
+    public virtual ICollection<ProductImage> ProductImages { get; set; } = new List<ProductImage>();
+
     public virtual ICollection<Review> Reviews { get; set; } = new List<Review>();
 
     public virtual Shop Shop { get; set; } = null!;

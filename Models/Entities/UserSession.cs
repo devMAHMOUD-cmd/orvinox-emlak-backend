@@ -18,6 +18,8 @@ public partial class UserSession
 
     public string? UserAgent { get; set; }
 
+    public bool? IsRevoked { get; set; }
+
     public DateTime ExpiresAt { get; set; }
 
     public DateTime? CreatedAt { get; set; }

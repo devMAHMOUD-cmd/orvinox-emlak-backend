@@ -98,6 +98,20 @@ public sealed class MediaService : IMediaService
         return media.Select(MapToResponse).ToList();
     }
 
+    public async Task<List<MediaResponseDto>> GetMyMediaAsync(Guid userId, int page = 1, int pageSize = 12)
+    {
+        var shop = await _dbContext.Shops
+            .AsNoTracking()
+            .FirstOrDefaultAsync(item => item.UserId == userId && item.IsActive == true);
+
+        if (shop is null)
+        {
+            throw new NotFoundException("Aktif magaza bulunamadi.");
+        }
+
+        return await GetShopMediaAsync(shop.Id, page, pageSize);
+    }
+
     public async Task<MediaResponseDto> UploadMediaAsync(Guid userId, UploadMediaDto dto)
     {
         ArgumentNullException.ThrowIfNull(dto);

@@ -9,11 +9,15 @@ public partial class Contest
 
     public string Title { get; set; } = null!;
 
+    public string? Description { get; set; }
+
     public DateTime StartDate { get; set; }
 
     public DateTime EndDate { get; set; }
 
     public string? PrizePool { get; set; }
+
+    public bool? RewardsHidden { get; set; }
 
     public bool? IsActive { get; set; }
 

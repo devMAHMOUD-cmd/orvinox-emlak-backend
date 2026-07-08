@@ -8,6 +8,8 @@ public interface IMediaService
 
     Task<List<MediaResponseDto>> GetShopMediaAsync(Guid shopId, int page = 1, int pageSize = 10);
 
+    Task<List<MediaResponseDto>> GetMyMediaAsync(Guid userId, int page = 1, int pageSize = 12);
+
     Task<MediaResponseDto> UploadMediaAsync(Guid userId, UploadMediaDto dto);
 
     Task ToggleLikeAsync(Guid mediaId, Guid userId);

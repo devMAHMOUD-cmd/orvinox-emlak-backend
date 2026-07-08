@@ -1,0 +1,69 @@
+namespace CraftoraApi.DTOs.Home;
+
+public sealed record HomeTrendingProductDto(
+    Guid Id,
+    string Title,
+    string Description,
+    decimal Price,
+    decimal? OriginalPrice,
+    string Currency,
+    string? CoverImagePublicUrl,
+    decimal? RatingAverage,
+    int ReviewCount,
+    int SalesCount,
+    int ViewCount,
+    Guid ShopId,
+    string ShopName,
+    string ShopSlug);
+
+public sealed record HomeTrendingShopDto(
+    Guid Id,
+    string ShopName,
+    string Slug,
+    string? ShortDescription,
+    string? LogoPublicUrl,
+    string? BannerPublicUrl,
+    int FollowerCount,
+    decimal? Rating,
+    int VisitCount,
+    bool IsVerified);
+
+public sealed record HomeFeaturedCourseDto(
+    Guid CourseId,
+    Guid ProductId,
+    string Title,
+    string Description,
+    decimal Price,
+    decimal? OriginalPrice,
+    string Currency,
+    string? CoverImagePublicUrl,
+    string Level,
+    int TotalDurationInMinutes,
+    int LessonCount,
+    int SectionCount,
+    decimal? RatingAverage,
+    int ReviewCount,
+    int SalesCount,
+    Guid ShopId,
+    string ShopName,
+    string ShopSlug,
+    string? ShopLogoPublicUrl);
+
+public sealed record HomeReelDto(
+    Guid Id,
+    Guid ShopId,
+    string ShopName,
+    string? ShopLogoPublicUrl,
+    Guid? ProductId,
+    string? ProductTitle,
+    string VideoUrl,
+    string? VideoPublicUrl,
+    string? ThumbnailPublicUrl,
+    string? Caption,
+    int ViewCount,
+    int LikeCount,
+    int SaveCount,
+    int ShareCount,
+    int CommentCount,
+    IReadOnlyList<string> Hashtags,
+    DateTime? CreatedAt);

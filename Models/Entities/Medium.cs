@@ -23,6 +23,8 @@ public partial class Medium
 
     public int? SaveCount { get; set; }
 
+    public int? ShareCount { get; set; }
+
     public int? CommentCount { get; set; }
 
     public DateTime? CreatedAt { get; set; }

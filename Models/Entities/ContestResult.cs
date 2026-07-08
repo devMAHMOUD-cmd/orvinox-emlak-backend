@@ -17,6 +17,8 @@ public partial class ContestResult
 
     public bool? RewardClaimed { get; set; }
 
+    public DateTime? JoinedAt { get; set; }
+
     public DateTime? CreatedAt { get; set; }
 
     public virtual Contest Contest { get; set; } = null!;
