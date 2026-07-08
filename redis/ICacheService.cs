@@ -14,6 +14,10 @@ public interface ICacheService
 
     Task<bool> ExistsAsync(string key, CancellationToken cancellationToken = default);
 
+    Task<bool> TryAcquireLockAsync(string key, string value, TimeSpan expiry);
+
+    Task ReleaseLockAsync(string key, string value);
+
     Task<long> IncrementAsync(
         string key,
         long value = 1,

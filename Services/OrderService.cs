@@ -6,6 +6,7 @@ using CraftoraApi.Infrastructure.Messaging.Contracts;
 using CraftoraApi.Middleware;
 using CraftoraApi.Models.Entities;
 using CraftoraApi.Models.Enums;
+using CraftoraApi.Redis;
 using CraftoraApi.Services.Interfaces;
 using Microsoft.EntityFrameworkCore;
 
@@ -15,22 +16,26 @@ public sealed class OrderService : IOrderService
 {
     private const string DefaultCurrency = "USD";
     private const decimal PlatformFeeRate = 0.01m;
+    private static readonly TimeSpan CheckoutLockTtl = TimeSpan.FromMinutes(3);
 
     private readonly AppDbContext _dbContext;
     private readonly IPaymentService _paymentService;
     private readonly INotificationService _notificationService;
     private readonly IRabbitMqPublisher _rabbitMqPublisher;
+    private readonly ICacheService _cacheService;
 
     public OrderService(
         AppDbContext dbContext,
         IPaymentService paymentService,
         INotificationService notificationService,
-        IRabbitMqPublisher rabbitMqPublisher)
+        IRabbitMqPublisher rabbitMqPublisher,
+        ICacheService cacheService)
     {
         _dbContext = dbContext ?? throw new ArgumentNullException(nameof(dbContext));
         _paymentService = paymentService ?? throw new ArgumentNullException(nameof(paymentService));
         _notificationService = notificationService ?? throw new ArgumentNullException(nameof(notificationService));
         _rabbitMqPublisher = rabbitMqPublisher ?? throw new ArgumentNullException(nameof(rabbitMqPublisher));
+        _cacheService = cacheService ?? throw new ArgumentNullException(nameof(cacheService));
     }
 
     public async Task<List<OrderResponseDto>> CheckoutCartAsync(Guid buyerId, CheckoutRequestDto request)
@@ -46,6 +51,17 @@ public sealed class OrderService : IOrderService
             throw new UnauthorizedException("Geçersiz kullanıcı.");
         }
 
+        var checkoutLockKey = GetCheckoutLockKey(buyerId);
+        var checkoutLockValue = Guid.NewGuid().ToString("N");
+        var lockAcquired = await TryAcquireCheckoutLockAsync(checkoutLockKey, checkoutLockValue);
+
+        if (!lockAcquired)
+        {
+            throw new BadRequestException("Devam eden bir odeme isleminiz var.");
+        }
+
+        try
+        {
         var cartItems = await _dbContext.CartItems
             .Include(item => item.Product)
             .ThenInclude(product => product.Shop)
@@ -127,6 +143,8 @@ public sealed class OrderService : IOrderService
             }
             else
             {
+                order.Status = OrderStatus.Completed;
+                order.UpdatedAt = DateTime.UtcNow;
                 successfulOrders.Add(order);
             }
 
@@ -145,14 +163,17 @@ public sealed class OrderService : IOrderService
 
         foreach (var order in successfulOrders)
         {
-            order.Status = OrderStatus.Completed;
-
             var product = cartItems.First(item => item.ProductId == order.ProductId).Product;
             await SendOrderNotificationsAsync(order, product, buyer);
             await PublishInvoiceCommandAsync(order, buyer);
         }
 
         return createdOrders.Select(MapToResponse).ToList();
+        }
+        finally
+        {
+            await ReleaseCheckoutLockSafelyAsync(checkoutLockKey, checkoutLockValue);
+        }
     }
 
     public async Task<List<OrderResponseDto>> GetMyOrdersAsync(Guid buyerId)
@@ -164,6 +185,35 @@ public sealed class OrderService : IOrderService
             .ToListAsync();
 
         return orders.Select(MapToResponse).ToList();
+    }
+
+    private async Task<bool> TryAcquireCheckoutLockAsync(string key, string value)
+    {
+        try
+        {
+            return await _cacheService.TryAcquireLockAsync(key, value, CheckoutLockTtl);
+        }
+        catch
+        {
+            throw new BadRequestException("Odeme islemi su anda baslatilamiyor. Lutfen tekrar deneyin.");
+        }
+    }
+
+    private async Task ReleaseCheckoutLockSafelyAsync(string key, string value)
+    {
+        try
+        {
+            await _cacheService.ReleaseLockAsync(key, value);
+        }
+        catch
+        {
+            // Lock has a short TTL; payment result should not fail after transaction commit because Redis release failed.
+        }
+    }
+
+    private static string GetCheckoutLockKey(Guid buyerId)
+    {
+        return $"checkout:lock:user:{buyerId:D}";
     }
 
     private async Task SendOrderNotificationsAsync(Order order, Product product, User buyer)

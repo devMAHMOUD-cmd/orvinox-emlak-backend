@@ -7,6 +7,13 @@ namespace CraftoraApi.Redis;
 public sealed class CacheService : ICacheService
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+    private const string ReleaseLockScript = """
+        if redis.call("GET", KEYS[1]) == ARGV[1] then
+            return redis.call("DEL", KEYS[1])
+        end
+
+        return 0
+        """;
 
     private readonly IDistributedCache _cache;
     private readonly IDatabase _redisDatabase;
@@ -73,6 +80,48 @@ public sealed class CacheService : ICacheService
 
         var cachedValue = await _cache.GetStringAsync(key, cancellationToken);
         return cachedValue is not null;
+    }
+
+    public async Task<bool> TryAcquireLockAsync(string key, string value, TimeSpan expiry)
+    {
+        if (string.IsNullOrWhiteSpace(key))
+        {
+            throw new ArgumentException("Cache key cannot be empty.", nameof(key));
+        }
+
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            throw new ArgumentException("Lock value cannot be empty.", nameof(value));
+        }
+
+        if (expiry <= TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(expiry), "Lock expiry must be positive.");
+        }
+
+        return await _redisDatabase.StringSetAsync(
+            key,
+            value,
+            expiry,
+            When.NotExists);
+    }
+
+    public async Task ReleaseLockAsync(string key, string value)
+    {
+        if (string.IsNullOrWhiteSpace(key))
+        {
+            throw new ArgumentException("Cache key cannot be empty.", nameof(key));
+        }
+
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            throw new ArgumentException("Lock value cannot be empty.", nameof(value));
+        }
+
+        await _redisDatabase.ScriptEvaluateAsync(
+            ReleaseLockScript,
+            [new RedisKey(key)],
+            [new RedisValue(value)]);
     }
 
     public async Task<long> IncrementAsync(

@@ -186,11 +186,31 @@ public sealed class S3StorageService : IStorageService, IDisposable
 
         foreach (var bucketName in RequiredBuckets)
         {
-            await _s3Client.PutCORSConfigurationAsync(new PutCORSConfigurationRequest
+            try
             {
-                BucketName = bucketName,
-                Configuration = configuration
-            });
+                await _s3Client.PutCORSConfigurationAsync(new PutCORSConfigurationRequest
+                {
+                    BucketName = bucketName,
+                    Configuration = configuration
+                });
+            }
+            catch (AmazonS3Exception exception)
+            {
+                _logger.LogWarning(
+                    exception,
+                    "Storage CORS configuration could not be applied. BucketName: {BucketName}, ErrorCode: {ErrorCode}, Message: {Message}",
+                    bucketName,
+                    exception.ErrorCode,
+                    exception.Message);
+            }
+            catch (Exception exception)
+            {
+                _logger.LogWarning(
+                    exception,
+                    "Storage CORS configuration could not be applied. BucketName: {BucketName}, Message: {Message}",
+                    bucketName,
+                    exception.Message);
+            }
         }
     }
 

@@ -49,7 +49,6 @@ public sealed class CompetitionService : ICompetitionService
             .AnyAsync(
                 result => result.ContestId == contest.Id && result.UserId == currentUserId,
                 cancellationToken);
-
         if (!alreadyJoined)
         {
             _dbContext.ContestResults.Add(new ContestResult

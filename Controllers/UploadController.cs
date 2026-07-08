@@ -65,7 +65,7 @@ public sealed class UploadController : ControllerBase
 
         if (!Guid.TryParse(userIdClaim, out var userId))
         {
-            throw new UnauthorizedException("Geçersiz kullanıcı token'ı.");
+            throw new UnauthorizedException("Gecersiz kullanici token'i.");
         }
 
         var fileUploadedEvent = new FileUploadedEvent(
@@ -78,15 +78,14 @@ public sealed class UploadController : ControllerBase
         var endpoint = await _sendEndpointProvider.GetSendEndpoint(new Uri("queue:file_processing_queue"));
         await endpoint.Send(fileUploadedEvent);
 
-        return Ok(new { message = "Dosya işleme kuyruğuna alındı." });
+        return Ok(new { message = "Dosya isleme kuyruguna alindi." });
     }
 
     [HttpDelete("file")]
-    public async Task<IActionResult> DeleteFileAsync(
+    public IActionResult DeleteFile(
         [FromQuery] string bucketName,
         [FromQuery] string objectKey)
     {
-        await _storageService.DeleteFileAsync(bucketName, objectKey);
-        return Ok(new { message = "Dosya başarıyla silindi." });
+        return NotFound();
     }
 }
