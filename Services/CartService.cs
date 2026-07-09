@@ -5,6 +5,7 @@ using CraftoraApi.Models.Entities;
 using CraftoraApi.Models.Enums;
 using CraftoraApi.Services.Interfaces;
 using Microsoft.EntityFrameworkCore;
+using Npgsql;
 
 namespace CraftoraApi.Services;
 
@@ -52,7 +53,14 @@ public sealed class CartService : ICartService
             cartItem.UpdatedAt = DateTime.UtcNow;
         }
 
-        await _dbContext.SaveChangesAsync();
+        try
+        {
+            await _dbContext.SaveChangesAsync();
+        }
+        catch (DbUpdateException exception) when (IsDuplicatePurchaseException(exception))
+        {
+            throw new BadRequestException("Bu ürün zaten kütüphanenizde mevcut.");
+        }
 
         return await GetUserCartAsync(userId);
     }
@@ -142,5 +150,12 @@ public sealed class CartService : ICartService
         {
             throw new BadRequestException("Miktar 1 veya daha buyuk olmalidir.");
         }
+    }
+
+    private static bool IsDuplicatePurchaseException(DbUpdateException exception)
+    {
+        return exception.InnerException is PostgresException postgresException &&
+            postgresException.SqlState == "P0001" &&
+            postgresException.MessageText.Contains("zaten kutuphanenizde", StringComparison.OrdinalIgnoreCase);
     }
 }
