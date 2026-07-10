@@ -1,10 +1,7 @@
-using CraftoraApi.Data;
 using CraftoraApi.Extensions;
 using CraftoraApi.Services.Interfaces;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Hosting;
 using Serilog;
-using System.Data;
 using Serilog.Events;
 using Serilog.Formatting.Compact;
 
@@ -149,32 +146,6 @@ class Program
             // ──────────────────────────────────────────────────────────────────────────────
             // VERİTABANI İNŞASI VE BAŞLATMA
             // ──────────────────────────────────────────────────────────────────────────────
-            await using (var scope = app.Services.CreateAsyncScope())
-            {
-                var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-                var pendingMigrations = (await db.Database.GetPendingMigrationsAsync()).ToList();
-
-                if (pendingMigrations.Count > 0)
-                {
-                    var userTableCount = await GetUserTableCountAsync(db);
-
-                    if (userTableCount == 0)
-                    {
-                        await db.Database.ExecuteSqlRawAsync("""DROP TABLE IF EXISTS "__EFMigrationsHistory";""");
-                        await db.Database.EnsureCreatedAsync();
-                        await MarkMigrationsAsAppliedAsync(db, pendingMigrations);
-                        Log.Information("Bos veritabani icin sema olusturuldu ve migration history baseline edildi.");
-                    }
-                    else
-                    {
-                        await db.Database.MigrateAsync();
-                        Log.Information("Veritabani migration'lari basariyla uygulandi.");
-                    }
-                }
-
-                await DatabaseHardening.ApplyAsync(db);
-            }
-
             await app.RunAsync();
         }
         catch (HostAbortedException)
@@ -193,58 +164,4 @@ class Program
         }
     }
 
-    private static async Task<int> GetUserTableCountAsync(AppDbContext db)
-    {
-        var connection = db.Database.GetDbConnection();
-        var shouldClose = connection.State != ConnectionState.Open;
-
-        if (shouldClose)
-        {
-            await connection.OpenAsync();
-        }
-
-        try
-        {
-            await using var command = connection.CreateCommand();
-            command.CommandText = """
-                SELECT COUNT(*)
-                FROM information_schema.tables
-                WHERE table_schema = 'public'
-                  AND table_type = 'BASE TABLE'
-                  AND table_name <> '__EFMigrationsHistory';
-                """;
-
-            var result = await command.ExecuteScalarAsync();
-            return Convert.ToInt32(result);
-        }
-        finally
-        {
-            if (shouldClose)
-            {
-                await connection.CloseAsync();
-            }
-        }
-    }
-
-    private static async Task MarkMigrationsAsAppliedAsync(
-        AppDbContext db,
-        IReadOnlyCollection<string> migrations)
-    {
-        await db.Database.ExecuteSqlRawAsync("""
-            CREATE TABLE IF NOT EXISTS "__EFMigrationsHistory" (
-                "MigrationId" character varying(150) NOT NULL,
-                "ProductVersion" character varying(32) NOT NULL,
-                CONSTRAINT "PK___EFMigrationsHistory" PRIMARY KEY ("MigrationId")
-            );
-            """);
-
-        foreach (var migration in migrations)
-        {
-            await db.Database.ExecuteSqlInterpolatedAsync($"""
-                INSERT INTO "__EFMigrationsHistory" ("MigrationId", "ProductVersion")
-                VALUES ({migration}, {"9.0.0"})
-                ON CONFLICT ("MigrationId") DO NOTHING;
-                """);
-        }
-    }
 }
