@@ -493,3 +493,10 @@ appsettings.Production.json
 firebase-credentials.json
 .env.*
 secrets/
+# Craftora backup scripts (Backup*/ kuralindan istisna)
+!scripts/backup/
+!scripts/backup/*
+
+# Gercek yedek dosyalari repoda durmaz
+/backups/
+*.dump

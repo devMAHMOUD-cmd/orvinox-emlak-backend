@@ -96,3 +96,41 @@ docker compose logs -f craftora_api
 - Migration, hardening, RLS policy ve trigger islemleri sadece admin/superuser yetkili kullanici ile calistirilmalidir.
 - Runtime backend ileride `craftora_app` ile baglanacak. Bu rol `NOSUPERUSER` ve `NOBYPASSRLS` olacak; RLS'in gercekten devreye girmesi icin bu zorunludur.
 - `admin` rolu migration/hardening gibi DDL isleri icin kalir; runtime API baglantisi icin kullanilmamalidir.
+
+## Backup
+
+PostgreSQL backup scriptleri `scripts/backup/` altindadir.
+
+Prod Linux sunucuda once calistirma izni ver:
+
+```bash
+chmod +x scripts/backup/backup_postgres.sh scripts/backup/restore_postgres.sh
+```
+
+Manuel backup:
+
+```bash
+./scripts/backup/backup_postgres.sh
+```
+
+Ornek cron kurulumu, her gece 03:00:
+
+```bash
+crontab -e
+```
+
+```cron
+0 3 * * * cd /opt/craftora/CoreBackendApi && /opt/craftora/CoreBackendApi/scripts/backup/backup_postgres.sh >> /opt/craftora/backups/logs/postgres_backup_cron.log 2>&1
+```
+
+Restore ornegi:
+
+```bash
+./scripts/backup/restore_postgres.sh /opt/craftora/backups/postgres/craftora_20260710_030000.dump CraftoraMobile_restore
+```
+
+TODO:
+
+- Offsite upload ekle: Backblaze B2, Hetzner Storage Box, AWS S3 veya uzak MinIO.
+- MinIO bucket backup icin `mc mirror` scripti ekle.
+- Ayda bir restore testi yap ve sonucu kaydet.
