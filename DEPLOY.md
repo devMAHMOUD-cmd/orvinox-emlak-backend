@@ -134,3 +134,8 @@ TODO:
 - Offsite upload ekle: Backblaze B2, Hetzner Storage Box, AWS S3 veya uzak MinIO.
 - MinIO bucket backup icin `mc mirror` scripti ekle.
 - Ayda bir restore testi yap ve sonucu kaydet.
+
+
+
+
+423bf130-b4e5-4948-9d2f-c4d7b5a196ff

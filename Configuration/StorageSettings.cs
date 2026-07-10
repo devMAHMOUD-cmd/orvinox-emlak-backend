@@ -6,6 +6,10 @@ public sealed class StorageSettings
 
     public string PublicServiceUrl { get; set; } = string.Empty;
 
+    public string? PublicEndpoint { get; set; }
+
+    public bool? PublicUseSSL { get; set; }
+
     public string AccessKey { get; set; } = string.Empty;
 
     public string SecretKey { get; set; } = string.Empty;

@@ -683,12 +683,26 @@ public static class ServiceExtensions
             settings.ForcePathStyle = true;
         }
 
-        var publicEndpoint = Environment.GetEnvironmentVariable("MINIO_PUBLIC_ENDPOINT")
-            ?? minioSettings["PublicEndpoint"];
+        var publicEndpoint = GetFirstNonWhiteSpace(
+            settings.PublicEndpoint,
+            Environment.GetEnvironmentVariable("MINIO_PUBLIC_ENDPOINT"),
+            minioSettings["PublicEndpoint"]);
         if (string.IsNullOrWhiteSpace(settings.PublicServiceUrl) &&
             !string.IsNullOrWhiteSpace(publicEndpoint))
         {
-            settings.PublicServiceUrl = NormalizeStorageEndpoint(publicEndpoint, scheme);
+            settings.PublicEndpoint = publicEndpoint;
+            var publicUseSsl = GetOptionalBoolean(Environment.GetEnvironmentVariable("MINIO_PUBLIC_USE_SSL"))
+                ?? GetOptionalBoolean(minioSettings["PublicUseSSL"])
+                ?? settings.PublicUseSSL
+                ?? useSsl;
+
+            settings.PublicUseSSL = publicUseSsl;
+
+            var publicScheme = publicUseSsl
+                ? "https"
+                : "http";
+
+            settings.PublicServiceUrl = NormalizeStorageEndpoint(publicEndpoint, publicScheme);
         }
 
         if (string.IsNullOrWhiteSpace(settings.PublicServiceUrl))
@@ -719,6 +733,18 @@ public static class ServiceExtensions
             endpoint.StartsWith("https://", StringComparison.OrdinalIgnoreCase)
             ? endpoint.TrimEnd('/')
             : $"{scheme}://{endpoint.TrimEnd('/')}";
+    }
+
+    private static bool? GetOptionalBoolean(string? value)
+    {
+        return bool.TryParse(value, out var parsedValue)
+            ? parsedValue
+            : null;
+    }
+
+    private static string? GetFirstNonWhiteSpace(params string?[] values)
+    {
+        return values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
     }
 
     private static void ApplyEmailEnvironmentFallbacks(EmailSettings settings)
