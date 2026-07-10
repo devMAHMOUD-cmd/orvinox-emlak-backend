@@ -5,6 +5,7 @@ using CraftoraApi.Models.Entities;
 using CraftoraApi.Models.Enums;
 using CraftoraApi.Services.Interfaces;
 using Microsoft.EntityFrameworkCore;
+using Npgsql;
 
 namespace CraftoraApi.Services;
 
@@ -134,9 +135,16 @@ public sealed class CouponService : ICouponService
 
     public async Task RecordCouponUsageAsync(Guid userId, Guid couponId, Guid orderId)
     {
-        var coupon = await _dbContext.Coupons.FirstOrDefaultAsync(coupon =>
-            coupon.Id == couponId &&
-            coupon.IsActive == true);
+        await using var transaction = await _dbContext.Database.BeginTransactionAsync();
+
+        var coupon = await _dbContext.Coupons
+            .FromSqlInterpolated($"""
+                SELECT *
+                FROM coupons
+                WHERE id = {couponId} AND is_active = true
+                FOR UPDATE
+                """)
+            .FirstOrDefaultAsync();
 
         if (coupon is null)
         {
@@ -172,10 +180,15 @@ public sealed class CouponService : ICouponService
             UsedAt = DateTime.UtcNow
         });
 
-        await _dbContext.SaveChangesAsync();
-
-        coupon.UsedCount = (coupon.UsedCount ?? 0) + 1;
-        await _dbContext.SaveChangesAsync();
+        try
+        {
+            await _dbContext.SaveChangesAsync();
+            await transaction.CommitAsync();
+        }
+        catch (DbUpdateException exception) when (IsDuplicateCouponUse(exception))
+        {
+            throw new ConflictException("Bu kupon daha once kullanilmis.");
+        }
     }
 
     private async Task EnsureCanCreateCouponAsync(Guid userId, Guid shopOwnerId)
@@ -262,5 +275,12 @@ public sealed class CouponService : ICouponService
             DiscountValue: coupon.DiscountValue,
             ExpirationDate: coupon.ExpiresAt,
             IsActive: coupon.IsActive ?? false);
+    }
+
+    private static bool IsDuplicateCouponUse(DbUpdateException exception)
+    {
+        return exception.InnerException is PostgresException postgresException &&
+            postgresException.SqlState == PostgresErrorCodes.UniqueViolation &&
+            postgresException.ConstraintName == "coupon_uses_coupon_id_user_id_key";
     }
 }

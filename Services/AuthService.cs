@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Net;
 using CraftoraApi.Data;
 using CraftoraApi.DTOs.Auth;
 using CraftoraApi.Infrastructure.Messaging.Contracts;
@@ -398,7 +399,7 @@ public sealed class AuthService : IAuthService
     {
         var displayName = string.IsNullOrWhiteSpace(fullName)
             ? "Craftora kullanicisi"
-            : fullName.Trim();
+            : WebUtility.HtmlEncode(fullName.Trim());
 
         return $"""
             <h2>Merhaba {displayName},</h2>

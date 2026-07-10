@@ -78,6 +78,11 @@ public sealed class OrderService : IOrderService
             throw new BadRequestException("Sepetiniz boş.");
         }
 
+        if (cartItems.Any(cartItem => cartItem.Product.Shop.UserId == buyerId))
+        {
+            throw new BadRequestException("Kendi urununuzu satin alamazsiniz.");
+        }
+
         await using var transaction = await _dbContext.Database.BeginTransactionAsync();
 
         var createdOrders = new List<Order>();

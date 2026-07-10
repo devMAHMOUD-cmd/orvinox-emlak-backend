@@ -18,6 +18,7 @@ using Elastic.Clients.Elasticsearch;
 using Npgsql;
 using RabbitMQ.Client;
 using SendGrid.Extensions.DependencyInjection;
+using Serilog;
 using StackExchange.Redis;
 using CraftoraApi.Configuration;
 using CraftoraApi.Data; // ← yeni namespace
@@ -517,23 +518,25 @@ public static class ServiceExtensions
 
         #region CORS
 
-        // CORS politikası - appsettings'ten AllowedOrigins'i oku
+        // CORS politikasi - appsettings'ten AllowedOrigins'i oku
         var corsSettings = configuration.GetSection("Cors");
         var allowedOrigins = corsSettings.GetSection("AllowedOrigins").Get<string[]>()
-            ?? new[] { "http://localhost:3000", "http://localhost:5173" };
+            ?? Array.Empty<string>();
+
+        allowedOrigins = allowedOrigins
+            .Where(origin => !string.IsNullOrWhiteSpace(origin))
+            .Select(origin => origin.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        if (allowedOrigins.Length == 0)
+        {
+            Log.Warning("Cors:AllowedOrigins is empty. CORS will reject all browser origins until it is configured.");
+        }
 
         services.AddCors(options =>
         {
             options.AddPolicy("CraftoraCorsPolicy", builder =>
-            {
-                builder
-                    .WithOrigins("http://localhost:5173", "http://localhost:3000")
-                    .AllowAnyHeader()
-                    .AllowAnyMethod()
-                    .AllowCredentials();
-            });
-
-            options.AddPolicy("CraftoraPolicy", builder =>
             {
                 builder
                     .WithOrigins(allowedOrigins)
