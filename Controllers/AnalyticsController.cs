@@ -1,8 +1,10 @@
 using System.Security.Claims;
 using CraftoraApi.DTOs.Analytics;
+using CraftoraApi.Middleware;
 using CraftoraApi.Services.Interfaces;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 
 namespace CraftoraApi.Controllers;
 
@@ -10,6 +12,14 @@ namespace CraftoraApi.Controllers;
 [Route("api/analytics")]
 public sealed class AnalyticsController : ControllerBase
 {
+    private static readonly HashSet<string> PublicAllowedEventTypes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "shop_visit",
+        "shopvisit",
+        "product_view",
+        "productview"
+    };
+
     private readonly IAnalyticsEventService _analyticsEventService;
 
     public AnalyticsController(IAnalyticsEventService analyticsEventService)
@@ -19,8 +29,14 @@ public sealed class AnalyticsController : ControllerBase
 
     [HttpPost("events")]
     [AllowAnonymous]
+    [EnableRateLimiting("general")]
     public async Task<IActionResult> TrackEvent([FromBody] TrackAnalyticsEventDto dto, CancellationToken cancellationToken)
     {
+        if (!PublicAllowedEventTypes.Contains(dto.EventType.Trim()))
+        {
+            throw new BadRequestException("Bu event tipi bu endpoint uzerinden gonderilemez.");
+        }
+
         var userId = GetCurrentUserId();
         var userAgent = Request.Headers.UserAgent.ToString();
         var referrer = Request.Headers.Referer.ToString();

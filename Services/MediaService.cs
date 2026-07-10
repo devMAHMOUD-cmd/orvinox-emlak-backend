@@ -188,13 +188,10 @@ public sealed class MediaService : IMediaService
                 UserId = userId,
                 CreatedAt = DateTime.UtcNow
             });
-
-            media.LikeCount = (media.LikeCount ?? 0) + 1;
         }
         else if (like is not null)
         {
             _dbContext.MediaLikes.Remove(like);
-            media.LikeCount = Math.Max((media.LikeCount ?? 0) - 1, 0);
         }
 
         media.UpdatedAt = DateTime.UtcNow;
@@ -226,13 +223,10 @@ public sealed class MediaService : IMediaService
                 UserId = userId,
                 CreatedAt = DateTime.UtcNow
             });
-
-            media.SaveCount = (media.SaveCount ?? 0) + 1;
         }
         else
         {
             _dbContext.MediaSaves.Remove(save);
-            media.SaveCount = Math.Max((media.SaveCount ?? 0) - 1, 0);
         }
 
         media.UpdatedAt = DateTime.UtcNow;
@@ -266,7 +260,6 @@ public sealed class MediaService : IMediaService
         };
 
         _dbContext.MediaComments.Add(comment);
-        media.CommentCount = (media.CommentCount ?? 0) + 1;
         media.UpdatedAt = DateTime.UtcNow;
 
         await _dbContext.SaveChangesAsync();
@@ -304,7 +297,6 @@ public sealed class MediaService : IMediaService
             throw new ForbiddenException("Bu yorumu silme yetkiniz yok.");
         }
 
-        comment.Media.CommentCount = Math.Max((comment.Media.CommentCount ?? 0) - 1, 0);
         comment.Media.UpdatedAt = DateTime.UtcNow;
 
         _dbContext.MediaComments.Remove(comment);

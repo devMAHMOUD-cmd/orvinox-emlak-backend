@@ -3,7 +3,9 @@ using CraftoraApi.DTOs.Report;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.AspNetCore.RateLimiting;
 using CraftoraApi.Data;
+using CraftoraApi.Middleware;
 
 namespace CraftoraApi.Controllers;
 
@@ -37,7 +39,8 @@ public sealed class ReportsController : ControllerBase
         _dbContext = dbContext ?? throw new ArgumentNullException(nameof(dbContext));
     }
 
-    [AllowAnonymous]
+    [Authorize]
+    [EnableRateLimiting("general")]
     [HttpPost]
     public async Task<IActionResult> CreateReportAsync(
         [FromBody] CreateReportDto dto,
@@ -57,8 +60,29 @@ public sealed class ReportsController : ControllerBase
         }
 
         var reportId = Guid.NewGuid();
-        var reportedByUserId = TryGetCurrentUserId();
+        var reportedByUserId = GetCurrentUserId();
         var createdAt = DateTime.UtcNow;
+
+        var hasOpenReport = await _dbContext.Database
+            .SqlQueryRaw<int>(
+                """
+                SELECT 1
+                FROM admin_reports
+                WHERE reported_by_user_id = {0}
+                  AND type = {1}
+                  AND target_id = {2}
+                  AND status IN ('open', 'pending')
+                LIMIT 1
+                """,
+                reportedByUserId,
+                targetType,
+                dto.TargetId)
+            .AnyAsync(cancellationToken);
+
+        if (hasOpenReport)
+        {
+            return Conflict(new { message = "Bu icerik icin zaten acik bir sikayetiniz var." });
+        }
 
         await _dbContext.Database.ExecuteSqlInterpolatedAsync($"""
             INSERT INTO admin_reports (
@@ -88,12 +112,17 @@ public sealed class ReportsController : ControllerBase
         return Ok(new ReportCreatedDto(reportId, "open", createdAt));
     }
 
-    private Guid? TryGetCurrentUserId()
+    private Guid GetCurrentUserId()
     {
         var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value
             ?? User.FindFirst("sub")?.Value;
 
-        return Guid.TryParse(userIdClaim, out var userId) ? userId : null;
+        if (!Guid.TryParse(userIdClaim, out var userId))
+        {
+            throw new UnauthorizedException("Gecersiz kullanici token'i.");
+        }
+
+        return userId;
     }
 
     private static string Normalize(string value)
