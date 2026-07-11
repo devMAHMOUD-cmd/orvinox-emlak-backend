@@ -224,6 +224,12 @@ public sealed class AdminService : IAdminService
     public async Task LockUserAsync(Guid adminUserId, Guid userId, AdminLockUserRequestDto dto, CancellationToken cancellationToken = default)
     {
         var user = await GetUserForUpdateAsync(userId, cancellationToken);
+        await EnsureUserCanBeRestrictedAsync(
+            adminUserId,
+            user,
+            "Kendi hesabinizi kilitleyemezsiniz.",
+            cancellationToken);
+
         user.LockedUntil = dto.Until;
         await _dbContext.SaveChangesAsync(cancellationToken);
         await AddAuditAsync(adminUserId, "lock_user", "user", userId, new { dto.Reason, dto.Until }, cancellationToken);
@@ -240,6 +246,12 @@ public sealed class AdminService : IAdminService
     public async Task SuspendUserAsync(Guid adminUserId, Guid userId, AdminSuspendUserRequestDto dto, CancellationToken cancellationToken = default)
     {
         var user = await GetUserForUpdateAsync(userId, cancellationToken);
+        await EnsureUserCanBeRestrictedAsync(
+            adminUserId,
+            user,
+            "Kendi hesabinizi askiya alamazsiniz.",
+            cancellationToken);
+
         user.IsActive = false;
         await _dbContext.SaveChangesAsync(cancellationToken);
         await AddAuditAsync(adminUserId, "suspend_user", "user", userId, new { dto.Reason }, cancellationToken);
@@ -258,6 +270,12 @@ public sealed class AdminService : IAdminService
     public async Task SoftDeleteUserAsync(Guid adminUserId, Guid userId, CancellationToken cancellationToken = default)
     {
         var user = await GetUserForUpdateAsync(userId, cancellationToken);
+        await EnsureUserCanBeRestrictedAsync(
+            adminUserId,
+            user,
+            "Kendi hesabinizi silemezsiniz.",
+            cancellationToken);
+
         user.IsActive = false;
         user.DeletedAt = DateTime.UtcNow;
         await _dbContext.SaveChangesAsync(cancellationToken);
@@ -633,6 +651,39 @@ public sealed class AdminService : IAdminService
     {
         var user = await _dbContext.Users.FirstOrDefaultAsync(item => item.Id == userId, cancellationToken);
         return user ?? throw new NotFoundException("Kullanici bulunamadi.");
+    }
+
+    private async Task EnsureUserCanBeRestrictedAsync(
+        Guid adminUserId,
+        User targetUser,
+        string selfActionMessage,
+        CancellationToken cancellationToken)
+    {
+        if (targetUser.Id == adminUserId)
+        {
+            throw new BadRequestException(selfActionMessage);
+        }
+
+        if (targetUser.Role != UserRole.Admin)
+        {
+            return;
+        }
+
+        var activeAdminCount = await _dbContext.Users
+            .AsNoTracking()
+            .CountAsync(user =>
+                user.Role == UserRole.Admin &&
+                user.IsActive == true &&
+                user.DeletedAt == null &&
+                (user.LockedUntil == null || user.LockedUntil <= DateTime.UtcNow),
+                cancellationToken);
+
+        if (activeAdminCount <= 1)
+        {
+            throw new BadRequestException("Son aktif admin hesabi bu islemle degistirilemez.");
+        }
+
+        throw new BadRequestException("Admin hesaplari bu islemle degistirilemez.");
     }
 
     private async Task EnsureUserExistsAsync(Guid userId, CancellationToken cancellationToken)
