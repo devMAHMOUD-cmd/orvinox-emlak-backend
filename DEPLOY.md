@@ -97,6 +97,37 @@ docker compose logs -f craftora_api
 - Runtime backend ileride `craftora_app` ile baglanacak. Bu rol `NOSUPERUSER` ve `NOBYPASSRLS` olacak; RLS'in gercekten devreye girmesi icin bu zorunludur.
 - `admin` rolu migration/hardening gibi DDL isleri icin kalir; runtime API baglantisi icin kullanilmamalidir.
 
+## Prod .env Güvenliği - ZORUNLU
+
+VPS'te `.env` olustururken asagidaki degerler MUTLAKA guclu, rastgele ve essiz olmalidir. Local ortamda kullanilan zayif degerler PROD ortaminda KULLANILMAMALIDIR:
+
+- `POSTGRES_PASSWORD`
+- `REDIS_PASSWORD`
+- `MINIO_ROOT_PASSWORD`
+
+Her biri icin ayri guclu sifre uret:
+
+```bash
+openssl rand -base64 24
+```
+
+`JWT_SECRET` su an yeterli uzunlukta olsa bile prod ortaminda yeni bir secret uretmek daha guvenlidir:
+
+```bash
+openssl rand -base64 48
+```
+
+Dis servis anahtarlarinda PROD anahtarlari kullanilmalidir; test/dev anahtarlari prod `.env` dosyasina yazilmamalidir:
+
+- `GOOGLE_CLIENT_SECRET`
+- `STRIPE_PUBLISHABLE_KEY`
+- `STRIPE_SECRET_KEY`
+- `STRIPE_WEBHOOK_SECRET`
+- `RESEND_API_KEY`
+- `SENTRY_DSN`
+
+`.env` dosyasi ASLA git'e commit edilmemelidir. Dosya zaten `.gitignore` icinde olmali ve VPS uzerinde guvenli saklanmalidir.
+
 ## Backup
 
 PostgreSQL backup scriptleri `scripts/backup/` altindadir.
