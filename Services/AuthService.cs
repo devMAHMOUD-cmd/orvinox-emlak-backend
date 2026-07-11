@@ -305,9 +305,11 @@ public sealed class AuthService : IAuthService
         }
 
         var shop = user.Shop;
-        var effectiveRole = user.Role == UserRole.User && shop is not null
-            ? UserRole.Seller
-            : user.Role;
+        var effectiveRole = user.Role == UserRole.Admin
+            ? UserRole.Admin
+            : await HasActiveSellerAccessAsync(user.Id)
+                ? UserRole.Seller
+                : UserRole.User;
 
         return new UserMeResponseDto(
             Id: user.Id,
@@ -318,6 +320,21 @@ public sealed class AuthService : IAuthService
             ShopId: shop?.Id,
             ShopSlug: shop?.Slug,
             ShopIsActive: shop?.IsActive);
+    }
+
+    private async Task<bool> HasActiveSellerAccessAsync(Guid userId)
+    {
+        var now = DateTime.UtcNow;
+
+        return await _dbContext.Shops
+            .AsNoTracking()
+            .AnyAsync(shop =>
+                shop.UserId == userId &&
+                shop.IsActive == true &&
+                _dbContext.SellerSubscriptions.Any(subscription =>
+                    subscription.ShopId == shop.Id &&
+                    subscription.Status == SubStatus.Active &&
+                    subscription.CurrentPeriodEnd > now));
     }
 
     private async Task PromoteShopOwnerToSellerAsync(User user)
