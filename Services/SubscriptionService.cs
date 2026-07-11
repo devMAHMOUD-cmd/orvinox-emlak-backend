@@ -93,6 +93,17 @@ public sealed class SubscriptionService : ISubscriptionService
             _logger.LogInformation("Shop activated due to subscription. ShopId: {ShopId}", shop.Id);
         }
 
+        var user = await _dbContext.Users.FirstOrDefaultAsync(item => item.Id == shop.UserId);
+        if (user is null)
+        {
+            throw new NotFoundException("Kullanici bulunamadi.");
+        }
+
+        if (user.Role == UserRole.User)
+        {
+            user.Role = UserRole.Seller;
+        }
+
         await _dbContext.SaveChangesAsync();
 
         return MapToResponse(subscription);

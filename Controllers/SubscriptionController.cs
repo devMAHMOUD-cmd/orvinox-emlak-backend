@@ -29,7 +29,7 @@ public sealed class SubscriptionController : ControllerBase
         return Ok(result);
     }
 
-    [Authorize(Policy = "SellerOnly")]
+    [Authorize]
     [HttpPost("start")]
     public async Task<IActionResult> StartSubscriptionAsync([FromBody] StartSubscriptionRequestDto request)
     {

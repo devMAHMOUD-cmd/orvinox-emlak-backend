@@ -53,11 +53,6 @@ public sealed class ShopService : IShopService
                 throw new NotFoundException("Kullanici bulunamadi.");
             }
 
-            if (user.Role == UserRole.User)
-            {
-                user.Role = UserRole.Seller;
-            }
-
             var slug = await GenerateUniqueSlugAsync(dto.ShopName);
             var shop = new Shop
             {
@@ -282,13 +277,10 @@ public sealed class ShopService : IShopService
                 UserId = userId,
                 WantsNotifications = true
             });
-
-            shop.FollowerCount = (shop.FollowerCount ?? 0) + 1;
         }
         else
         {
             _dbContext.Subscriptions.Remove(subscription);
-            shop.FollowerCount = Math.Max((shop.FollowerCount ?? 0) - 1, 0);
         }
 
         await _dbContext.SaveChangesAsync();
