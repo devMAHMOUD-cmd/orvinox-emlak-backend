@@ -8,7 +8,7 @@ using Microsoft.AspNetCore.RateLimiting;
 namespace CraftoraApi.Controllers;
 
 [ApiController]
-[Authorize]
+[Authorize(Policy = "SellerOnly")]
 [EnableRateLimiting("general")]
 [Route("api/seller/customers")]
 public sealed class SellerCustomersController : ControllerBase
