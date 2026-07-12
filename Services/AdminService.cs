@@ -10,6 +10,7 @@ using CraftoraApi.Models.Entities;
 using CraftoraApi.Models.Enums;
 using CraftoraApi.Services.Interfaces;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 
 namespace CraftoraApi.Services;
 
@@ -397,16 +398,53 @@ public sealed class AdminService : IAdminService
 
     public async Task FinishCompetitionAsync(Guid adminUserId, Guid id, CancellationToken cancellationToken = default)
     {
-        var contest = await GetContestForUpdateAsync(id, cancellationToken);
+        await using var transaction = await _dbContext.Database.BeginTransactionAsync(
+            IsolationLevel.ReadCommitted,
+            cancellationToken);
+        var contest = await GetContestForUpdateWithLockAsync(id, cancellationToken);
+        if (IsFinishedCompetition(contest))
+        {
+            throw new BadRequestException("Bu yarisma zaten sonuclandirilmis.");
+        }
+
         contest.IsActive = false;
         contest.EndDate = DateTime.UtcNow;
         await _dbContext.SaveChangesAsync(cancellationToken);
         await AddAuditAsync(adminUserId, "finish_competition", "competition", id, new { }, cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
     }
 
     public async Task DistributeRewardsAsync(Guid adminUserId, Guid id, AdminDistributeRewardsRequestDto dto, CancellationToken cancellationToken = default)
     {
-        _ = await GetContestForUpdateAsync(id, cancellationToken);
+        if (dto.Winners.Count == 0)
+        {
+            throw new BadRequestException("Odul dagitimi icin en az bir kazanan gereklidir.");
+        }
+
+        if (dto.Winners.GroupBy(winner => winner.UserId).Any(group => group.Count() > 1))
+        {
+            throw new BadRequestException("Ayni kullaniciya bir yarismada birden fazla odul verilemez.");
+        }
+
+        await using var transaction = await _dbContext.Database.BeginTransactionAsync(
+            IsolationLevel.ReadCommitted,
+            cancellationToken);
+        var contest = await GetContestForUpdateWithLockAsync(id, cancellationToken);
+        var existingRewardCount = await CountRawAsync(
+            "SELECT COUNT(*) FROM admin_competition_rewards WHERE contest_id = @p0",
+            cancellationToken,
+            id);
+        if (existingRewardCount > 0)
+        {
+            throw new BadRequestException("Bu yarisma zaten sonuclandirilmis.");
+        }
+
+        contest.IsActive = false;
+        if (contest.EndDate > DateTime.UtcNow)
+        {
+            contest.EndDate = DateTime.UtcNow;
+        }
+
         foreach (var winner in dto.Winners)
         {
             await ExecuteAsync(
@@ -446,6 +484,7 @@ public sealed class AdminService : IAdminService
 
         await _dbContext.SaveChangesAsync(cancellationToken);
         await AddAuditAsync(adminUserId, "distribute_rewards", "competition", id, dto, cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
     }
 
     public Task<IReadOnlyList<PulseNewsDto>> GetPulseNewsAsync(bool includeUnpublished, CancellationToken cancellationToken = default)
@@ -766,6 +805,20 @@ public sealed class AdminService : IAdminService
         return contest ?? throw new NotFoundException("Yarisma bulunamadi.");
     }
 
+    private async Task<Contest> GetContestForUpdateWithLockAsync(Guid id, CancellationToken cancellationToken)
+    {
+        var contest = await _dbContext.Contests
+            .FromSqlInterpolated($"SELECT * FROM contests WHERE id = {id} FOR UPDATE")
+            .SingleOrDefaultAsync(cancellationToken);
+
+        return contest ?? throw new NotFoundException("Yarisma bulunamadi.");
+    }
+
+    private static bool IsFinishedCompetition(Contest contest)
+    {
+        return contest.IsActive != true && contest.EndDate <= DateTime.UtcNow;
+    }
+
     private async Task UpdateReportStatusAsync(Guid adminUserId, Guid reportId, string status, CancellationToken cancellationToken)
     {
         await ExecuteAsync(
@@ -925,6 +978,7 @@ public sealed class AdminService : IAdminService
         var connection = _dbContext.Database.GetDbConnection();
         await EnsureOpenAsync(connection, cancellationToken);
         await using var command = connection.CreateCommand();
+        EnlistCurrentTransaction(command);
         command.CommandText = sql;
         AddParameters(command, parameters);
         var value = await command.ExecuteScalarAsync(cancellationToken);
@@ -945,6 +999,7 @@ public sealed class AdminService : IAdminService
         var connection = _dbContext.Database.GetDbConnection();
         await EnsureOpenAsync(connection, cancellationToken);
         await using var command = connection.CreateCommand();
+        EnlistCurrentTransaction(command);
         command.CommandText = sql;
         AddParameters(command, parameters);
         await command.ExecuteNonQueryAsync(cancellationToken);
@@ -959,6 +1014,7 @@ public sealed class AdminService : IAdminService
         var connection = _dbContext.Database.GetDbConnection();
         await EnsureOpenAsync(connection, cancellationToken);
         await using var command = connection.CreateCommand();
+        EnlistCurrentTransaction(command);
         command.CommandText = sql;
         AddParameters(command, parameters);
         var result = new List<T>();
@@ -970,6 +1026,15 @@ public sealed class AdminService : IAdminService
         }
 
         return result;
+    }
+
+    private void EnlistCurrentTransaction(DbCommand command)
+    {
+        var currentTransaction = _dbContext.Database.CurrentTransaction;
+        if (currentTransaction is not null)
+        {
+            command.Transaction = currentTransaction.GetDbTransaction();
+        }
     }
 
     private static async Task EnsureOpenAsync(DbConnection connection, CancellationToken cancellationToken)

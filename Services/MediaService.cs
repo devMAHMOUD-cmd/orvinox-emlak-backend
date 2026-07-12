@@ -363,22 +363,11 @@ public sealed class MediaService : IMediaService
 
         if (userId.HasValue)
         {
-            var hasWatchHistory = await _dbContext.MediaWatchHistories.AnyAsync(item =>
-                item.MediaId == mediaId &&
-                item.UserId == userId.Value);
-
-            if (!hasWatchHistory)
-            {
-                _dbContext.MediaWatchHistories.Add(new MediaWatchHistory
-                {
-                    MediaId = mediaId,
-                    UserId = userId.Value,
-                    WatchedAt = DateTime.UtcNow,
-                    IsPointEarned = false
-                });
-            }
-
-            await _dbContext.SaveChangesAsync();
+            await _dbContext.Database.ExecuteSqlInterpolatedAsync($"""
+                INSERT INTO media_watch_history (media_id, user_id, watched_at, is_point_earned)
+                VALUES ({mediaId}, {userId.Value}, {DateTime.UtcNow}, {false})
+                ON CONFLICT (user_id, media_id) DO NOTHING
+                """);
         }
     }
 
