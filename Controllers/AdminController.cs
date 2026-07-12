@@ -27,6 +27,13 @@ public sealed class AdminController : ControllerBase
         return Ok(await _adminService.GetOverviewAsync(cancellationToken));
     }
 
+    [HttpPost("reindex-products")]
+    public async Task<IActionResult> ReindexProductsAsync(CancellationToken cancellationToken = default)
+    {
+        var indexedCount = await _adminService.ReindexProductsAsync(GetCurrentUserId(), cancellationToken);
+        return Ok(new { indexedCount });
+    }
+
     [HttpGet("users")]
     public async Task<IActionResult> GetUsersAsync(
         [FromQuery] string? query,

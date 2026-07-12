@@ -9,6 +9,7 @@ namespace CraftoraApi.Middleware;
 /// Pipeline'daki TÜM hataları yakalar ve düzgün JSON response döndürür
 /// Development ve Production'da farklı davranır (stack trace gizleme)
 /// </summary>
+/// 
 public class ExceptionMiddleware
 {
     private readonly RequestDelegate _next;

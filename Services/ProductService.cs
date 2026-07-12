@@ -244,6 +244,12 @@ public sealed class ProductService : IProductService
 
     private async Task PublishProductIndexMessageAsync(Product product)
     {
+        var shopIsActive = await _dbContext.Shops
+            .AsNoTracking()
+            .Where(shop => shop.Id == product.ShopId)
+            .Select(shop => shop.IsActive == true)
+            .FirstOrDefaultAsync();
+
         var document = new ProductDocument
         {
             Id = product.Id,
@@ -252,7 +258,9 @@ public sealed class ProductService : IProductService
             Price = product.Price,
             CategoryId = product.CategoryId,
             ShopId = product.ShopId,
-            IsActive = product.IsActive == true && product.Status == ProductStatus.Published
+            IsActive = product.IsActive == true,
+            IsPublished = product.Status == ProductStatus.Published,
+            ShopIsActive = shopIsActive
         };
 
         await _rabbitMqPublisher.PublishProductSyncMessage(new ProductSyncMessage(

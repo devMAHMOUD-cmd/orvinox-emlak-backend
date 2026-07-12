@@ -9,6 +9,8 @@ public interface ISearchService
 
     Task DeleteProductIndexAsync(Guid productId, CancellationToken cancellationToken = default);
 
+    Task<int> ReindexProductsAsync(CancellationToken cancellationToken = default);
+
     Task<SearchResponseDto> SearchProductsAsync(
         SearchRequestDto request,
         CancellationToken cancellationToken = default);

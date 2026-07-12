@@ -6,6 +6,8 @@ public interface IAdminService
 {
     Task<AdminOverviewDto> GetOverviewAsync(CancellationToken cancellationToken = default);
 
+    Task<int> ReindexProductsAsync(Guid adminUserId, CancellationToken cancellationToken = default);
+
     Task<AdminPagedResponseDto<AdminUserListItemDto>> GetUsersAsync(
         string? query,
         string? role,

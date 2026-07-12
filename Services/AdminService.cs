@@ -8,6 +8,7 @@ using CraftoraApi.DTOs.Notification;
 using CraftoraApi.Middleware;
 using CraftoraApi.Models.Entities;
 using CraftoraApi.Models.Enums;
+using CraftoraApi.Redis;
 using CraftoraApi.Services.Interfaces;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
@@ -16,18 +17,27 @@ namespace CraftoraApi.Services;
 
 public sealed class AdminService : IAdminService
 {
+    private const string ProductReindexLockKey = "search:reindex:products";
+    private static readonly TimeSpan ProductReindexLockTtl = TimeSpan.FromMinutes(10);
+
     private readonly AppDbContext _dbContext;
     private readonly INotificationService _notificationService;
     private readonly IGamificationService _gamificationService;
+    private readonly ISearchService _searchService;
+    private readonly ICacheService _cacheService;
 
     public AdminService(
         AppDbContext dbContext,
         INotificationService notificationService,
-        IGamificationService gamificationService)
+        IGamificationService gamificationService,
+        ISearchService searchService,
+        ICacheService cacheService)
     {
         _dbContext = dbContext ?? throw new ArgumentNullException(nameof(dbContext));
         _notificationService = notificationService ?? throw new ArgumentNullException(nameof(notificationService));
         _gamificationService = gamificationService ?? throw new ArgumentNullException(nameof(gamificationService));
+        _searchService = searchService ?? throw new ArgumentNullException(nameof(searchService));
+        _cacheService = cacheService ?? throw new ArgumentNullException(nameof(cacheService));
     }
 
     public async Task<AdminOverviewDto> GetOverviewAsync(CancellationToken cancellationToken = default)
@@ -53,6 +63,55 @@ public sealed class AdminService : IAdminService
                 cancellationToken),
             NewUsersToday: await _dbContext.Users.CountAsync(user => user.CreatedAt >= today, cancellationToken),
             OrdersToday: await _dbContext.Orders.CountAsync(order => order.CreatedAt >= today, cancellationToken));
+    }
+
+    public async Task<int> ReindexProductsAsync(
+        Guid adminUserId,
+        CancellationToken cancellationToken = default)
+    {
+        var lockValue = Guid.NewGuid().ToString("N");
+        bool lockAcquired;
+        try
+        {
+            lockAcquired = await _cacheService.TryAcquireLockAsync(
+                ProductReindexLockKey,
+                lockValue,
+                ProductReindexLockTtl);
+        }
+        catch
+        {
+            throw new ExternalServiceException("Redis", "Reindex kilidi alinamadi. Lutfen tekrar deneyin.");
+        }
+
+        if (!lockAcquired)
+        {
+            throw new ConflictException("Urun reindex islemi zaten devam ediyor.");
+        }
+
+        try
+        {
+            var indexedCount = await _searchService.ReindexProductsAsync(cancellationToken);
+            await AddAuditAsync(
+                adminUserId,
+                "reindex_products",
+                "search_index",
+                null,
+                new { indexedCount },
+                cancellationToken);
+
+            return indexedCount;
+        }
+        finally
+        {
+            try
+            {
+                await _cacheService.ReleaseLockAsync(ProductReindexLockKey, lockValue);
+            }
+            catch
+            {
+                // The lock expires automatically; a release failure must not hide a successful reindex.
+            }
+        }
     }
 
     public async Task<AdminPagedResponseDto<AdminUserListItemDto>> GetUsersAsync(

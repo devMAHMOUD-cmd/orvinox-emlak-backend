@@ -214,6 +214,7 @@ public static class ServiceExtensions
                 })
             .ConfigureWarnings(warnings => warnings.Ignore(Microsoft.EntityFrameworkCore.Diagnostics.RelationalEventId.PendingModelChangesWarning)); // 👈 İŞTE FİŞİ ÇEKTİĞİMİZ YER BURASI
 
+
             options.AddInterceptors(serviceProvider.GetRequiredService<RlsInterceptor>());
 
             // Development ortamında SQL sorgularını loglama
@@ -263,6 +264,15 @@ public static class ServiceExtensions
         services.AddScoped<ILibraryService, LibraryService>();
         services.AddScoped<IGamificationService, GamificationService>();
         services.AddScoped<ISearchService, SearchService>();
+        services.AddScoped<IAdminService, AdminService>();
+        services.AddScoped<IAnalyticsEventService, AnalyticsEventService>();
+        services.AddScoped<ICompetitionService, CompetitionService>();
+        services.AddScoped<IPublicCourseService, PublicCourseService>();
+        services.AddScoped<IMyCourseService, MyCourseService>();
+        services.AddScoped<ISellerAnalyticsService, SellerAnalyticsService>();
+        services.AddScoped<ISellerCourseService, SellerCourseService>();
+        services.AddScoped<ISellerCustomerService, SellerCustomerService>();
+        services.AddScoped<ISellerOrderService, SellerOrderService>();
         services.AddScoped<IMediaService, MediaService>();
         services.AddScoped<INotificationService, NotificationService>();
         services.AddScoped<ICacheService, CacheService>();
@@ -307,6 +317,7 @@ public static class ServiceExtensions
         {
             options.RequireHttpsMetadata = !environment.IsDevelopment();
             options.SaveToken = true;
+            options.MapInboundClaims = false;
 
             options.TokenValidationParameters = new TokenValidationParameters
             {
@@ -322,8 +333,9 @@ public static class ServiceExtensions
                 ValidateLifetime = true,
                 ClockSkew = TimeSpan.FromSeconds(10),
 
-                // Token talebindeki email ve user ID'yi otomatik olarak principal'e ekle
-                NameClaimType = "sub"
+                // Keep JWT claim names stable for policy and role authorization checks.
+                NameClaimType = "sub",
+                RoleClaimType = "role"
             };
 
             // JWT Bearer token'ı WebSocket bağlantılarında da destekle (real-time features için)
