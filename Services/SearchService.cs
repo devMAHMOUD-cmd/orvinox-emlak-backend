@@ -39,22 +39,43 @@ public sealed class SearchService : ISearchService
             return;
         }
 
-        await _client.IndexAsync(
+        var response = await _client.IndexAsync(
             product,
             descriptor => descriptor
                 .Index(ProductIndex)
                 .Id(product.Id),
             cancellationToken);
+
+        if (!response.IsValidResponse)
+        {
+            _logger.LogError(
+                "Elasticsearch product indexing failed for {ProductId}. HTTP status: {HttpStatusCode}. Details: {DebugInformation}",
+                product.Id,
+                response.ApiCallDetails?.HttpStatusCode,
+                response.DebugInformation);
+            throw new ExternalServiceException("Elasticsearch", "Urun arama indexine yazilamadi.");
+        }
     }
 
     public async Task DeleteProductIndexAsync(
         Guid productId,
         CancellationToken cancellationToken = default)
     {
-        await _client.DeleteAsync<ProductDocument>(
+        var response = await _client.DeleteAsync<ProductDocument>(
             productId,
             descriptor => descriptor.Index(ProductIndex),
             cancellationToken);
+
+        var httpStatusCode = response.ApiCallDetails?.HttpStatusCode;
+        if (!response.IsValidResponse && httpStatusCode != 404)
+        {
+            _logger.LogError(
+                "Elasticsearch product index deletion failed for {ProductId}. HTTP status: {HttpStatusCode}. Details: {DebugInformation}",
+                productId,
+                httpStatusCode,
+                response.DebugInformation);
+            throw new ExternalServiceException("Elasticsearch", "Urun arama indexinden silinemedi.");
+        }
     }
 
     public async Task<int> ReindexProductsAsync(CancellationToken cancellationToken = default)
@@ -80,16 +101,26 @@ public sealed class SearchService : ISearchService
             .ToListAsync(cancellationToken);
 
         var existsResponse = await _client.Indices.ExistsAsync(ProductIndex, cancellationToken);
-        if (!existsResponse.IsValidResponse)
+        var existsStatusCode = existsResponse.ApiCallDetails?.HttpStatusCode;
+        if (!existsResponse.IsValidResponse && existsStatusCode != 404)
         {
+            _logger.LogError(
+                "Elasticsearch product index existence check failed. HTTP status: {HttpStatusCode}. Details: {DebugInformation}",
+                existsStatusCode,
+                existsResponse.DebugInformation);
             throw new ExternalServiceException("Elasticsearch", "Urun arama indexi kontrol edilemedi.");
         }
 
         if (existsResponse.Exists)
         {
             var deleteResponse = await _client.Indices.DeleteAsync(ProductIndex, cancellationToken);
-            if (!deleteResponse.IsValidResponse)
+            var deleteStatusCode = deleteResponse.ApiCallDetails?.HttpStatusCode;
+            if (!deleteResponse.IsValidResponse && deleteStatusCode != 404)
             {
+                _logger.LogError(
+                    "Elasticsearch product index cleanup failed. HTTP status: {HttpStatusCode}. Details: {DebugInformation}",
+                    deleteStatusCode,
+                    deleteResponse.DebugInformation);
                 throw new ExternalServiceException("Elasticsearch", "Urun arama indexi temizlenemedi.");
             }
         }
@@ -97,6 +128,10 @@ public sealed class SearchService : ISearchService
         var createResponse = await _client.Indices.CreateAsync(ProductIndex, cancellationToken);
         if (!createResponse.IsValidResponse)
         {
+            _logger.LogError(
+                "Elasticsearch product index creation failed. HTTP status: {HttpStatusCode}. Details: {DebugInformation}",
+                createResponse.ApiCallDetails?.HttpStatusCode,
+                createResponse.DebugInformation);
             throw new ExternalServiceException("Elasticsearch", "Urun arama indexi olusturulamadi.");
         }
 
@@ -108,6 +143,11 @@ public sealed class SearchService : ISearchService
                 cancellationToken);
             if (!bulkResponse.IsValidResponse || bulkResponse.Errors)
             {
+                _logger.LogError(
+                    "Elasticsearch product bulk indexing failed. HTTP status: {HttpStatusCode}. Has item errors: {HasErrors}. Details: {DebugInformation}",
+                    bulkResponse.ApiCallDetails?.HttpStatusCode,
+                    bulkResponse.Errors,
+                    bulkResponse.DebugInformation);
                 throw new ExternalServiceException("Elasticsearch", "Urunler toplu olarak indexlenemedi.");
             }
         }
@@ -115,6 +155,10 @@ public sealed class SearchService : ISearchService
         var refreshResponse = await _client.Indices.RefreshAsync(ProductIndex, cancellationToken);
         if (!refreshResponse.IsValidResponse)
         {
+            _logger.LogError(
+                "Elasticsearch product index refresh failed. HTTP status: {HttpStatusCode}. Details: {DebugInformation}",
+                refreshResponse.ApiCallDetails?.HttpStatusCode,
+                refreshResponse.DebugInformation);
             throw new ExternalServiceException("Elasticsearch", "Urun arama indexi yenilenemedi.");
         }
 
@@ -141,7 +185,7 @@ public sealed class SearchService : ISearchService
                     {
                         if (string.IsNullOrWhiteSpace(request.Query))
                         {
-                            must.MatchAll();
+                            must.MatchAll(new Elastic.Clients.Elasticsearch.QueryDsl.MatchAllQuery());
                             return;
                         }
 
@@ -153,47 +197,48 @@ public sealed class SearchService : ISearchService
                     .Filter(
                         filter =>
                         {
-                            filter.Term(term => term.Field("isActive").Value(true));
+                            filter.Term(term => term.Field(product => product.IsActive).Value(true));
                         },
                         filter =>
                         {
-                            filter.Term(term => term.Field("isPublished").Value(true));
+                            filter.Term(term => term.Field(product => product.IsPublished).Value(true));
                         },
                         filter =>
                         {
-                            filter.Term(term => term.Field("shopIsActive").Value(true));
+                            filter.Term(term => term.Field(product => product.ShopIsActive).Value(true));
                         },
                         filter =>
                         {
                             if (request.CategoryId.HasValue)
                             {
                                 filter.Term(term => term
-                                    .Field("categoryId")
+                                    .Field(product => product.CategoryId)
                                     .Value(request.CategoryId.Value.ToString()));
                                 return;
                             }
 
-                            filter.MatchAll();
+                            filter.MatchAll(new Elastic.Clients.Elasticsearch.QueryDsl.MatchAllQuery());
                         },
                         filter =>
                         {
                             if (request.MinPrice.HasValue || request.MaxPrice.HasValue)
                             {
-                                filter.Range(range => range.Number(number => number
-                                .Field("price")
-                                .Gte(request.MinPrice.HasValue ? (double?)request.MinPrice.Value : null)
-                                .Lte(request.MaxPrice.HasValue ? (double?)request.MaxPrice.Value : null)));
+                                filter.Range(range => range.NumberRange(number => number
+                                    .Field(product => product.Price)
+                                    .Gte(request.MinPrice.HasValue ? (double?)request.MinPrice.Value : null)
+                                    .Lte(request.MaxPrice.HasValue ? (double?)request.MaxPrice.Value : null)));
                                 return;
                             }
 
-                            filter.MatchAll();
+                            filter.MatchAll(new Elastic.Clients.Elasticsearch.QueryDsl.MatchAllQuery());
                         }))),
             cancellationToken);
 
         if (!response.IsValidResponse)
         {
             _logger.LogError(
-                "Elasticsearch product search failed. Details: {DebugInformation}",
+                "Elasticsearch product search failed. HTTP status: {HttpStatusCode}. Details: {DebugInformation}",
+                response.ApiCallDetails?.HttpStatusCode,
                 response.DebugInformation);
             return new SearchResponseDto(0, new List<ProductDocument>());
         }
