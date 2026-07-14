@@ -20,20 +20,6 @@ public sealed class CourseController : ControllerBase
         _courseService = courseService ?? throw new ArgumentNullException(nameof(courseService));
     }
 
-    [HttpGet("{id:guid}")]
-    public async Task<IActionResult> GetCourseByIdAsync([FromRoute] Guid id)
-    {
-        var result = await _courseService.GetCourseByIdAsync(id);
-        return Ok(result);
-    }
-
-    [HttpGet("product/{productId:guid}")]
-    public async Task<IActionResult> GetCourseTreeByProductIdAsync([FromRoute] Guid productId)
-    {
-        var result = await _courseService.GetCourseTreeByProductIdAsync(productId);
-        return Ok(result);
-    }
-
     [Authorize]
     [HttpPost]
     public async Task<IActionResult> CreateCourseAsync([FromBody] CreateCourseDto dto)
