@@ -70,10 +70,11 @@ services:
     networks:
       - craftora_network
     healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "ping"]
-      interval: 10s
-      timeout: 5s
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 30s
+      timeout: 20s
       retries: 5
+      start_period: 60s
 
   elasticsearch:
     image: elasticsearch:8.13.0
