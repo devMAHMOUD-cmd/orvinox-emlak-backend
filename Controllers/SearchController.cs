@@ -1,11 +1,13 @@
 using CraftoraApi.DTOs.Search;
 using CraftoraApi.Services.Interfaces;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 
 namespace CraftoraApi.Controllers;
 
 [ApiController]
 [Route("api/search")]
+[EnableRateLimiting("search")]
 public sealed class SearchController : ControllerBase
 {
     private readonly ISearchService _searchService;

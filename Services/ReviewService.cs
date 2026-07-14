@@ -1,5 +1,6 @@
 using CraftoraApi.Data;
 using CraftoraApi.DTOs.Interaction;
+using CraftoraApi.Infrastructure.Security;
 using CraftoraApi.Middleware;
 using CraftoraApi.Models.Entities;
 using CraftoraApi.Services.Interfaces;
@@ -36,12 +37,13 @@ public sealed class ReviewService : IReviewService
             throw new ConflictException("Bu urune zaten yorum yaptiniz.");
         }
 
+        var comment = PlainTextInputValidator.Optional(dto.Comment, "Yorum metni", 2000);
         var review = new Review
         {
             ProductId = dto.ProductId,
             UserId = userId,
             Rating = dto.Rating,
-            Comment = dto.Comment,
+            Comment = comment,
             Images = dto.Images ?? new List<string>(),
             CreatedAt = DateTime.UtcNow,
             UpdatedAt = DateTime.UtcNow
@@ -69,7 +71,7 @@ public sealed class ReviewService : IReviewService
         }
 
         review.Rating = dto.Rating;
-        review.Comment = dto.Comment;
+        review.Comment = PlainTextInputValidator.Optional(dto.Comment, "Yorum metni", 2000);
         review.Images = dto.Images ?? new List<string>();
         review.UpdatedAt = DateTime.UtcNow;
 
@@ -118,7 +120,7 @@ public sealed class ReviewService : IReviewService
             throw new ForbiddenException("Bu yoruma cevap verme yetkiniz yok.");
         }
 
-        review.SellerReply = dto.SellerReply.Trim();
+        review.SellerReply = PlainTextInputValidator.Require(dto.SellerReply, "Satici cevabi", 2000);
         review.UpdatedAt = DateTime.UtcNow;
 
         await _dbContext.SaveChangesAsync();

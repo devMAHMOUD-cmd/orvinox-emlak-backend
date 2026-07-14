@@ -3,11 +3,13 @@ using CraftoraApi.Middleware;
 using CraftoraApi.Services.Interfaces;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 
 namespace CraftoraApi.Controllers;
 
 [ApiController]
 [Route("api/gamification")]
+[EnableRateLimiting("general")]
 public sealed class GamificationController : ControllerBase
 {
     private readonly IGamificationService _gamificationService;

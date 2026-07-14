@@ -7,5 +7,5 @@ public sealed record CreateQuestionDto(
     Guid ProductId,
 
     [property: Required(ErrorMessage = "Soru metni zorunludur.")]
-    [property: MinLength(2, ErrorMessage = "Soru metni en az 2 karakter olmalidir.")]
+    [property: StringLength(500, MinimumLength = 2, ErrorMessage = "Soru metni 2 ile 500 karakter arasinda olmalidir.")]
     string QuestionText);

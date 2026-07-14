@@ -4,11 +4,13 @@ using CraftoraApi.Middleware;
 using CraftoraApi.Services.Interfaces;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 
 namespace CraftoraApi.Controllers;
 
 [ApiController]
 [Route("api/[controller]")]
+[EnableRateLimiting("general")]
 public sealed class ShopController : ControllerBase
 {
     private readonly IShopService _shopService;
@@ -49,7 +51,7 @@ public sealed class ShopController : ControllerBase
     }
 
     [HttpGet("{slug}")]
-    public async Task<IActionResult> GetShopBySlugAsync([FromRoute] string slug)
+    public async Task<ActionResult<PublicShopResponseDto>> GetShopBySlugAsync([FromRoute] string slug)
     {
         var result = await _shopService.GetShopBySlugAsync(slug);
         return Ok(result);

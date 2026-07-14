@@ -4,11 +4,13 @@ using CraftoraApi.Middleware;
 using CraftoraApi.Services.Interfaces;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 
 namespace CraftoraApi.Controllers;
 
 [ApiController]
 [Route("api/[controller]")]
+[EnableRateLimiting("general")]
 public sealed class CourseController : ControllerBase
 {
     private readonly ICourseService _courseService;

@@ -2,6 +2,7 @@ using CraftoraApi.Data;
 using CraftoraApi.DTOs.Notification;
 using CraftoraApi.Infrastructure.Messaging;
 using CraftoraApi.Infrastructure.Messaging.Contracts;
+using CraftoraApi.Infrastructure.Security;
 using CraftoraApi.Middleware;
 using CraftoraApi.Models.Entities;
 using CraftoraApi.Services.Interfaces;
@@ -136,15 +137,8 @@ public sealed class NotificationService : INotificationService
         NotificationType type,
         Guid? referenceId)
     {
-        if (string.IsNullOrWhiteSpace(title))
-        {
-            throw new BadRequestException("Bildirim başlığı boş olamaz.");
-        }
-
-        if (string.IsNullOrWhiteSpace(message))
-        {
-            throw new BadRequestException("Bildirim mesajı boş olamaz.");
-        }
+        var normalizedTitle = PlainTextInputValidator.Require(title, "Bildirim basligi", 200);
+        var normalizedMessage = PlainTextInputValidator.Require(message, "Bildirim mesaji", 1000);
 
         var userExists = await _dbContext.Users.AnyAsync(user => user.Id == userId);
         if (!userExists)
@@ -155,8 +149,8 @@ public sealed class NotificationService : INotificationService
         var notification = new Notification
         {
             UserId = userId,
-            Title = title.Trim(),
-            Body = message.Trim(),
+            Title = normalizedTitle,
+            Body = normalizedMessage,
             Type = ToStorageValue(type),
             ReferenceType = ToReferenceType(type),
             ReferenceId = referenceId,

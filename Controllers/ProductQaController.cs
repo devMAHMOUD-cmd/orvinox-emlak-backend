@@ -4,11 +4,13 @@ using CraftoraApi.Middleware;
 using CraftoraApi.Services.Interfaces;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 
 namespace CraftoraApi.Controllers;
 
 [ApiController]
 [Route("api/product-qa")]
+[EnableRateLimiting("general")]
 public sealed class ProductQaController : ControllerBase
 {
     private readonly IProductQaService _productQaService;

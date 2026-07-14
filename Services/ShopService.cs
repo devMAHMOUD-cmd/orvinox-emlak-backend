@@ -14,6 +14,9 @@ namespace CraftoraApi.Services;
 
 public sealed class ShopService : IShopService
 {
+    private const string PublicAssetsBucketName = "public-assets";
+    private const int PublicAssetUrlExpiryMinutes = 60;
+
     private static readonly DistributedCacheEntryOptions ShopCacheOptions = new()
     {
         AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(30)
@@ -22,15 +25,18 @@ public sealed class ShopService : IShopService
     private readonly AppDbContext _dbContext;
     private readonly ILogger<ShopService> _logger;
     private readonly IDistributedCache _cache;
+    private readonly IStorageService _storageService;
 
     public ShopService(
         AppDbContext dbContext,
         ILogger<ShopService> logger,
-        IDistributedCache cache)
+        IDistributedCache cache,
+        IStorageService storageService)
     {
         _dbContext = dbContext ?? throw new ArgumentNullException(nameof(dbContext));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _cache = cache ?? throw new ArgumentNullException(nameof(cache));
+        _storageService = storageService ?? throw new ArgumentNullException(nameof(storageService));
     }
 
     public async Task<ShopResponseDto> CreateShopAsync(Guid userId, CreateShopDto dto)
@@ -101,7 +107,7 @@ public sealed class ShopService : IShopService
         return await MapToResponseAsync(shop);
     }
 
-    public async Task<ShopResponseDto> GetShopBySlugAsync(string slug)
+    public async Task<PublicShopResponseDto> GetShopBySlugAsync(string slug)
     {
         if (string.IsNullOrWhiteSpace(slug))
         {
@@ -114,7 +120,7 @@ public sealed class ShopService : IShopService
 
         if (!string.IsNullOrWhiteSpace(cachedShop))
         {
-            var cachedResponse = JsonSerializer.Deserialize<ShopResponseDto>(cachedShop);
+            var cachedResponse = JsonSerializer.Deserialize<PublicShopResponseDto>(cachedShop);
             if (cachedResponse is not null)
             {
                 return cachedResponse;
@@ -130,7 +136,7 @@ public sealed class ShopService : IShopService
             throw new NotFoundException("Magaza bulunamadi.");
         }
 
-        var response = await MapToResponseAsync(shop);
+        var response = await MapToPublicResponseAsync(shop);
         await _cache.SetStringAsync(
             cacheKey,
             JsonSerializer.Serialize(response),
@@ -393,7 +399,34 @@ public sealed class ShopService : IShopService
 
     private static string GetShopSlugCacheKey(string slug)
     {
-        return $"shop:slug:{slug.Trim().ToLowerInvariant()}";
+        return $"shop:public:slug:v2:{slug.Trim().ToLowerInvariant()}";
+    }
+
+    private async Task<PublicShopResponseDto> MapToPublicResponseAsync(Shop shop)
+    {
+        var productCount = await _dbContext.Products
+            .AsNoTracking()
+            .CountAsync(product =>
+                product.ShopId == shop.Id &&
+                product.IsActive == true &&
+                product.Status == ProductStatus.Published);
+
+        return new PublicShopResponseDto(
+            Id: shop.Id,
+            ShopName: shop.ShopName,
+            Slug: shop.Slug,
+            ShortDescription: shop.ShortDescription,
+            Description: shop.Description,
+            LogoUrl: shop.LogoUrl,
+            LogoPublicUrl: GeneratePublicAssetUrl(shop.LogoUrl),
+            BannerUrl: shop.BannerUrl,
+            BannerPublicUrl: GeneratePublicAssetUrl(shop.BannerUrl),
+            ExternalUrl: shop.ExternalUrl,
+            SocialLinks: shop.SocialLinks,
+            FollowerCount: shop.FollowerCount ?? 0,
+            ProductCount: productCount,
+            Rating: shop.Rating,
+            IsVerified: shop.IsVerified == true);
     }
 
     private async Task<ShopResponseDto> MapToResponseAsync(Shop shop)
@@ -415,6 +448,19 @@ public sealed class ShopService : IShopService
             IsActive: shop.IsActive,
             HasActiveSubscription: hasActiveSubscription,
             CreatedAt: shop.CreatedAt);
+    }
+
+    private string? GeneratePublicAssetUrl(string? objectKey)
+    {
+        if (string.IsNullOrWhiteSpace(objectKey))
+        {
+            return null;
+        }
+
+        return _storageService.GeneratePresignedDownloadUrl(
+            PublicAssetsBucketName,
+            objectKey,
+            PublicAssetUrlExpiryMinutes);
     }
 
     private async Task<bool> HasActiveSubscriptionAsync(Guid shopId)

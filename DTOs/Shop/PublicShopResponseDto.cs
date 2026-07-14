@@ -1,5 +1,3 @@
-using CraftoraApi.Models.Entities;
-
 namespace CraftoraApi.DTOs.Shop;
 
 public sealed record PublicShopResponseDto(
@@ -14,6 +12,7 @@ public sealed record PublicShopResponseDto(
     string? BannerPublicUrl,
     string? ExternalUrl,
     string? SocialLinks,
-    int? FollowerCount,
-    bool? IsVerified,
-    bool? IsActive);
+    int FollowerCount,
+    int ProductCount,
+    decimal? Rating,
+    bool IsVerified);

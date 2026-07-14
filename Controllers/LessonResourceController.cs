@@ -4,12 +4,14 @@ using CraftoraApi.Middleware;
 using CraftoraApi.Services.Interfaces;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 
 namespace CraftoraApi.Controllers;
 
 [ApiController]
 [Route("api/lesson-resources")]
 [Authorize]
+[EnableRateLimiting("general")]
 public sealed class LessonResourceController : ControllerBase
 {
     private readonly ILessonResourceService _lessonResourceService;

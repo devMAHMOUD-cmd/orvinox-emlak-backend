@@ -10,7 +10,7 @@ public interface IShopService
 
     Task<ShopResponseDto> GetMyShopAsync(Guid userId);
 
-    Task<ShopResponseDto> GetShopBySlugAsync(string slug);
+    Task<PublicShopResponseDto> GetShopBySlugAsync(string slug);
 
     Task ToggleFollowAsync(Guid shopId, Guid userId);
 

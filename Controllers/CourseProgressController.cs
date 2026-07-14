@@ -4,12 +4,14 @@ using CraftoraApi.Middleware;
 using CraftoraApi.Services.Interfaces;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 
 namespace CraftoraApi.Controllers;
 
 [ApiController]
 [Route("api/course-progress")]
 [Authorize]
+[EnableRateLimiting("general")]
 public sealed class CourseProgressController : ControllerBase
 {
     private readonly ICourseProgressService _courseProgressService;

@@ -8,4 +8,10 @@ public sealed record UpdateReviewDto(
 
     string? Comment,
 
-    List<string>? Images);
+    List<string>? Images) : IValidatableObject
+{
+    public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
+    {
+        return ReviewImageValidation.Validate(Images);
+    }
+}

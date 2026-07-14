@@ -4,12 +4,14 @@ using CraftoraApi.Middleware;
 using CraftoraApi.Services.Interfaces;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 
 namespace CraftoraApi.Controllers;
 
 [ApiController]
 [Authorize]
 [Route("api/notifications")]
+[EnableRateLimiting("general")]
 public sealed class NotificationController : ControllerBase
 {
     private readonly INotificationService _notificationService;

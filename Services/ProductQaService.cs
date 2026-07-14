@@ -1,5 +1,6 @@
 using CraftoraApi.Data;
 using CraftoraApi.DTOs.Interaction;
+using CraftoraApi.Infrastructure.Security;
 using CraftoraApi.Middleware;
 using CraftoraApi.Models.Entities;
 using CraftoraApi.Services.Interfaces;
@@ -32,7 +33,7 @@ public sealed class ProductQaService : IProductQaService
         {
             ProductId = dto.ProductId,
             UserId = userId,
-            Message = dto.QuestionText.Trim(),
+            Message = PlainTextInputValidator.Require(dto.QuestionText, "Soru metni", 500),
             CreatedAt = DateTime.UtcNow
         };
 
@@ -68,7 +69,7 @@ public sealed class ProductQaService : IProductQaService
             ProductId = question.ProductId,
             UserId = sellerUserId,
             ParentId = question.Id,
-            Message = dto.AnswerText.Trim(),
+            Message = PlainTextInputValidator.Require(dto.AnswerText, "Cevap metni", 1000),
             CreatedAt = DateTime.UtcNow
         };
 

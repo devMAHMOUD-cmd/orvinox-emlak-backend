@@ -5,6 +5,7 @@ using CraftoraApi.Data;
 using CraftoraApi.DTOs.Admin;
 using CraftoraApi.DTOs.Gamification;
 using CraftoraApi.DTOs.Notification;
+using CraftoraApi.Infrastructure.Security;
 using CraftoraApi.Middleware;
 using CraftoraApi.Models.Entities;
 using CraftoraApi.Models.Enums;
@@ -269,16 +270,18 @@ public sealed class AdminService : IAdminService
     public async Task WarnUserAsync(Guid adminUserId, Guid userId, AdminWarnUserRequestDto dto, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(dto);
+        var title = PlainTextInputValidator.Require(dto.Title, "Uyari basligi", 200);
+        var message = PlainTextInputValidator.Require(dto.Message, "Uyari mesaji", 1000);
         await EnsureUserExistsAsync(userId, cancellationToken);
         await ExecuteAsync(
             "INSERT INTO admin_warnings (user_id, admin_user_id, title, message) VALUES (@p0, @p1, @p2, @p3)",
             cancellationToken,
             userId,
             adminUserId,
-            dto.Title.Trim(),
-            dto.Message.Trim());
-        await _notificationService.SendNotificationAsync(userId, dto.Title.Trim(), dto.Message.Trim(), NotificationType.System, null);
-        await AddAuditAsync(adminUserId, "warn_user", "user", userId, new { dto.Title, dto.Message }, cancellationToken);
+            title,
+            message);
+        await _notificationService.SendNotificationAsync(userId, title, message, NotificationType.System, null);
+        await AddAuditAsync(adminUserId, "warn_user", "user", userId, new { Title = title, Message = message }, cancellationToken);
     }
 
     public async Task LockUserAsync(Guid adminUserId, Guid userId, AdminLockUserRequestDto dto, CancellationToken cancellationToken = default)
@@ -408,6 +411,9 @@ public sealed class AdminService : IAdminService
 
     public async Task<AdminCompetitionDto> CreateCompetitionAsync(Guid adminUserId, AdminUpsertCompetitionDto dto, CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(dto);
+        ValidateCompetitionDateRange(dto);
+
         var contest = new Contest
         {
             Title = dto.Title.Trim(),
@@ -429,6 +435,9 @@ public sealed class AdminService : IAdminService
 
     public async Task<AdminCompetitionDto> UpdateCompetitionAsync(Guid adminUserId, Guid id, AdminUpsertCompetitionDto dto, CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(dto);
+        ValidateCompetitionDateRange(dto);
+
         var contest = await GetContestForUpdateAsync(id, cancellationToken);
         contest.Title = dto.Title.Trim();
         contest.Description = dto.Description;
@@ -557,6 +566,9 @@ public sealed class AdminService : IAdminService
 
     public async Task<PulseNewsDto> CreatePulseNewsAsync(Guid adminUserId, UpsertPulseNewsDto dto, CancellationToken cancellationToken = default)
     {
+        var title = PlainTextInputValidator.Require(dto.Title, "Pulse haber basligi", 200);
+        var description = PlainTextInputValidator.Optional(dto.Description, "Pulse haber aciklamasi", 1000);
+        var meta = PlainTextInputValidator.Optional(dto.Meta, "Pulse haber meta bilgisi", 300);
         var id = Guid.NewGuid();
         await ExecuteAsync(
             """
@@ -565,16 +577,16 @@ public sealed class AdminService : IAdminService
             """,
             cancellationToken,
             id,
-            dto.Title,
-            dto.Description,
-            dto.Meta,
+            title,
+            description,
+            meta,
             dto.Icon,
             dto.IsPublished,
             dto.IsNewUntil);
-        await AddAuditAsync(adminUserId, "create_pulse_news", "pulse_news", id, dto, cancellationToken);
+        await AddAuditAsync(adminUserId, "create_pulse_news", "pulse_news", id, new { Title = title, Description = description, Meta = meta, dto.Icon, dto.IsPublished, dto.IsNewUntil }, cancellationToken);
         if (dto.IsPublished)
         {
-            await SendSystemNotificationToAllUsersAsync(dto.Title, dto.Description ?? dto.Title, id, cancellationToken);
+            await SendSystemNotificationToAllUsersAsync(title, description ?? title, id, cancellationToken);
         }
 
         return (await QueryPulseNewsAsync(
@@ -585,6 +597,9 @@ public sealed class AdminService : IAdminService
 
     public async Task<PulseNewsDto> UpdatePulseNewsAsync(Guid adminUserId, Guid id, UpsertPulseNewsDto dto, CancellationToken cancellationToken = default)
     {
+        var title = PlainTextInputValidator.Require(dto.Title, "Pulse haber basligi", 200);
+        var description = PlainTextInputValidator.Optional(dto.Description, "Pulse haber aciklamasi", 1000);
+        var meta = PlainTextInputValidator.Optional(dto.Meta, "Pulse haber meta bilgisi", 300);
         await ExecuteAsync(
             """
             UPDATE pulse_news
@@ -593,13 +608,13 @@ public sealed class AdminService : IAdminService
             """,
             cancellationToken,
             id,
-            dto.Title,
-            dto.Description,
-            dto.Meta,
+            title,
+            description,
+            meta,
             dto.Icon,
             dto.IsPublished,
             dto.IsNewUntil);
-        await AddAuditAsync(adminUserId, "update_pulse_news", "pulse_news", id, dto, cancellationToken);
+        await AddAuditAsync(adminUserId, "update_pulse_news", "pulse_news", id, new { Title = title, Description = description, Meta = meta, dto.Icon, dto.IsPublished, dto.IsNewUntil }, cancellationToken);
 
         return (await QueryPulseNewsAsync(
             "SELECT id, title, description, meta, icon, is_published, is_new_until, created_at, updated_at FROM pulse_news WHERE id = @p0",
@@ -626,6 +641,8 @@ public sealed class AdminService : IAdminService
     {
         foreach (var card in dto.Cards)
         {
+            var title = PlainTextInputValidator.Require(card.Title, "Ana sayfa kart basligi", 200);
+            var description = PlainTextInputValidator.Optional(card.Description, "Ana sayfa kart aciklamasi", 1000);
             await ExecuteAsync(
                 """
                 INSERT INTO home_cards (id, title, description, icon, action_type, sort_order, is_active, updated_at)
@@ -641,8 +658,8 @@ public sealed class AdminService : IAdminService
                 """,
                 cancellationToken,
                 card.Id,
-                card.Title,
-                card.Description,
+                title,
+                description,
                 card.Icon,
                 card.ActionType,
                 card.SortOrder,
@@ -856,6 +873,19 @@ public sealed class AdminService : IAdminService
     private static bool IsActiveCompetitionStatus(string? status)
     {
         return string.Equals(status, "active", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static void ValidateCompetitionDateRange(AdminUpsertCompetitionDto dto)
+    {
+        if (dto.StartDate == default || dto.EndDate == default)
+        {
+            throw new BadRequestException("Yarisma baslangic ve bitis tarihleri zorunludur.");
+        }
+
+        if (dto.StartDate >= dto.EndDate)
+        {
+            throw new BadRequestException("Yarisma baslangic tarihi bitis tarihinden once olmalidir.");
+        }
     }
 
     private async Task<Contest> GetContestForUpdateAsync(Guid id, CancellationToken cancellationToken)
