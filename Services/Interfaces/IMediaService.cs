@@ -16,7 +16,9 @@ public interface IMediaService
 
     Task ToggleSaveAsync(Guid mediaId, Guid userId);
 
-    Task<CommentDto> AddCommentAsync(Guid mediaId, Guid userId, string text);
+    Task<CommentDto> AddCommentAsync(Guid mediaId, Guid userId, string text, Guid? parentCommentId);
+
+    Task<MediaCommentListResponseDto> GetCommentsAsync(Guid mediaId, int page = 1, int pageSize = 20);
 
     Task DeleteCommentAsync(Guid commentId, Guid userId);
 

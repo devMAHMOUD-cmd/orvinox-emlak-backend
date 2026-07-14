@@ -3,6 +3,7 @@ using CraftoraApi.DTOs.Media;
 using CraftoraApi.DTOs.Notification;
 using CraftoraApi.Infrastructure.Messaging;
 using CraftoraApi.Infrastructure.Messaging.Contracts;
+using CraftoraApi.Infrastructure.Security;
 using CraftoraApi.Middleware;
 using CraftoraApi.Models.Entities;
 using CraftoraApi.Models.Enums;
@@ -233,12 +234,13 @@ public sealed class MediaService : IMediaService
         await _dbContext.SaveChangesAsync();
     }
 
-    public async Task<CommentDto> AddCommentAsync(Guid mediaId, Guid userId, string text)
+    public async Task<CommentDto> AddCommentAsync(
+        Guid mediaId,
+        Guid userId,
+        string text,
+        Guid? parentCommentId)
     {
-        if (string.IsNullOrWhiteSpace(text))
-        {
-            throw new BadRequestException("Yorum metni boş olamaz.");
-        }
+        var normalizedText = PlainTextInputValidator.Require(text, "Yorum metni", 1000);
 
         var media = await GetActiveMediaAsync(mediaId);
         var user = await _dbContext.Users
@@ -250,11 +252,34 @@ public sealed class MediaService : IMediaService
             throw new UnauthorizedException("Geçersiz kullanıcı.");
         }
 
+        if (parentCommentId.HasValue)
+        {
+            var parentComment = await _dbContext.MediaComments
+                .AsNoTracking()
+                .FirstOrDefaultAsync(item => item.Id == parentCommentId.Value);
+
+            if (parentComment is null)
+            {
+                throw new NotFoundException("Ust yorum bulunamadi.");
+            }
+
+            if (parentComment.MediaId != mediaId)
+            {
+                throw new BadRequestException("Baska bir videonun yorumuna cevap veremezsiniz.");
+            }
+
+            if (parentComment.ParentCommentId.HasValue)
+            {
+                throw new BadRequestException("Yorum cevaplarina tekrar cevap verilemez.");
+            }
+        }
+
         var comment = new MediaComment
         {
             MediaId = mediaId,
             UserId = userId,
-            CommentText = text.Trim(),
+            ParentCommentId = parentCommentId,
+            CommentText = normalizedText,
             CreatedAt = DateTime.UtcNow,
             UpdatedAt = DateTime.UtcNow
         };
@@ -275,6 +300,53 @@ public sealed class MediaService : IMediaService
         }
 
         return MapToComment(comment, user.FullName);
+    }
+
+    public async Task<MediaCommentListResponseDto> GetCommentsAsync(
+        Guid mediaId,
+        int page = 1,
+        int pageSize = 20)
+    {
+        _ = await GetActiveMediaAsync(mediaId);
+
+        var normalizedPage = Math.Max(page, 1);
+        var normalizedPageSize = Math.Clamp(pageSize, 1, 50);
+        var commentsQuery = _dbContext.MediaComments
+            .AsNoTracking()
+            .Where(comment => comment.MediaId == mediaId && comment.ParentCommentId == null);
+
+        var totalCount = await commentsQuery.CountAsync();
+        var parents = await commentsQuery
+            .Include(comment => comment.User)
+            .Include(comment => comment.Replies)
+                .ThenInclude(reply => reply.User)
+            .OrderByDescending(comment => comment.CreatedAt)
+            .Skip((normalizedPage - 1) * normalizedPageSize)
+            .Take(normalizedPageSize)
+            .AsSplitQuery()
+            .ToListAsync();
+
+        var items = parents
+            .Select(parent =>
+            {
+                var replies = parent.Replies
+                    .OrderBy(reply => reply.CreatedAt)
+                    .Select(reply => MapToComment(reply, reply.User?.FullName))
+                    .ToList();
+
+                return MapToComment(parent, parent.User?.FullName, replies);
+            })
+            .ToList();
+        var totalPages = totalCount == 0
+            ? 0
+            : (int)Math.Ceiling(totalCount / (double)normalizedPageSize);
+
+        return new MediaCommentListResponseDto(
+            Items: items,
+            Page: normalizedPage,
+            PageSize: normalizedPageSize,
+            TotalCount: totalCount,
+            TotalPages: totalPages);
     }
 
     public async Task DeleteCommentAsync(Guid commentId, Guid userId)
@@ -476,15 +548,21 @@ public sealed class MediaService : IMediaService
             : path;
     }
 
-    private static CommentDto MapToComment(MediaComment comment, string? userName)
+    private static CommentDto MapToComment(
+        MediaComment comment,
+        string? userName,
+        IReadOnlyList<CommentDto>? replies = null)
     {
         return new CommentDto
         {
             Id = comment.Id,
             UserId = comment.UserId,
+            ParentCommentId = comment.ParentCommentId,
             UserName = userName,
             Text = comment.CommentText,
-            CreatedAt = comment.CreatedAt
+            CreatedAt = comment.CreatedAt,
+            ReplyCount = replies?.Count ?? 0,
+            Replies = replies ?? Array.Empty<CommentDto>()
         };
     }
 }

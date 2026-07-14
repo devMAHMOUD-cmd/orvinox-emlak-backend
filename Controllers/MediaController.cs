@@ -73,11 +73,22 @@ public sealed class MediaController : ControllerBase
     [HttpPost("{id:guid}/comments")]
     public async Task<IActionResult> AddCommentAsync(
         [FromRoute] Guid id,
-        [FromBody] CommentDto dto)
+        [FromBody] CreateMediaCommentDto dto)
     {
         var userId = GetCurrentUserId();
-        var result = await _mediaService.AddCommentAsync(id, userId, dto.Text);
+        var result = await _mediaService.AddCommentAsync(id, userId, dto.Text, dto.ParentCommentId);
 
+        return Ok(result);
+    }
+
+    [AllowAnonymous]
+    [HttpGet("{id:guid}/comments")]
+    public async Task<IActionResult> GetCommentsAsync(
+        [FromRoute] Guid id,
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 20)
+    {
+        var result = await _mediaService.GetCommentsAsync(id, page, pageSize);
         return Ok(result);
     }
 
