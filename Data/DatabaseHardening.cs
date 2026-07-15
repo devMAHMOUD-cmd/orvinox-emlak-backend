@@ -355,6 +355,24 @@ public static class DatabaseHardening
             """);
 
         await db.Database.ExecuteSqlRawAsync("""
+            CREATE OR REPLACE FUNCTION is_current_app_admin()
+            RETURNS boolean
+            LANGUAGE sql
+            STABLE
+            SECURITY DEFINER
+            SET search_path = public
+            AS $$
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM users user_record
+                    WHERE user_record.id = current_setting('app.current_user_id', true)::uuid
+                      AND user_record.role = 'admin'::user_role
+                      AND user_record.is_active = TRUE
+                      AND user_record.deleted_at IS NULL
+                      AND (user_record.locked_until IS NULL OR user_record.locked_until <= CURRENT_TIMESTAMP)
+                );
+            $$;
+
             DROP TRIGGER IF EXISTS set_users_updated_at ON users;
             CREATE TRIGGER set_users_updated_at BEFORE UPDATE ON users FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
@@ -378,6 +396,9 @@ public static class DatabaseHardening
 
             DROP TRIGGER IF EXISTS set_media_comments_updated_at ON media_comments;
             CREATE TRIGGER set_media_comments_updated_at BEFORE UPDATE ON media_comments FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+            DROP TRIGGER IF EXISTS set_support_tickets_updated_at ON support_tickets;
+            CREATE TRIGGER set_support_tickets_updated_at BEFORE UPDATE ON support_tickets FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
             DROP TRIGGER IF EXISTS trg_sync_followers ON subscriptions;
             CREATE TRIGGER trg_sync_followers AFTER INSERT OR DELETE ON subscriptions FOR EACH ROW EXECUTE FUNCTION sync_follower_count();
@@ -438,6 +459,8 @@ public static class DatabaseHardening
             ALTER TABLE notifications ENABLE ROW LEVEL SECURITY;
             ALTER TABLE notification_deliveries ENABLE ROW LEVEL SECURITY;
             ALTER TABLE user_device_tokens ENABLE ROW LEVEL SECURITY;
+            ALTER TABLE support_tickets ENABLE ROW LEVEL SECURITY;
+            ALTER TABLE support_ticket_messages ENABLE ROW LEVEL SECURITY;
 
             DROP POLICY IF EXISTS users_select_active ON users;
             DROP POLICY IF EXISTS "Aktif kullanıcıları herkes görebilir" ON users;
@@ -481,6 +504,64 @@ public static class DatabaseHardening
             CREATE POLICY "Kullanıcı kendi cihazlarını yönetebilir" ON user_device_tokens
                 USING (user_id = current_setting('app.current_user_id', true)::uuid)
                 WITH CHECK (user_id = current_setting('app.current_user_id', true)::uuid);
+
+            DROP POLICY IF EXISTS support_tickets_select_own ON support_tickets;
+            CREATE POLICY support_tickets_select_own ON support_tickets FOR SELECT
+                USING (user_id = current_setting('app.current_user_id', true)::uuid);
+
+            DROP POLICY IF EXISTS support_tickets_insert_own ON support_tickets;
+            CREATE POLICY support_tickets_insert_own ON support_tickets FOR INSERT
+                WITH CHECK (user_id = current_setting('app.current_user_id', true)::uuid);
+
+            DROP POLICY IF EXISTS support_tickets_update_own ON support_tickets;
+            CREATE POLICY support_tickets_update_own ON support_tickets FOR UPDATE
+                USING (user_id = current_setting('app.current_user_id', true)::uuid)
+                WITH CHECK (user_id = current_setting('app.current_user_id', true)::uuid);
+
+            DROP POLICY IF EXISTS support_tickets_admin_select ON support_tickets;
+            CREATE POLICY support_tickets_admin_select ON support_tickets FOR SELECT
+                USING (is_current_app_admin());
+
+            DROP POLICY IF EXISTS support_tickets_admin_update ON support_tickets;
+            CREATE POLICY support_tickets_admin_update ON support_tickets FOR UPDATE
+                USING (is_current_app_admin())
+                WITH CHECK (is_current_app_admin());
+
+            DROP POLICY IF EXISTS support_ticket_messages_select_own ON support_ticket_messages;
+            CREATE POLICY support_ticket_messages_select_own ON support_ticket_messages FOR SELECT
+                USING (
+                    EXISTS (
+                        SELECT 1
+                        FROM support_tickets ticket
+                        WHERE ticket.id = support_ticket_messages.ticket_id
+                          AND ticket.user_id = current_setting('app.current_user_id', true)::uuid
+                    )
+                );
+
+            DROP POLICY IF EXISTS support_ticket_messages_insert_own ON support_ticket_messages;
+            CREATE POLICY support_ticket_messages_insert_own ON support_ticket_messages FOR INSERT
+                WITH CHECK (
+                    sender_id = current_setting('app.current_user_id', true)::uuid
+                    AND sender_role = 'user'::support_message_sender_role
+                    AND EXISTS (
+                        SELECT 1
+                        FROM support_tickets ticket
+                        WHERE ticket.id = support_ticket_messages.ticket_id
+                          AND ticket.user_id = current_setting('app.current_user_id', true)::uuid
+                    )
+                );
+
+            DROP POLICY IF EXISTS support_ticket_messages_admin_select ON support_ticket_messages;
+            CREATE POLICY support_ticket_messages_admin_select ON support_ticket_messages FOR SELECT
+                USING (is_current_app_admin());
+
+            DROP POLICY IF EXISTS support_ticket_messages_admin_insert ON support_ticket_messages;
+            CREATE POLICY support_ticket_messages_admin_insert ON support_ticket_messages FOR INSERT
+                WITH CHECK (
+                    is_current_app_admin()
+                    AND sender_id = current_setting('app.current_user_id', true)::uuid
+                    AND sender_role = 'admin'::support_message_sender_role
+                );
             """);
     }
 }

@@ -189,6 +189,8 @@ public static class ServiceExtensions
         dataSourceBuilder.MapEnum<OrderStatus>("order_status");
         dataSourceBuilder.MapEnum<PaymentStatusType>("payment_status_type");
         dataSourceBuilder.MapEnum<SubStatus>("sub_status");
+        dataSourceBuilder.MapEnum<SupportTicketStatus>("support_ticket_status");
+        dataSourceBuilder.MapEnum<SupportMessageSenderRole>("support_message_sender_role");
 
         var postgresDataSource = dataSourceBuilder.Build();
         services.AddSingleton(postgresDataSource);
@@ -208,6 +210,8 @@ public static class ServiceExtensions
                     npgsqlOptions.MapEnum<OrderStatus>("order_status");
                     npgsqlOptions.MapEnum<PaymentStatusType>("payment_status_type");
                     npgsqlOptions.MapEnum<SubStatus>("sub_status");
+                    npgsqlOptions.MapEnum<SupportTicketStatus>("support_ticket_status");
+                    npgsqlOptions.MapEnum<SupportMessageSenderRole>("support_message_sender_role");
 
                     // Entity Framework Core için gereken timeout'ları ayarla
                     npgsqlOptions.CommandTimeout(60);

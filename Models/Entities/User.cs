@@ -78,6 +78,12 @@ public partial class User
 
     public virtual ICollection<Subscription> Subscriptions { get; set; } = new List<Subscription>();
 
+    public virtual ICollection<SupportTicket> SupportTickets { get; set; } = new List<SupportTicket>();
+
+    public virtual ICollection<SupportTicket> ClosedSupportTickets { get; set; } = new List<SupportTicket>();
+
+    public virtual ICollection<SupportTicketMessage> SupportTicketMessages { get; set; } = new List<SupportTicketMessage>();
+
     public virtual ICollection<UserDeviceToken> UserDeviceTokens { get; set; } = new List<UserDeviceToken>();
 
     public virtual ICollection<UserLibrary> UserLibraries { get; set; } = new List<UserLibrary>();

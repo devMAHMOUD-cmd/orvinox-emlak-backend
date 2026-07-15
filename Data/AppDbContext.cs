@@ -81,6 +81,10 @@ public partial class AppDbContext : DbContext
 
     public virtual DbSet<Subscription> Subscriptions { get; set; }
 
+    public virtual DbSet<SupportTicket> SupportTickets { get; set; }
+
+    public virtual DbSet<SupportTicketMessage> SupportTicketMessages { get; set; }
+
     public virtual DbSet<User> Users { get; set; }
 
     public virtual DbSet<UserDeviceToken> UserDeviceTokens { get; set; }
@@ -1430,6 +1434,84 @@ public partial class AppDbContext : DbContext
             entity.HasOne(d => d.User).WithMany(p => p.Subscriptions)
                 .HasForeignKey(d => d.UserId)
                 .HasConstraintName("subscriptions_user_id_fkey");
+        });
+
+        modelBuilder.Entity<SupportTicket>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("support_tickets_pkey");
+
+            entity.ToTable("support_tickets");
+
+            entity.HasIndex(e => new { e.UserId, e.LastMessageAt }, "idx_support_tickets_user_last_message")
+                .IsDescending(false, true);
+
+            entity.HasIndex(e => new { e.Status, e.LastMessageAt }, "idx_support_tickets_status_last_message")
+                .IsDescending(false, true);
+
+            entity.Property(e => e.Id)
+                .HasDefaultValueSql("uuid_generate_v4()")
+                .HasColumnName("id");
+            entity.Property(e => e.ClosedAt).HasColumnName("closed_at");
+            entity.Property(e => e.ClosedByUserId).HasColumnName("closed_by_user_id");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("CURRENT_TIMESTAMP")
+                .HasColumnName("created_at");
+            entity.Property(e => e.LastMessageAt)
+                .HasDefaultValueSql("CURRENT_TIMESTAMP")
+                .HasColumnName("last_message_at");
+            entity.Property(e => e.Status)
+                .HasColumnType("support_ticket_status")
+                .HasDefaultValue(SupportTicketStatus.Open)
+                .HasColumnName("status");
+            entity.Property(e => e.Subject)
+                .HasMaxLength(200)
+                .HasColumnName("subject");
+            entity.Property(e => e.UpdatedAt)
+                .HasDefaultValueSql("CURRENT_TIMESTAMP")
+                .HasColumnName("updated_at");
+            entity.Property(e => e.UserId).HasColumnName("user_id");
+
+            entity.HasOne(d => d.User).WithMany(p => p.SupportTickets)
+                .HasForeignKey(d => d.UserId)
+                .OnDelete(DeleteBehavior.Restrict)
+                .HasConstraintName("support_tickets_user_id_fkey");
+
+            entity.HasOne(d => d.ClosedByUser).WithMany(p => p.ClosedSupportTickets)
+                .HasForeignKey(d => d.ClosedByUserId)
+                .OnDelete(DeleteBehavior.SetNull)
+                .HasConstraintName("support_tickets_closed_by_user_id_fkey");
+        });
+
+        modelBuilder.Entity<SupportTicketMessage>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("support_ticket_messages_pkey");
+
+            entity.ToTable("support_ticket_messages");
+
+            entity.HasIndex(e => new { e.TicketId, e.CreatedAt }, "idx_support_ticket_messages_ticket_created");
+
+            entity.Property(e => e.Id)
+                .HasDefaultValueSql("uuid_generate_v4()")
+                .HasColumnName("id");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("CURRENT_TIMESTAMP")
+                .HasColumnName("created_at");
+            entity.Property(e => e.Message).HasColumnName("message");
+            entity.Property(e => e.SenderId).HasColumnName("sender_id");
+            entity.Property(e => e.SenderRole)
+                .HasColumnType("support_message_sender_role")
+                .HasColumnName("sender_role");
+            entity.Property(e => e.TicketId).HasColumnName("ticket_id");
+
+            entity.HasOne(d => d.Ticket).WithMany(p => p.Messages)
+                .HasForeignKey(d => d.TicketId)
+                .OnDelete(DeleteBehavior.Cascade)
+                .HasConstraintName("support_ticket_messages_ticket_id_fkey");
+
+            entity.HasOne(d => d.Sender).WithMany(p => p.SupportTicketMessages)
+                .HasForeignKey(d => d.SenderId)
+                .OnDelete(DeleteBehavior.Restrict)
+                .HasConstraintName("support_ticket_messages_sender_id_fkey");
         });
 
         modelBuilder.Entity<User>(entity =>
