@@ -13,7 +13,7 @@ namespace CraftoraApi.Services;
 
 public sealed class ProductService : IProductService
 {
-    private const string PopularProductsCacheKey = "products:popular";
+    private const string PopularProductsCacheKey = "products:popular:public-active-shops:v2";
     private const string PrivateProductsBucketName = "private-products";
     private const int PrivateProductDownloadUrlExpiryMinutes = 60;
 
@@ -77,14 +77,15 @@ public sealed class ProductService : IProductService
         return MapToResponse(product);
     }
 
-    public async Task<ProductResponseDto> GetProductByIdAsync(Guid productId)
+    public async Task<ProductResponseDto> GetProductByIdAsync(Guid productId, Guid? currentUserId)
     {
         var product = await _dbContext.Products
             .AsNoTracking()
             .FirstOrDefaultAsync(product =>
                 product.Id == productId &&
                 product.IsActive == true &&
-                product.Status == ProductStatus.Published);
+                ((product.Status == ProductStatus.Published && product.Shop.IsActive == true) ||
+                 (currentUserId.HasValue && product.Shop.UserId == currentUserId.Value)));
 
         if (product is null)
         {
@@ -141,6 +142,7 @@ public sealed class ProductService : IProductService
         Guid? shopId,
         ProductStatus? status,
         bool includeAllStatuses,
+        bool includeInactiveShopProducts,
         int pageNumber,
         int pageSize)
     {
@@ -152,10 +154,11 @@ public sealed class ProductService : IProductService
             shopId,
             status,
             includeAllStatuses,
+            includeInactiveShopProducts,
             normalizedPageNumber,
             normalizedPageSize))
         {
-            var cachedPopularProducts = await _cacheService.GetAsync<ProductListResponseDto>(PopularProductsCacheKey);
+            var cachedPopularProducts = await GetCachedPopularProductsIfStillPublicAsync();
             if (cachedPopularProducts is not null)
             {
                 return cachedPopularProducts;
@@ -165,6 +168,11 @@ public sealed class ProductService : IProductService
         var query = _dbContext.Products
             .AsNoTracking()
             .Where(product => product.IsActive == true);
+
+        if (!includeInactiveShopProducts)
+        {
+            query = query.Where(product => product.Shop.IsActive == true);
+        }
 
         if (categoryId.HasValue)
         {
@@ -203,6 +211,7 @@ public sealed class ProductService : IProductService
             shopId,
             status,
             includeAllStatuses,
+            includeInactiveShopProducts,
             normalizedPageNumber,
             normalizedPageSize))
         {
@@ -273,17 +282,49 @@ public sealed class ProductService : IProductService
         await _cacheService.RemoveAsync(PopularProductsCacheKey);
     }
 
+    private async Task<ProductListResponseDto?> GetCachedPopularProductsIfStillPublicAsync()
+    {
+        var cachedPopularProducts = await _cacheService.GetAsync<ProductListResponseDto>(PopularProductsCacheKey);
+        if (cachedPopularProducts is null || cachedPopularProducts.Items.Count == 0)
+        {
+            return cachedPopularProducts;
+        }
+
+        var cachedProductIds = cachedPopularProducts.Items
+            .Select(item => item.Id)
+            .Distinct()
+            .ToList();
+
+        var currentlyPublicProductCount = await _dbContext.Products
+            .AsNoTracking()
+            .CountAsync(product =>
+                cachedProductIds.Contains(product.Id) &&
+                product.IsActive == true &&
+                product.Status == ProductStatus.Published &&
+                product.Shop.IsActive == true);
+
+        if (currentlyPublicProductCount == cachedProductIds.Count)
+        {
+            return cachedPopularProducts;
+        }
+
+        await InvalidatePopularProductsCacheAsync();
+        return null;
+    }
+
     private static bool IsPopularProductsRequest(
         Guid? categoryId,
         Guid? shopId,
         ProductStatus? status,
         bool includeAllStatuses,
+        bool includeInactiveShopProducts,
         int pageNumber,
         int pageSize)
     {
         return !categoryId.HasValue &&
             !shopId.HasValue &&
             !includeAllStatuses &&
+            !includeInactiveShopProducts &&
             (!status.HasValue || status.Value == ProductStatus.Published) &&
             pageNumber == 1 &&
             pageSize == 10;

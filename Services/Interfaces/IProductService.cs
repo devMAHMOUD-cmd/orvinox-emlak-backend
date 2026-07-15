@@ -7,7 +7,7 @@ public interface IProductService
 {
     Task<ProductResponseDto> CreateProductAsync(Guid shopId, CreateProductDto dto);
 
-    Task<ProductResponseDto> GetProductByIdAsync(Guid productId);
+    Task<ProductResponseDto> GetProductByIdAsync(Guid productId, Guid? currentUserId);
 
     Task<ProductDownloadUrlResponseDto> GenerateProductDownloadUrlAsync(Guid userId, Guid productId);
 
@@ -16,6 +16,7 @@ public interface IProductService
         Guid? shopId,
         ProductStatus? status,
         bool includeAllStatuses,
+        bool includeInactiveShopProducts,
         int pageNumber,
         int pageSize);
 

@@ -46,15 +46,16 @@ public sealed class ProductController : ControllerBase
         [FromQuery] int page = 1,
         [FromQuery] int size = 10)
     {
-        var canViewNonPublished = shopId.HasValue && await CurrentUserOwnsShopAsync(shopId.Value);
-        var effectiveStatus = canViewNonPublished ? status : ProductStatus.Published;
-        var effectiveIncludeAllStatuses = includeAllStatuses && canViewNonPublished;
+        var ownsRequestedShop = shopId.HasValue && await CurrentUserOwnsShopAsync(shopId.Value);
+        var effectiveStatus = ownsRequestedShop ? status : ProductStatus.Published;
+        var effectiveIncludeAllStatuses = includeAllStatuses && ownsRequestedShop;
 
         var result = await _productService.GetFilteredProductsAsync(
             categoryId,
             shopId,
             effectiveStatus,
             effectiveIncludeAllStatuses,
+            ownsRequestedShop,
             page,
             size);
 
@@ -64,7 +65,7 @@ public sealed class ProductController : ControllerBase
     [HttpGet("{id:guid}")]
     public async Task<IActionResult> GetProductByIdAsync([FromRoute] Guid id)
     {
-        var result = await _productService.GetProductByIdAsync(id);
+        var result = await _productService.GetProductByIdAsync(id, TryGetCurrentUserId());
         return Ok(result);
     }
 
@@ -135,8 +136,7 @@ public sealed class ProductController : ControllerBase
 
         return await _dbContext.Shops.AnyAsync(shop =>
             shop.Id == shopId &&
-            shop.UserId == userId.Value &&
-            shop.IsActive == true);
+            shop.UserId == userId.Value);
     }
 
     private async Task<Shop> GetCurrentUserShopAsync(Guid userId)
