@@ -2,6 +2,7 @@ using CraftoraApi.Data;
 using CraftoraApi.DTOs.Course;
 using CraftoraApi.Middleware;
 using CraftoraApi.Models.Entities;
+using CraftoraApi.Models.Enums;
 using CraftoraApi.Redis;
 using CraftoraApi.Services.Interfaces;
 using Microsoft.EntityFrameworkCore;
@@ -27,14 +28,23 @@ public sealed class CourseProgressService : ICourseProgressService
     {
         ArgumentNullException.ThrowIfNull(dto);
 
-        var lessonExists = await _dbContext.CourseLessons.AnyAsync(lesson =>
-            lesson.Id == dto.CourseLessonId &&
-            lesson.IsActive);
+        var lesson = await _dbContext.CourseLessons
+            .AsNoTracking()
+            .Where(lesson =>
+                lesson.Id == dto.CourseLessonId &&
+                lesson.IsActive)
+            .Select(lesson => new
+            {
+                CourseId = lesson.CourseSection.CourseId
+            })
+            .FirstOrDefaultAsync();
 
-        if (!lessonExists)
+        if (lesson is null)
         {
             throw new NotFoundException("Ders bulunamadi.");
         }
+
+        await EnsureCourseAccessAsync(userId, lesson.CourseId);
 
         var progressCacheKey = GetProgressCacheKey(userId, dto.CourseLessonId);
         await _cacheService.SetAsync(progressCacheKey, dto, ProgressCacheTtl);
@@ -77,11 +87,7 @@ public sealed class CourseProgressService : ICourseProgressService
 
     public async Task<CourseProgressResponseDto> GetCourseProgressAsync(Guid userId, Guid courseId)
     {
-        var courseExists = await _dbContext.Courses.AnyAsync(course => course.Id == courseId);
-        if (!courseExists)
-        {
-            throw new NotFoundException("Egitim bulunamadi.");
-        }
+        await EnsureCourseAccessAsync(userId, courseId);
 
         var lessonIdsQuery = _dbContext.CourseLessons
             .AsNoTracking()
@@ -109,6 +115,44 @@ public sealed class CourseProgressService : ICourseProgressService
             TotalLessons: totalLessons,
             CompletedLessons: completedLessons,
             CompletionPercentage: completionPercentage);
+    }
+
+    private async Task EnsureCourseAccessAsync(Guid userId, Guid courseId)
+    {
+        var course = await _dbContext.Courses
+            .AsNoTracking()
+            .Where(item => item.Id == courseId)
+            .Select(item => new
+            {
+                item.ProductId,
+                ShopOwnerId = item.Product.Shop.UserId
+            })
+            .FirstOrDefaultAsync();
+
+        if (course is null)
+        {
+            throw new NotFoundException("Egitim bulunamadi.");
+        }
+
+        var hasPurchasedCourse = await _dbContext.UserLibraries
+            .AsNoTracking()
+            .AnyAsync(item =>
+                item.UserId == userId &&
+                item.ProductId == course.ProductId);
+
+        if (hasPurchasedCourse || course.ShopOwnerId == userId)
+        {
+            return;
+        }
+
+        var isAdmin = await _dbContext.Users
+            .AsNoTracking()
+            .AnyAsync(item => item.Id == userId && item.Role == UserRole.Admin);
+
+        if (!isAdmin)
+        {
+            throw new ForbiddenException("Bu derse erisim icin kursu satin almalisiniz.");
+        }
     }
 
     private static string GetProgressCacheKey(Guid userId, Guid lessonId)
