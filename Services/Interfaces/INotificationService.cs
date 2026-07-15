@@ -17,7 +17,8 @@ public interface INotificationService
         string title,
         string message,
         NotificationType type,
-        Guid? referenceId);
+        Guid? referenceId,
+        string? referenceType = null);
 
     Task NotifyShopFollowersAsync(
         Guid shopId,

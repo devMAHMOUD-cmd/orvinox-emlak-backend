@@ -135,7 +135,8 @@ public sealed class NotificationService : INotificationService
         string title,
         string message,
         NotificationType type,
-        Guid? referenceId)
+        Guid? referenceId,
+        string? referenceType = null)
     {
         var normalizedTitle = PlainTextInputValidator.Require(title, "Bildirim basligi", 200);
         var normalizedMessage = PlainTextInputValidator.Require(message, "Bildirim mesaji", 1000);
@@ -152,7 +153,8 @@ public sealed class NotificationService : INotificationService
             Title = normalizedTitle,
             Body = normalizedMessage,
             Type = ToStorageValue(type),
-            ReferenceType = ToReferenceType(type),
+            ReferenceType = PlainTextInputValidator.Optional(referenceType, "Bildirim referans tipi", 50)
+                ?? ToReferenceType(type),
             ReferenceId = referenceId,
             IsRead = false,
             CreatedAt = DateTime.UtcNow
@@ -169,6 +171,7 @@ public sealed class NotificationService : INotificationService
             {
                 ["notificationId"] = notification.Id.ToString("D"),
                 ["type"] = type.ToString(),
+                ["referenceType"] = notification.ReferenceType ?? string.Empty,
                 ["referenceId"] = referenceId?.ToString("D") ?? string.Empty
             }));
     }
@@ -214,6 +217,7 @@ public sealed class NotificationService : INotificationService
             Message: notification.Body,
             Type: FromStorageValue(notification.Type),
             IsRead: notification.IsRead == true,
+            ReferenceType: notification.ReferenceType,
             ReferenceId: notification.ReferenceId,
             CreatedAt: notification.CreatedAt);
     }

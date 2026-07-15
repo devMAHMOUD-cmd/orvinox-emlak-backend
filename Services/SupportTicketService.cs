@@ -1,4 +1,6 @@
+using System.Text.Json;
 using CraftoraApi.Data;
+using CraftoraApi.DTOs.Notification;
 using CraftoraApi.DTOs.Support;
 using CraftoraApi.Infrastructure.Security;
 using CraftoraApi.Middleware;
@@ -6,6 +8,7 @@ using CraftoraApi.Models.Entities;
 using CraftoraApi.Models.Enums;
 using CraftoraApi.Services.Interfaces;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 
 namespace CraftoraApi.Services;
 
@@ -16,12 +19,21 @@ public sealed class SupportTicketService : ISupportTicketService
     private const int MaximumSearchLength = 100;
     private const int MaximumSubjectLength = 200;
     private const int MaximumMessageLength = 5000;
+    private const string SupportTicketReferenceType = "support_ticket";
+    private const string SupportTicketAuditTargetType = "support_ticket";
 
     private readonly AppDbContext _dbContext;
+    private readonly INotificationService _notificationService;
+    private readonly ILogger<SupportTicketService> _logger;
 
-    public SupportTicketService(AppDbContext dbContext)
+    public SupportTicketService(
+        AppDbContext dbContext,
+        INotificationService notificationService,
+        ILogger<SupportTicketService> logger)
     {
         _dbContext = dbContext ?? throw new ArgumentNullException(nameof(dbContext));
+        _notificationService = notificationService ?? throw new ArgumentNullException(nameof(notificationService));
+        _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
 
     public async Task<TicketDetailDto> CreateTicketAsync(Guid userId, CreateTicketDto dto)
@@ -272,41 +284,60 @@ public sealed class SupportTicketService : ISupportTicketService
         var messageText = PlainTextInputValidator.Require(dto.Message, "Admin cevabi", MaximumMessageLength);
         var admin = await EnsureActiveAdminAsync(adminUserId);
 
-        await using var transaction = await _dbContext.Database.BeginTransactionAsync();
-        var ticket = await GetTicketForUpdateAsync(ticketId);
+        AdminTicketMessageDto result;
+        Guid ticketOwnerId;
 
-        if (ticket.Status == SupportTicketStatus.Closed)
+        await using (var transaction = await _dbContext.Database.BeginTransactionAsync())
         {
-            throw new ConflictException("Kapali destek talebine cevap vermek icin once ticket'i yeniden acin.");
+            var ticket = await GetTicketForUpdateAsync(ticketId);
+
+            if (ticket.Status == SupportTicketStatus.Closed)
+            {
+                throw new ConflictException("Kapali destek talebine cevap vermek icin once ticket'i yeniden acin.");
+            }
+
+            var now = DateTime.UtcNow;
+            var message = new SupportTicketMessage
+            {
+                Id = Guid.NewGuid(),
+                TicketId = ticket.Id,
+                SenderId = adminUserId,
+                SenderRole = SupportMessageSenderRole.Admin,
+                Message = messageText,
+                CreatedAt = now
+            };
+
+            ticket.Status = SupportTicketStatus.Answered;
+            ticket.LastMessageAt = now;
+            ticket.UpdatedAt = now;
+            _dbContext.SupportTicketMessages.Add(message);
+
+            await _dbContext.SaveChangesAsync();
+            await AddAdminAuditAsync(
+                adminUserId,
+                "support_reply",
+                ticket.Id,
+                new { MessageLength = messageText.Length, Status = ToApiValue(ticket.Status) });
+            await transaction.CommitAsync();
+
+            ticketOwnerId = ticket.UserId;
+            result = new AdminTicketMessageDto(
+                message.Id,
+                message.SenderId,
+                ToApiValue(message.SenderRole),
+                admin.FullName,
+                admin.Email,
+                message.Message,
+                message.CreatedAt);
         }
 
-        var now = DateTime.UtcNow;
-        var message = new SupportTicketMessage
-        {
-            Id = Guid.NewGuid(),
-            TicketId = ticket.Id,
-            SenderId = adminUserId,
-            SenderRole = SupportMessageSenderRole.Admin,
-            Message = messageText,
-            CreatedAt = now
-        };
+        await TrySendSupportNotificationAsync(
+            ticketOwnerId,
+            ticketId,
+            "Destek talebinize yanit verildi",
+            "Destek talebinize bir admin yaniti eklendi.");
 
-        ticket.Status = SupportTicketStatus.Answered;
-        ticket.LastMessageAt = now;
-        ticket.UpdatedAt = now;
-        _dbContext.SupportTicketMessages.Add(message);
-
-        await _dbContext.SaveChangesAsync();
-        await transaction.CommitAsync();
-
-        return new AdminTicketMessageDto(
-            message.Id,
-            message.SenderId,
-            ToApiValue(message.SenderRole),
-            admin.FullName,
-            admin.Email,
-            message.Message,
-            message.CreatedAt);
+        return result;
     }
 
     public async Task<AdminTicketDetailDto> UpdateStatusAsync(Guid adminUserId, Guid ticketId, UpdateTicketStatusDto dto)
@@ -316,30 +347,57 @@ public sealed class SupportTicketService : ISupportTicketService
         var targetStatus = ParseRequiredStatus(dto.Status);
         await EnsureActiveAdminAsync(adminUserId);
 
-        await using var transaction = await _dbContext.Database.BeginTransactionAsync();
-        var ticket = await GetTicketForUpdateAsync(ticketId);
+        var shouldNotifyClosure = false;
+        Guid ticketOwnerId;
 
-        if (ticket.Status != targetStatus)
+        await using (var transaction = await _dbContext.Database.BeginTransactionAsync())
         {
-            var now = DateTime.UtcNow;
-            ticket.Status = targetStatus;
-            ticket.UpdatedAt = now;
+            var ticket = await GetTicketForUpdateAsync(ticketId);
+            ticketOwnerId = ticket.UserId;
+            var previousStatus = ticket.Status;
 
-            if (targetStatus == SupportTicketStatus.Closed)
+            if (previousStatus != targetStatus)
             {
-                ticket.ClosedAt = now;
-                ticket.ClosedByUserId = adminUserId;
-            }
-            else
-            {
-                ticket.ClosedAt = null;
-                ticket.ClosedByUserId = null;
+                var now = DateTime.UtcNow;
+                ticket.Status = targetStatus;
+                ticket.UpdatedAt = now;
+
+                if (targetStatus == SupportTicketStatus.Closed)
+                {
+                    ticket.ClosedAt = now;
+                    ticket.ClosedByUserId = adminUserId;
+                    shouldNotifyClosure = true;
+                }
+                else
+                {
+                    ticket.ClosedAt = null;
+                    ticket.ClosedByUserId = null;
+                }
+
+                await _dbContext.SaveChangesAsync();
+                await AddAdminAuditAsync(
+                    adminUserId,
+                    "support_status_change",
+                    ticket.Id,
+                    new
+                    {
+                        PreviousStatus = ToApiValue(previousStatus),
+                        Status = ToApiValue(targetStatus)
+                    });
             }
 
-            await _dbContext.SaveChangesAsync();
+            await transaction.CommitAsync();
         }
 
-        await transaction.CommitAsync();
+        if (shouldNotifyClosure)
+        {
+            await TrySendSupportNotificationAsync(
+                ticketOwnerId,
+                ticketId,
+                "Destek talebiniz kapatildi",
+                "Destek talebiniz kapatildi. Gerekirse yeni bir destek talebi olusturabilirsiniz.");
+        }
+
         return await GetTicketDetailAsync(ticketId);
     }
 
@@ -375,6 +433,42 @@ public sealed class SupportTicketService : ISupportTicketService
             .SingleOrDefaultAsync();
 
         return ticket ?? throw new NotFoundException("Destek talebi bulunamadi.");
+    }
+
+    private async Task AddAdminAuditAsync(Guid adminUserId, string action, Guid ticketId, object metadata)
+    {
+        await _dbContext.Database.ExecuteSqlInterpolatedAsync($"""
+            INSERT INTO admin_audit_logs (admin_user_id, action, target_type, target_id, metadata)
+            VALUES (
+                {adminUserId},
+                {action},
+                {SupportTicketAuditTargetType},
+                {ticketId},
+                CAST({JsonSerializer.Serialize(metadata)} AS jsonb)
+            )
+            """);
+    }
+
+    private async Task TrySendSupportNotificationAsync(Guid userId, Guid ticketId, string title, string message)
+    {
+        try
+        {
+            await _notificationService.SendNotificationAsync(
+                userId,
+                title,
+                message,
+                NotificationType.System,
+                ticketId,
+                SupportTicketReferenceType);
+        }
+        catch (Exception exception)
+        {
+            _logger.LogWarning(
+                exception,
+                "Support ticket notification could not be sent. TicketId: {TicketId}, UserId: {UserId}",
+                ticketId,
+                userId);
+        }
     }
 
     private static TicketDetailDto MapToUserDetail(SupportTicket ticket)

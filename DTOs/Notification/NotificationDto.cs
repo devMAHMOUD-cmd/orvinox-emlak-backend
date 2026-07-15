@@ -7,5 +7,6 @@ public sealed record NotificationDto(
     string Message,
     NotificationType Type,
     bool IsRead,
+    string? ReferenceType,
     Guid? ReferenceId,
     DateTime? CreatedAt);
