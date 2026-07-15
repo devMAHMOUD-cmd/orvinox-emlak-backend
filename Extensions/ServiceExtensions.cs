@@ -1,4 +1,6 @@
 using System.IdentityModel.Tokens.Jwt;
+using System.Security.Claims;
+using System.Threading.RateLimiting;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text;
@@ -269,6 +271,7 @@ public static class ServiceExtensions
         services.AddScoped<IGamificationService, GamificationService>();
         services.AddScoped<ISearchService, SearchService>();
         services.AddScoped<IAdminService, AdminService>();
+        services.AddScoped<ISupportTicketService, SupportTicketService>();
         services.AddScoped<IAnalyticsEventService, AnalyticsEventService>();
         services.AddScoped<ICompetitionService, CompetitionService>();
         services.AddScoped<IPublicCourseService, PublicCourseService>();
@@ -616,6 +619,30 @@ public static class ServiceExtensions
                 limiter.Window = TimeSpan.FromMinutes(1);
             });
 
+            options.AddPolicy("support-ticket-create", context =>
+                RateLimitPartition.GetFixedWindowLimiter(
+                    GetRateLimitPartitionKey(context),
+                    _ => new FixedWindowRateLimiterOptions
+                    {
+                        PermitLimit = 5,
+                        Window = TimeSpan.FromHours(1),
+                        QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
+                        QueueLimit = 0,
+                        AutoReplenishment = true
+                    }));
+
+            options.AddPolicy("support-ticket-message", context =>
+                RateLimitPartition.GetFixedWindowLimiter(
+                    GetRateLimitPartitionKey(context),
+                    _ => new FixedWindowRateLimiterOptions
+                    {
+                        PermitLimit = 20,
+                        Window = TimeSpan.FromMinutes(10),
+                        QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
+                        QueueLimit = 0,
+                        AutoReplenishment = true
+                    }));
+
             // Rate limit aşıldığında 429 Too Many Requests dön
             options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
             options.OnRejected = async (context, _) =>
@@ -857,6 +884,20 @@ public static class ServiceExtensions
         }
 
         return $"Host=localhost;Database={database};Username={username};Password={password}";
+    }
+
+    private static string GetRateLimitPartitionKey(HttpContext context)
+    {
+        var userId = context.User.FindFirst(ClaimTypes.NameIdentifier)?.Value
+            ?? context.User.FindFirst("sub")?.Value;
+
+        if (!string.IsNullOrWhiteSpace(userId))
+        {
+            return $"user:{userId}";
+        }
+
+        var ipAddress = context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+        return $"ip:{ipAddress}";
     }
 
     private static string GetRedisConnectionString(IConfiguration configuration)

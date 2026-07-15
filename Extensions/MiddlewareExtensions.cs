@@ -79,8 +79,8 @@ public static class MiddlewareExtensions
         app.UseRouting();
         app.UseMiddleware<SecurityHeadersMiddleware>();
         app.UseCors("CraftoraCorsPolicy");
-        app.UseRateLimiter();
         app.UseAuthentication();
+        app.UseRateLimiter();
         app.UseMiddleware<RlsMiddleware>();
         app.UseAuthorization();
 
