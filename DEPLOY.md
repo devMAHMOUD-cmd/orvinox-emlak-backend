@@ -128,6 +128,20 @@ Dis servis anahtarlarinda PROD anahtarlari kullanilmalidir; test/dev anahtarlari
 
 `.env` dosyasi ASLA git'e commit edilmemelidir. Dosya zaten `.gitignore` icinde olmali ve VPS uzerinde guvenli saklanmalidir.
 
+## Elasticsearch Prod Güvenliği - ZORUNLU
+
+> **UYARI:** Local ortamda Elasticsearch auth'suz (`xpack.security.enabled=false`) ve `9200` portu host'a acik olabilir. Bu yapilandirma PROD ortaminda KABUL EDILEMEZ; disaridan erisen biri index verilerini okuyabilir, degistirebilir veya silebilir.
+
+Prod ortaminda asagidakilerden en az biri, tercihen hepsi uygulanmalidir:
+
+1. `docker-compose.yml` icindeki Elasticsearch `ports` yayininin `9200:9200` satirini kaldirin. Backend zaten internal Docker network uzerinden `elasticsearch:9200` adresine baglanir; portun host'a acilmasina gerek yoktur.
+2. Port yayinlanmak zorundaysa VPS firewall kurallariyla `9200` portunu internete kapatin; yalnizca gerekli ve guvenilir kaynaklardan erisime izin verin.
+3. Ideal olarak `xpack.security.enabled=true` kullanin, Elasticsearch kullanicisi/sifresi tanimlayin ve backend connection string'ine ilgili credentials bilgilerini ekleyin.
+
+Elasticsearch .NET client surumu `8.13.15`, sunucu surumu `8.13.0` ile uyumludur. Sunucu surumu degistirilirse client surumu de uyumluluk acisindan kontrol edilmelidir; uyumsuzluk sessiz arama veya indexleme hatalarina yol acabilir.
+
+Elasticsearch index verisi kaybolursa, admin token ile `POST /api/admin/reindex-products` endpoint'i cagrilarak yayinlanmis ve aktif urunlerden yeniden olusturulabilir.
+
 ## Backup
 
 PostgreSQL backup scriptleri `scripts/backup/` altindadir.
