@@ -69,6 +69,16 @@ public sealed class ProductController : ControllerBase
     }
 
     [Authorize]
+    [HttpGet("{id:guid}/download-url")]
+    public async Task<IActionResult> GetProductDownloadUrlAsync([FromRoute] Guid id)
+    {
+        var userId = GetCurrentUserId();
+        var result = await _productService.GenerateProductDownloadUrlAsync(userId, id);
+
+        return Ok(result);
+    }
+
+    [Authorize]
     [HttpPut("{id:guid}")]
     public async Task<IActionResult> UpdateProductAsync(
         [FromRoute] Guid id,

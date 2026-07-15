@@ -9,6 +9,8 @@ public interface IProductService
 
     Task<ProductResponseDto> GetProductByIdAsync(Guid productId);
 
+    Task<ProductDownloadUrlResponseDto> GenerateProductDownloadUrlAsync(Guid userId, Guid productId);
+
     Task<ProductListResponseDto> GetFilteredProductsAsync(
         Guid? categoryId,
         Guid? shopId,

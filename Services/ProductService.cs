@@ -14,19 +14,24 @@ namespace CraftoraApi.Services;
 public sealed class ProductService : IProductService
 {
     private const string PopularProductsCacheKey = "products:popular";
+    private const string PrivateProductsBucketName = "private-products";
+    private const int PrivateProductDownloadUrlExpiryMinutes = 60;
 
     private readonly AppDbContext _dbContext;
     private readonly IRabbitMqPublisher _rabbitMqPublisher;
     private readonly ICacheService _cacheService;
+    private readonly IStorageService _storageService;
 
     public ProductService(
         AppDbContext dbContext,
         IRabbitMqPublisher rabbitMqPublisher,
-        ICacheService cacheService)
+        ICacheService cacheService,
+        IStorageService storageService)
     {
         _dbContext = dbContext ?? throw new ArgumentNullException(nameof(dbContext));
         _rabbitMqPublisher = rabbitMqPublisher ?? throw new ArgumentNullException(nameof(rabbitMqPublisher));
         _cacheService = cacheService ?? throw new ArgumentNullException(nameof(cacheService));
+        _storageService = storageService ?? throw new ArgumentNullException(nameof(storageService));
     }
 
     public async Task<ProductResponseDto> CreateProductAsync(Guid shopId, CreateProductDto dto)
@@ -87,6 +92,48 @@ public sealed class ProductService : IProductService
         }
 
         return MapToResponse(product);
+    }
+
+    public async Task<ProductDownloadUrlResponseDto> GenerateProductDownloadUrlAsync(Guid userId, Guid productId)
+    {
+        var product = await _dbContext.Products
+            .AsNoTracking()
+            .FirstOrDefaultAsync(item => item.Id == productId);
+
+        if (product is null)
+        {
+            throw new NotFoundException("Urun bulunamadi.");
+        }
+
+        var hasPurchasedProduct = await _dbContext.UserLibraries
+            .AsNoTracking()
+            .AnyAsync(item => item.UserId == userId && item.ProductId == productId);
+
+        if (!hasPurchasedProduct)
+        {
+            throw new ForbiddenException("Bu urunu indirme yetkiniz yok.");
+        }
+
+        if (product.Type != ProductType.DigitalFile)
+        {
+            throw new BadRequestException("Bu urun indirilebilir bir dijital dosya degil.");
+        }
+
+        if (string.IsNullOrWhiteSpace(product.FileUrl))
+        {
+            throw new NotFoundException("Bu urun icin indirilebilir bir dosya bulunamadi.");
+        }
+
+        var expiresAt = DateTime.UtcNow.AddMinutes(PrivateProductDownloadUrlExpiryMinutes);
+        var downloadUrl = _storageService.GeneratePresignedDownloadUrl(
+            PrivateProductsBucketName,
+            product.FileUrl,
+            PrivateProductDownloadUrlExpiryMinutes);
+
+        return new ProductDownloadUrlResponseDto(
+            DownloadUrl: downloadUrl,
+            ExpiresAt: expiresAt,
+            FileName: GetFileName(product.FileUrl));
     }
 
     public async Task<ProductListResponseDto> GetFilteredProductsAsync(
@@ -310,6 +357,16 @@ public sealed class ProductService : IProductService
             RatingAverage: product.RatingAverage,
             ReviewCount: product.ReviewCount ?? 0,
             SalesCount: product.SalesCount ?? 0);
+    }
+
+    private static string GetFileName(string objectKey)
+    {
+        var normalizedObjectKey = objectKey.Trim();
+        var separatorIndex = normalizedObjectKey.LastIndexOf('/');
+
+        return separatorIndex >= 0 && separatorIndex < normalizedObjectKey.Length - 1
+            ? normalizedObjectKey[(separatorIndex + 1)..]
+            : normalizedObjectKey;
     }
 
     private static List<string> NormalizeTags(IEnumerable<string>? tags)
