@@ -91,6 +91,9 @@ public static class DatabaseHardening
             CREATE INDEX IF NOT EXISTS idx_media_comments_media_parent_created ON media_comments(media_id, parent_comment_id, created_at);
             CREATE INDEX IF NOT EXISTS idx_media_comments_parent ON media_comments(parent_comment_id);
             CREATE INDEX IF NOT EXISTS idx_ip_attempts_locked_until ON ip_login_attempts(locked_until) WHERE locked_until IS NOT NULL;
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_point_logs_complete_lesson_once
+                ON point_logs(user_id, reference_id)
+                WHERE action_type = 'complete_lesson';
 
             ALTER TABLE orders DROP CONSTRAINT IF EXISTS check_fee_logic;
             ALTER TABLE orders ADD CONSTRAINT check_fee_logic CHECK (ABS(amount - (platform_fee + seller_earnings)) <= 0.01);
@@ -327,18 +330,36 @@ public static class DatabaseHardening
 
             CREATE OR REPLACE FUNCTION reward_lesson_completion()
             RETURNS TRIGGER AS $$
+            DECLARE
+                v_point_log_id UUID;
             BEGIN
-                IF (NEW.is_completed = TRUE AND OLD.is_completed = FALSE) THEN
+                IF NEW.is_completed = TRUE
+                    AND (TG_OP = 'INSERT' OR OLD.is_completed IS DISTINCT FROM TRUE) THEN
+                    IF NOT EXISTS (
+                        SELECT 1
+                        FROM user_library library_item
+                        JOIN course_lessons lesson ON lesson.id = NEW.course_lesson_id
+                        JOIN course_sections section ON section.id = lesson.course_section_id
+                        JOIN courses course ON course.id = section.course_id
+                        WHERE library_item.user_id = NEW.user_id
+                          AND library_item.product_id = course.product_id
+                    ) THEN
+                        RETURN NEW;
+                    END IF;
+
                     INSERT INTO point_logs (user_id, action_type, points_earned, reference_id)
-                    VALUES (NEW.user_id, 'complete_lesson', 2.0, NEW.lesson_id);
+                    VALUES (NEW.user_id, 'complete_lesson', 2.0, NEW.course_lesson_id)
+                    ON CONFLICT (user_id, reference_id) WHERE action_type = 'complete_lesson'
+                    DO NOTHING
+                    RETURNING id INTO v_point_log_id;
 
-                    INSERT INTO user_points (user_id, total_points)
-                    VALUES (NEW.user_id, 2.0)
-                    ON CONFLICT (user_id) DO UPDATE
-                    SET total_points = user_points.total_points + 2.0,
-                        updated_at = CURRENT_TIMESTAMP;
-
-                    NEW.completed_at = CURRENT_TIMESTAMP;
+                    IF v_point_log_id IS NOT NULL THEN
+                        INSERT INTO user_points (user_id, total_points)
+                        VALUES (NEW.user_id, 2.0)
+                        ON CONFLICT (user_id) DO UPDATE
+                        SET total_points = user_points.total_points + 2.0,
+                            updated_at = CURRENT_TIMESTAMP;
+                    END IF;
                 END IF;
 
                 RETURN NEW;
@@ -432,6 +453,11 @@ public static class DatabaseHardening
 
             DROP TRIGGER IF EXISTS trg_points_on_watch ON media_watch_history;
             CREATE TRIGGER trg_points_on_watch BEFORE INSERT ON media_watch_history FOR EACH ROW EXECUTE FUNCTION award_viewer_points();
+
+            DROP TRIGGER IF EXISTS trg_points_on_lesson_completion ON user_lesson_progress;
+            CREATE TRIGGER trg_points_on_lesson_completion
+            AFTER INSERT OR UPDATE OF is_completed ON user_lesson_progress
+            FOR EACH ROW EXECUTE FUNCTION reward_lesson_completion();
 
             DROP TRIGGER IF EXISTS trg_normalize_analytics_event_shop_id ON analytics_events;
             CREATE TRIGGER trg_normalize_analytics_event_shop_id BEFORE INSERT ON analytics_events FOR EACH ROW EXECUTE FUNCTION normalize_analytics_event_shop_id();

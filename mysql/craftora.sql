@@ -289,22 +289,35 @@ CREATE FUNCTION public.reward_lesson_completion() RETURNS trigger
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path TO 'public'
     AS $$
+DECLARE v_point_log_id UUID;
 BEGIN
-    -- Ders ilk kez tamamlandÄ±ysa (Ã¶nceden false, ÅŸimdi true)
-    IF (NEW.is_completed = TRUE AND OLD.is_completed = FALSE) THEN
-        
-        -- Ã–ÄŸrenciye 2 puan ver
+    IF NEW.is_completed = TRUE
+        AND (TG_OP = 'INSERT' OR OLD.is_completed IS DISTINCT FROM TRUE) THEN
+        IF NOT EXISTS (
+            SELECT 1
+            FROM user_library library_item
+            JOIN course_lessons lesson ON lesson.id = NEW.course_lesson_id
+            JOIN course_sections section ON section.id = lesson.course_section_id
+            JOIN courses course ON course.id = section.course_id
+            WHERE library_item.user_id = NEW.user_id
+              AND library_item.product_id = course.product_id
+        ) THEN
+            RETURN NEW;
+        END IF;
+
         INSERT INTO point_logs (user_id, action_type, points_earned, reference_id)
-        VALUES (NEW.user_id, 'complete_lesson', 2.0, NEW.lesson_id);
-        
-        INSERT INTO user_points (user_id, total_points) 
-        VALUES (NEW.user_id, 2.0)
-        ON CONFLICT (user_id) DO UPDATE 
-        SET total_points = user_points.total_points + 2.0, 
-            updated_at = CURRENT_TIMESTAMP;
-        
-        -- Tamamlanma saatini kaydet
-        NEW.completed_at = CURRENT_TIMESTAMP;
+        VALUES (NEW.user_id, 'complete_lesson', 2.0, NEW.course_lesson_id)
+        ON CONFLICT (user_id, reference_id) WHERE action_type = 'complete_lesson'
+        DO NOTHING
+        RETURNING id INTO v_point_log_id;
+
+        IF v_point_log_id IS NOT NULL THEN
+            INSERT INTO user_points (user_id, total_points)
+            VALUES (NEW.user_id, 2.0)
+            ON CONFLICT (user_id) DO UPDATE
+            SET total_points = user_points.total_points + 2.0,
+                updated_at = CURRENT_TIMESTAMP;
+        END IF;
     END IF;
     RETURN NEW;
 END;
@@ -1264,6 +1277,8 @@ CREATE INDEX idx_payments_transaction_id ON public.payments USING btree (provide
 
 CREATE INDEX idx_point_logs_user_date ON public.point_logs USING btree (user_id, created_at);
 
+CREATE UNIQUE INDEX uq_point_logs_complete_lesson_once ON public.point_logs USING btree (user_id, reference_id) WHERE (action_type = 'complete_lesson');
+
 CREATE INDEX idx_product_images_product ON public.product_images USING btree (product_id);
 
 CREATE INDEX idx_products_shop ON public.products USING btree (shop_id);
@@ -1330,6 +1345,8 @@ CREATE TRIGGER trg_on_order_completed AFTER INSERT OR UPDATE ON public.orders FO
 CREATE TRIGGER trg_points_on_like AFTER INSERT ON public.media_likes FOR EACH ROW EXECUTE FUNCTION public.award_seller_points();
 
 CREATE TRIGGER trg_points_on_watch BEFORE INSERT ON public.media_watch_history FOR EACH ROW EXECUTE FUNCTION public.award_viewer_points();
+
+CREATE TRIGGER trg_points_on_lesson_completion AFTER INSERT OR UPDATE OF is_completed ON public.user_lesson_progress FOR EACH ROW EXECUTE FUNCTION public.reward_lesson_completion();
 
 CREATE TRIGGER trg_sync_followers AFTER INSERT OR DELETE ON public.subscriptions FOR EACH ROW EXECUTE FUNCTION public.sync_follower_count();
 
