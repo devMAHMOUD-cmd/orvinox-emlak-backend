@@ -83,13 +83,14 @@ public sealed class OrderService : IOrderService
             throw new BadRequestException("Kendi urununuzu satin alamazsiniz.");
         }
 
-        await using var transaction = await _dbContext.Database.BeginTransactionAsync();
-
         var createdOrders = new List<Order>();
-        var successfulOrders = new List<Order>();
+        var successfulOrders = new List<(Order Order, Product Product)>();
 
         foreach (var cartItem in cartItems)
         {
+            // A failed item must not roll back earlier successful purchases.
+            await using var transaction = await _dbContext.Database.BeginTransactionAsync();
+
             var quantity = Math.Max(cartItem.Quantity ?? 1, 1);
             var amount = Math.Round(cartItem.Product.Price * quantity, 2, MidpointRounding.AwayFromZero);
             var platformFee = Math.Round(amount * PlatformFeeRate, 2, MidpointRounding.AwayFromZero);
@@ -117,6 +118,7 @@ public sealed class OrderService : IOrderService
             _dbContext.Orders.Add(order);
             await _dbContext.SaveChangesAsync();
 
+            // TODO: Pass a durable per-cart-item provider idempotency key when real payments are introduced.
             var paymentResult = await _paymentService.ProcessPaymentAsync(
                 amount,
                 currency ?? DefaultCurrency,
@@ -150,25 +152,17 @@ public sealed class OrderService : IOrderService
             {
                 order.Status = OrderStatus.Completed;
                 order.UpdatedAt = DateTime.UtcNow;
-                successfulOrders.Add(order);
+                _dbContext.CartItems.Remove(cartItem);
+                successfulOrders.Add((order, cartItem.Product));
             }
 
+            await _dbContext.SaveChangesAsync();
+            await transaction.CommitAsync();
             createdOrders.Add(order);
         }
 
-        await _dbContext.SaveChangesAsync();
-
-        if (successfulOrders.Count == cartItems.Count)
+        foreach (var (order, product) in successfulOrders)
         {
-            _dbContext.CartItems.RemoveRange(cartItems);
-            await _dbContext.SaveChangesAsync();
-        }
-
-        await transaction.CommitAsync();
-
-        foreach (var order in successfulOrders)
-        {
-            var product = cartItems.First(item => item.ProductId == order.ProductId).Product;
             await SendOrderNotificationsAsync(order, product, buyer);
             await PublishInvoiceCommandAsync(order, buyer);
         }
