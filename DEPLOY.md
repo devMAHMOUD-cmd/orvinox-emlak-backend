@@ -184,3 +184,28 @@ TODO:
 
 
 423bf130-b4e5-4948-9d2f-c4d7b5a196ff
+
+
+
+
+
+32 servis komple güvenlik taraması
+✅ 3 prod-killer bug (claim mapping, 9 DI kaydı, ES versiyon)
+✅ Arama sistemi (ilk kez çalışıyor)
+✅ Grup A güvenlik (XSS, rate limit, DTO sızıntı, validation)
+✅ Yeni özellikler: Reply API, Destek ticket sistemi
+✅ Final komple tarama + 4 kritik (checkout, review, progress, download)
+✅ 3 iyileştirme (pasif mağaza, XP trigger, token hash)
+✅ Media feed filtresi
+✅ RabbitMQ healthcheck
+Kalan — sadece 3 kategori
+🧪 TEST (şimdi yapılabilir, KRİTİK):
+   - Fonksiyonel test (destek + 9 servis gerçekten çalışıyor mu)
+   - Mock veri temizliği (test sonrası)
+
+🔴 PROD'A ÇIKIŞ (haftaya, senin dışında):
+   - Gerçek ödeme (Stripe, evrak)
+   - VPS deploy (portlar, TLS, ES auth, secret, RLS)
+
+🟢 v2 (launch'ı bloke etmez):
+   - VideoProcessing HLS, Otomatik test, Quiz
