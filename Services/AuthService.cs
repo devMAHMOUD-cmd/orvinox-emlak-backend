@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Net;
+using System.Text;
 using CraftoraApi.Data;
 using CraftoraApi.DTOs.Auth;
 using CraftoraApi.Infrastructure.Messaging.Contracts;
@@ -233,9 +234,10 @@ public sealed class AuthService : IAuthService
             throw new UnauthorizedException("Geçersiz refresh token.");
         }
 
+        var refreshTokenHash = HashRefreshToken(refreshToken);
         var session = await _dbContext.UserSessions
             .Include(userSession => userSession.User)
-            .FirstOrDefaultAsync(userSession => userSession.RefreshToken == refreshToken);
+            .FirstOrDefaultAsync(userSession => userSession.RefreshToken == refreshTokenHash);
 
         if (session?.User is null)
         {
@@ -254,7 +256,7 @@ public sealed class AuthService : IAuthService
 
         var tokens = _jwtProvider.GenerateTokens(session.User);
 
-        session.RefreshToken = tokens.RefreshToken;
+        session.RefreshToken = HashRefreshToken(tokens.RefreshToken);
         session.ExpiresAt = DateTime.UtcNow.AddDays(GetRefreshTokenExpireDays());
         await _dbContext.SaveChangesAsync();
 
@@ -267,8 +269,9 @@ public sealed class AuthService : IAuthService
 
         if (!string.IsNullOrWhiteSpace(refreshToken))
         {
+            var refreshTokenHash = HashRefreshToken(refreshToken);
             var session = await _dbContext.UserSessions
-                .FirstOrDefaultAsync(userSession => userSession.RefreshToken == refreshToken);
+                .FirstOrDefaultAsync(userSession => userSession.RefreshToken == refreshTokenHash);
 
             if (session is not null)
             {
@@ -383,7 +386,7 @@ public sealed class AuthService : IAuthService
         _dbContext.UserSessions.Add(new UserSession
         {
             User = user,
-            RefreshToken = tokens.RefreshToken,
+            RefreshToken = HashRefreshToken(tokens.RefreshToken),
             ExpiresAt = now.AddDays(GetRefreshTokenExpireDays())
         });
 
@@ -405,6 +408,13 @@ public sealed class AuthService : IAuthService
     private static string GetAccessTokenBlacklistKey(string accessToken)
     {
         return $"blacklist:{accessToken}";
+    }
+
+    private static string HashRefreshToken(string refreshToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(refreshToken);
+
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(refreshToken)));
     }
 
     private static string GenerateOtpCode()
