@@ -5,6 +5,7 @@ using CraftoraApi.Middleware;
 using CraftoraApi.Models.Entities;
 using CraftoraApi.Services.Interfaces;
 using Microsoft.EntityFrameworkCore;
+using Npgsql;
 
 namespace CraftoraApi.Services;
 
@@ -29,6 +30,16 @@ public sealed class ReviewService : IReviewService
             throw new NotFoundException("Urun bulunamadi.");
         }
 
+        var hasPurchasedProduct = await _dbContext.UserLibraries
+            .AsNoTracking()
+            .AnyAsync(libraryItem =>
+                libraryItem.UserId == userId &&
+                libraryItem.ProductId == dto.ProductId);
+        if (!hasPurchasedProduct)
+        {
+            throw new ForbiddenException("Sadece satin aldiginiz urunlere yorum yapabilirsiniz.");
+        }
+
         var alreadyReviewed = await _dbContext.Reviews.AnyAsync(review =>
             review.ProductId == dto.ProductId &&
             review.UserId == userId);
@@ -50,7 +61,15 @@ public sealed class ReviewService : IReviewService
         };
 
         _dbContext.Reviews.Add(review);
-        await _dbContext.SaveChangesAsync();
+        try
+        {
+            await _dbContext.SaveChangesAsync();
+        }
+        catch (DbUpdateException exception) when (IsDuplicateReview(exception))
+        {
+            _dbContext.Entry(review).State = EntityState.Detached;
+            throw new ConflictException("Bu urune zaten yorum yaptiniz.");
+        }
 
         await RefreshProductReviewStatsAsync(dto.ProductId);
         await _dbContext.SaveChangesAsync();
@@ -185,6 +204,13 @@ public sealed class ReviewService : IReviewService
         }
 
         return MapToResponse(review);
+    }
+
+    private static bool IsDuplicateReview(DbUpdateException exception)
+    {
+        return exception.InnerException is PostgresException postgresException &&
+            postgresException.SqlState == PostgresErrorCodes.UniqueViolation &&
+            postgresException.ConstraintName == "unique_user_review";
     }
 
     private static ReviewResponseDto MapToResponse(Review review)
