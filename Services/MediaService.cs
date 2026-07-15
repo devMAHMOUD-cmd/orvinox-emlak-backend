@@ -19,6 +19,7 @@ public sealed class MediaService : IMediaService
     private const string PublicAssetsBucketName = "public-assets";
     private const string PrivateProductsBucketName = "private-products";
     private const string TrackedViewsSetKey = "media:tracked-views";
+    private const string FeedCacheVersionKey = "media:feed:version";
     private static readonly TimeSpan FeedCacheTtl = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan ViewCountCacheTtl = TimeSpan.FromHours(24);
 
@@ -46,19 +47,27 @@ public sealed class MediaService : IMediaService
     {
         var normalizedPage = Math.Max(page, 1);
         var normalizedPageSize = Math.Clamp(pageSize, 1, 50);
-        var cacheKey = GetFeedCacheKey(normalizedPage, normalizedPageSize);
+        var cacheKey = await GetFeedCacheKeyAsync(normalizedPage, normalizedPageSize);
 
         var cachedFeed = await _cacheService.GetAsync<List<MediaResponseDto>>(cacheKey);
         if (cachedFeed is not null)
         {
-            return await ApplyUserMediaStateAsync(cachedFeed, currentUserId);
+            var activeShopFeed = await FilterToActiveShopMediaAsync(cachedFeed);
+            if (activeShopFeed.Count != cachedFeed.Count)
+            {
+                await _cacheService.RemoveAsync(cacheKey);
+            }
+
+            return await ApplyUserMediaStateAsync(activeShopFeed, currentUserId);
         }
 
         var media = await _dbContext.Media
             .AsNoTracking()
             .Include(item => item.Shop)
             .Include(item => item.Product)
-            .Where(item => item.IsActive == true)
+            .Where(item =>
+                item.IsActive == true &&
+                item.Shop.IsActive == true)
             .OrderByDescending(item => item.CreatedAt)
             .Skip((normalizedPage - 1) * normalizedPageSize)
             .Take(normalizedPageSize)
@@ -90,7 +99,8 @@ public sealed class MediaService : IMediaService
             .Include(item => item.Product)
             .Where(item =>
                 item.ShopId == shopId &&
-                item.IsActive == true)
+                item.IsActive == true &&
+                item.Shop.IsActive == true)
             .OrderByDescending(item => item.CreatedAt)
             .Skip((normalizedPage - 1) * normalizedPageSize)
             .Take(normalizedPageSize)
@@ -103,14 +113,28 @@ public sealed class MediaService : IMediaService
     {
         var shop = await _dbContext.Shops
             .AsNoTracking()
-            .FirstOrDefaultAsync(item => item.UserId == userId && item.IsActive == true);
+            .FirstOrDefaultAsync(item => item.UserId == userId);
 
         if (shop is null)
         {
-            throw new NotFoundException("Aktif magaza bulunamadi.");
+            throw new NotFoundException("Magaza bulunamadi.");
         }
 
-        return await GetShopMediaAsync(shop.Id, page, pageSize);
+        var normalizedPage = Math.Max(page, 1);
+        var normalizedPageSize = Math.Clamp(pageSize, 1, 50);
+        var media = await _dbContext.Media
+            .AsNoTracking()
+            .Include(item => item.Shop)
+            .Include(item => item.Product)
+            .Where(item =>
+                item.ShopId == shop.Id &&
+                item.IsActive == true)
+            .OrderByDescending(item => item.CreatedAt)
+            .Skip((normalizedPage - 1) * normalizedPageSize)
+            .Take(normalizedPageSize)
+            .ToListAsync();
+
+        return media.Select(MapToResponse).ToList();
     }
 
     public async Task<MediaResponseDto> UploadMediaAsync(Guid userId, UploadMediaDto dto)
@@ -154,6 +178,7 @@ public sealed class MediaService : IMediaService
 
         _dbContext.Media.Add(media);
         await _dbContext.SaveChangesAsync();
+        await InvalidateFeedCacheAsync();
 
         await _rabbitMqPublisher.PublishProcessVideoCommand(new ProcessVideoCommand(
             VideoId: media.Id,
@@ -397,6 +422,7 @@ public sealed class MediaService : IMediaService
         media.UpdatedAt = DateTime.UtcNow;
 
         await _dbContext.SaveChangesAsync();
+        await InvalidateFeedCacheAsync();
 
         var videoObjectKey = ExtractObjectKey(media.VideoUrl, PrivateProductsBucketName);
         if (!string.IsNullOrWhiteSpace(videoObjectKey))
@@ -413,7 +439,6 @@ public sealed class MediaService : IMediaService
         var mediaIdValue = mediaId.ToString("D");
         await _cacheService.RemoveAsync(GetViewCountCacheKey(mediaId));
         await _cacheService.RemoveFromSetAsync(TrackedViewsSetKey, mediaIdValue);
-        await _cacheService.RemoveAsync(GetFeedCacheKey(1, 10));
     }
 
     public async Task RecordViewAsync(Guid mediaId, Guid? userId)
@@ -517,9 +542,41 @@ public sealed class MediaService : IMediaService
             .ToList();
     }
 
-    private static string GetFeedCacheKey(int page, int pageSize)
+    private async Task<List<MediaResponseDto>> FilterToActiveShopMediaAsync(
+        List<MediaResponseDto> media)
     {
-        return $"media:feed:page:{page}:size:{pageSize}";
+        if (media.Count == 0)
+        {
+            return media;
+        }
+
+        var shopIds = media
+            .Select(item => item.ShopId)
+            .Distinct()
+            .ToList();
+        var activeShopIds = await _dbContext.Shops
+            .AsNoTracking()
+            .Where(shop =>
+                shop.IsActive == true &&
+                shopIds.Contains(shop.Id))
+            .Select(shop => shop.Id)
+            .ToListAsync();
+        var activeShopIdSet = activeShopIds.ToHashSet();
+
+        return media
+            .Where(item => activeShopIdSet.Contains(item.ShopId))
+            .ToList();
+    }
+
+    private async Task<string> GetFeedCacheKeyAsync(int page, int pageSize)
+    {
+        var version = await _cacheService.GetAsync<long>(FeedCacheVersionKey);
+        return $"media:feed:v:{version}:page:{page}:size:{pageSize}";
+    }
+
+    private async Task InvalidateFeedCacheAsync()
+    {
+        await _cacheService.IncrementAsync(FeedCacheVersionKey);
     }
 
     private static string GetViewCountCacheKey(Guid mediaId)
