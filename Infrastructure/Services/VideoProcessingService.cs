@@ -1,4 +1,3 @@
-using System.Text;
 using CraftoraApi.Infrastructure.Messaging.Contracts;
 using CraftoraApi.Services.Interfaces;
 using FFMpegCore;
@@ -7,6 +6,9 @@ namespace CraftoraApi.Infrastructure.Services;
 
 public sealed class VideoProcessingService : IVideoProcessingService
 {
+    private const string PrivateProductsBucketName = "private-products";
+    private const string PublicAssetsBucketName = "public-assets";
+
     private readonly IStorageService _storageService;
     private readonly ILogger<VideoProcessingService> _logger;
 
@@ -24,25 +26,50 @@ public sealed class VideoProcessingService : IVideoProcessingService
     {
         ArgumentNullException.ThrowIfNull(command);
 
+        if (!File.Exists(command.OriginalFileUrl))
+        {
+            var existingObjectKey = ExtractObjectKey(
+                command.OriginalFileUrl,
+                PrivateProductsBucketName);
+
+            _logger.LogInformation(
+                "Video source is already in object storage; original object key retained. VideoId: {VideoId}, ObjectKey: {ObjectKey}",
+                command.VideoId,
+                existingObjectKey);
+
+            return new VideoProcessingResult(existingObjectKey, null);
+        }
+
         var baseObjectKey = string.Equals(command.TargetType, "Media", StringComparison.OrdinalIgnoreCase)
             ? $"media/{command.VideoId}"
             : $"courses/{command.CourseId}/videos/{command.VideoId}";
-        var manifestObjectKey = $"{baseObjectKey}/master.m3u8";
-        var thumbnailObjectKey = $"{baseObjectKey}/thumbnail.jpg";
-
-        if (File.Exists(command.OriginalFileUrl))
+        var videoExtension = Path.GetExtension(command.OriginalFileUrl);
+        if (string.IsNullOrWhiteSpace(videoExtension))
         {
-            var tempDirectory = Path.Combine(Path.GetTempPath(), "craftora-video", command.VideoId.ToString("D"));
-            Directory.CreateDirectory(tempDirectory);
+            videoExtension = ".mp4";
+        }
 
-            var manifestPath = Path.Combine(tempDirectory, "master.m3u8");
+        var originalObjectKey = $"{baseObjectKey}/original{videoExtension.ToLowerInvariant()}";
+        var thumbnailObjectKey = $"{baseObjectKey}/thumbnail.jpg";
+        var tempDirectory = Path.Combine(
+            Path.GetTempPath(),
+            "craftora-video",
+            command.VideoId.ToString("D"));
+        Directory.CreateDirectory(tempDirectory);
+
+        try
+        {
             var thumbnailPath = Path.Combine(tempDirectory, "thumbnail.jpg");
 
-            await FFMpegArguments
-                .FromFileInput(command.OriginalFileUrl)
-                .OutputToFile(manifestPath, overwrite: true, options => options
-                    .WithCustomArgument("-vf scale=-2:720 -codec:v libx264 -codec:a aac -hls_time 6 -hls_playlist_type vod"))
-                .ProcessAsynchronously();
+            await using (var videoStream = File.OpenRead(command.OriginalFileUrl))
+            {
+                await _storageService.UploadFileAsync(
+                    PrivateProductsBucketName,
+                    originalObjectKey,
+                    videoStream,
+                    GetVideoContentType(videoExtension),
+                    cancellationToken);
+            }
 
             await FFMpegArguments
                 .FromFileInput(command.OriginalFileUrl)
@@ -50,43 +77,52 @@ public sealed class VideoProcessingService : IVideoProcessingService
                     .WithCustomArgument("-frames:v 1 -q:v 2"))
                 .ProcessAsynchronously();
 
-            await _storageService.UploadFileAsync(
-                "private-products",
-                manifestObjectKey,
-                await File.ReadAllBytesAsync(manifestPath, cancellationToken),
-                "application/vnd.apple.mpegurl",
-                cancellationToken);
-
             if (File.Exists(thumbnailPath))
             {
+                await using var thumbnailStream = File.OpenRead(thumbnailPath);
                 await _storageService.UploadFileAsync(
-                    "public-assets",
+                    PublicAssetsBucketName,
                     thumbnailObjectKey,
-                    await File.ReadAllBytesAsync(thumbnailPath, cancellationToken),
+                    thumbnailStream,
                     "image/jpeg",
                     cancellationToken);
             }
 
-            Directory.Delete(tempDirectory, recursive: true);
+            return new VideoProcessingResult(originalObjectKey, thumbnailObjectKey);
         }
-        else
+        finally
         {
-            _logger.LogInformation(
-                "Original video file is not local. Video processing mocked. VideoId: {VideoId}, OriginalFileUrl: {OriginalFileUrl}",
-                command.VideoId,
-                command.OriginalFileUrl);
+            if (Directory.Exists(tempDirectory))
+            {
+                Directory.Delete(tempDirectory, recursive: true);
+            }
+        }
+    }
 
-            await _storageService.UploadFileAsync(
-                "private-products",
-                manifestObjectKey,
-                Encoding.UTF8.GetBytes("#EXTM3U\n# Craftora processing placeholder\n"),
-                "application/vnd.apple.mpegurl",
-                cancellationToken);
+    private static string ExtractObjectKey(string urlOrObjectKey, string bucketName)
+    {
+        if (!Uri.TryCreate(urlOrObjectKey, UriKind.Absolute, out var uri))
+        {
+            return urlOrObjectKey.TrimStart('/');
         }
 
-        var videoUrl = _storageService.GeneratePresignedDownloadUrl("private-products", manifestObjectKey, 60 * 24);
-        var thumbnailUrl = _storageService.GeneratePresignedDownloadUrl("public-assets", thumbnailObjectKey, 60 * 24);
+        var path = Uri.UnescapeDataString(uri.AbsolutePath).TrimStart('/');
+        var bucketPrefix = $"{bucketName}/";
+        var bucketIndex = path.IndexOf(bucketPrefix, StringComparison.OrdinalIgnoreCase);
 
-        return new VideoProcessingResult(videoUrl, thumbnailUrl);
+        return bucketIndex >= 0
+            ? path[(bucketIndex + bucketPrefix.Length)..]
+            : path;
+    }
+
+    private static string GetVideoContentType(string extension)
+    {
+        return extension.ToLowerInvariant() switch
+        {
+            ".webm" => "video/webm",
+            ".mov" => "video/quicktime",
+            ".m4v" => "video/x-m4v",
+            _ => "video/mp4"
+        };
     }
 }

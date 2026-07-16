@@ -22,5 +22,12 @@ public interface IStorageService
         string contentType,
         CancellationToken cancellationToken = default);
 
+    Task UploadFileAsync(
+        string bucketName,
+        string objectKey,
+        Stream content,
+        string contentType,
+        CancellationToken cancellationToken = default);
+
     Task DeleteFileAsync(string bucketName, string objectKey);
 }

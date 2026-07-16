@@ -4,6 +4,7 @@ using CraftoraApi.Middleware;
 using CraftoraApi.Services.Interfaces;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 
 namespace CraftoraApi.Controllers;
 
@@ -67,6 +68,15 @@ public sealed class MediaController : ControllerBase
         await _mediaService.ToggleSaveAsync(id, userId);
 
         return Ok(new { message = "Kaydetme durumu güncellendi." });
+    }
+
+    [Authorize]
+    [EnableRateLimiting("general")]
+    [HttpPost("{id:guid}/share")]
+    public async Task<IActionResult> RecordShareAsync([FromRoute] Guid id)
+    {
+        var result = await _mediaService.RecordShareAsync(id, GetCurrentUserId());
+        return Ok(result);
     }
 
     [Authorize]

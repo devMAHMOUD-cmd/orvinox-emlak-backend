@@ -77,7 +77,7 @@ public sealed class S3StorageService : IStorageService, IDisposable
             Expires = DateTime.UtcNow.AddMinutes(expiryInMinutes)
         };
 
-        return _presignClient.GetPreSignedURL(request);
+        return NormalizePresignedPublicUrl(_presignClient.GetPreSignedURL(request));
     }
 
     public string GeneratePresignedDownloadUrl(
@@ -96,7 +96,7 @@ public sealed class S3StorageService : IStorageService, IDisposable
             Expires = DateTime.UtcNow.AddMinutes(expiryInMinutes)
         };
 
-        return _presignClient.GetPreSignedURL(request);
+        return NormalizePresignedPublicUrl(_presignClient.GetPreSignedURL(request));
     }
 
     public async Task UploadFileAsync(
@@ -118,6 +118,33 @@ public sealed class S3StorageService : IStorageService, IDisposable
             Key = objectKey,
             InputStream = stream,
             ContentType = contentType
+        }, cancellationToken);
+
+        _logger.LogInformation(
+            "Storage file uploaded. BucketName: {BucketName}, ObjectKey: {ObjectKey}",
+            bucketName,
+            objectKey);
+    }
+
+    public async Task UploadFileAsync(
+        string bucketName,
+        string objectKey,
+        Stream content,
+        string contentType,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(bucketName);
+        ArgumentException.ThrowIfNullOrWhiteSpace(objectKey);
+        ArgumentNullException.ThrowIfNull(content);
+        ArgumentException.ThrowIfNullOrWhiteSpace(contentType);
+
+        await _s3Client.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = bucketName,
+            Key = objectKey,
+            InputStream = content,
+            ContentType = contentType,
+            AutoCloseStream = false
         }, cancellationToken);
 
         _logger.LogInformation(
@@ -237,5 +264,23 @@ public sealed class S3StorageService : IStorageService, IDisposable
         return new AmazonS3Client(
             new BasicAWSCredentials(settings.AccessKey, settings.SecretKey),
             config);
+    }
+
+    private string NormalizePresignedPublicUrl(string presignedUrl)
+    {
+        if (!Uri.TryCreate(_settings.PublicServiceUrl, UriKind.Absolute, out var publicEndpoint) ||
+            !Uri.TryCreate(presignedUrl, UriKind.Absolute, out var generatedUrl))
+        {
+            return presignedUrl;
+        }
+
+        var normalizedUrl = new UriBuilder(generatedUrl)
+        {
+            Scheme = publicEndpoint.Scheme,
+            Host = publicEndpoint.Host,
+            Port = publicEndpoint.IsDefaultPort ? -1 : publicEndpoint.Port
+        };
+
+        return normalizedUrl.Uri.AbsoluteUri;
     }
 }

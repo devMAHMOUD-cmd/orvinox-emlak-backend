@@ -19,7 +19,8 @@ public sealed class MediaService : IMediaService
     private const string PublicAssetsBucketName = "public-assets";
     private const string PrivateProductsBucketName = "private-products";
     private const string TrackedViewsSetKey = "media:tracked-views";
-    private const string FeedCacheVersionKey = "media:feed:version";
+    private const string FeedCacheVersionKey = "media:feed:contract:v2:version";
+    private const int PublicUrlExpiryMinutes = 60;
     private static readonly TimeSpan FeedCacheTtl = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan ViewCountCacheTtl = TimeSpan.FromHours(24);
 
@@ -150,12 +151,12 @@ public sealed class MediaService : IMediaService
             throw new BadRequestException("Medya yüklemek için aktif bir mağazanız olmalıdır.");
         }
 
-        var productExists = await _dbContext.Products.AnyAsync(product =>
+        var product = await _dbContext.Products.FirstOrDefaultAsync(product =>
             product.Id == dto.ProductId &&
             product.ShopId == shop.Id &&
             product.IsActive == true);
 
-        if (!productExists)
+        if (product is null)
         {
             throw new NotFoundException("Ürün bulunamadı veya bu mağazaya ait değil.");
         }
@@ -165,10 +166,13 @@ public sealed class MediaService : IMediaService
             ShopId = shop.Id,
             ProductId = dto.ProductId,
             VideoUrl = dto.OriginalFileUrl,
+            ThumbnailUrl = dto.ThumbnailUrl,
             Caption = dto.Caption,
+            Hashtags = NormalizeHashtags(dto.Hashtags),
             ViewCount = 0,
             LikeCount = 0,
             SaveCount = 0,
+            ShareCount = 0,
             CommentCount = 0,
             Status = MediaStatus.Processing,
             IsActive = true,
@@ -194,6 +198,7 @@ public sealed class MediaService : IMediaService
             media.Id);
 
         media.Shop = shop;
+        media.Product = product;
 
         return MapToResponse(media);
     }
@@ -257,6 +262,36 @@ public sealed class MediaService : IMediaService
 
         media.UpdatedAt = DateTime.UtcNow;
         await _dbContext.SaveChangesAsync();
+    }
+
+    public async Task<MediaResponseDto> RecordShareAsync(Guid mediaId, Guid userId)
+    {
+        var affectedRows = await _dbContext.Media
+            .Where(item =>
+                item.Id == mediaId &&
+                item.IsActive == true &&
+                item.Shop.IsActive == true)
+            .ExecuteUpdateAsync(setters => setters
+                .SetProperty(
+                    item => item.ShareCount,
+                    item => (item.ShareCount ?? 0) + 1)
+                .SetProperty(item => item.UpdatedAt, DateTime.UtcNow));
+
+        if (affectedRows == 0)
+        {
+            throw new NotFoundException("Medya bulunamadi.");
+        }
+
+        await InvalidateFeedCacheAsync();
+
+        var media = await _dbContext.Media
+            .AsNoTracking()
+            .Include(item => item.Shop)
+            .Include(item => item.Product)
+            .FirstAsync(item => item.Id == mediaId);
+        var response = MapToResponse(media);
+
+        return (await ApplyUserMediaStateAsync([response], userId))[0];
     }
 
     public async Task<CommentDto> AddCommentAsync(
@@ -484,21 +519,33 @@ public sealed class MediaService : IMediaService
         return media;
     }
 
-    private static MediaResponseDto MapToResponse(Medium media)
+    private MediaResponseDto MapToResponse(Medium media)
     {
         return new MediaResponseDto(
             Id: media.Id,
             ShopId: media.ShopId,
             ShopName: media.Shop.ShopName,
+            ShopSlug: media.Shop.Slug,
             ShopLogoUrl: media.Shop.LogoUrl,
+            ShopLogoPublicUrl: GenerateStoragePublicUrl(media.Shop.LogoUrl, PublicAssetsBucketName),
             IsShopVerified: media.Shop.IsVerified == true,
             ProductId: media.ProductId,
+            ProductTitle: media.Product?.Title,
+            ProductType: ToProductTypeName(media.Product?.Type),
+            ProductCoverImagePublicUrl: GenerateStoragePublicUrl(
+                media.Product?.CoverImageUrl,
+                PublicAssetsBucketName),
             VideoUrl: media.VideoUrl,
+            VideoPublicUrl: GenerateStoragePublicUrl(media.VideoUrl, PrivateProductsBucketName),
             ThumbnailUrl: media.ThumbnailUrl,
+            ThumbnailPublicUrl: GenerateStoragePublicUrl(media.ThumbnailUrl, PublicAssetsBucketName),
             Caption: media.Caption,
+            Hashtags: media.Hashtags ?? new List<string>(),
             ViewCount: media.ViewCount ?? 0,
             LikeCount: media.LikeCount ?? 0,
             CommentCount: media.CommentCount ?? 0,
+            SaveCount: media.SaveCount ?? 0,
+            ShareCount: media.ShareCount ?? 0,
             Status: media.Status.ToString(),
             CreatedAt: media.CreatedAt);
     }
@@ -577,6 +624,41 @@ public sealed class MediaService : IMediaService
     private async Task InvalidateFeedCacheAsync()
     {
         await _cacheService.IncrementAsync(FeedCacheVersionKey);
+    }
+
+    private string? GenerateStoragePublicUrl(string? urlOrObjectKey, string bucketName)
+    {
+        var objectKey = ExtractObjectKey(urlOrObjectKey, bucketName);
+        if (string.IsNullOrWhiteSpace(objectKey))
+        {
+            return null;
+        }
+
+        return _storageService.GeneratePresignedDownloadUrl(
+            bucketName,
+            objectKey,
+            PublicUrlExpiryMinutes);
+    }
+
+    private static string? ToProductTypeName(ProductType? productType)
+    {
+        return productType switch
+        {
+            ProductType.Course => "course",
+            ProductType.DigitalFile => "digital_file",
+            _ => null
+        };
+    }
+
+    private static List<string> NormalizeHashtags(IEnumerable<string>? hashtags)
+    {
+        return hashtags?
+            .Where(hashtag => !string.IsNullOrWhiteSpace(hashtag))
+            .Select(hashtag => hashtag.Trim().TrimStart('#').ToLowerInvariant())
+            .Where(hashtag => hashtag.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(20)
+            .ToList() ?? new List<string>();
     }
 
     private static string GetViewCountCacheKey(Guid mediaId)

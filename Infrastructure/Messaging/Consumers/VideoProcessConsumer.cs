@@ -53,7 +53,10 @@ public sealed class VideoProcessConsumer : IConsumer<ProcessVideoCommand>
         }
 
         media.VideoUrl = result.VideoUrl;
-        media.ThumbnailUrl = result.ThumbnailUrl;
+        if (!string.IsNullOrWhiteSpace(result.ThumbnailUrl))
+        {
+            media.ThumbnailUrl = result.ThumbnailUrl;
+        }
         media.Status = MediaStatus.Ready;
         media.IsActive = true;
         media.UpdatedAt = DateTime.UtcNow;

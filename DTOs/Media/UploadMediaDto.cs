@@ -10,4 +10,8 @@ public sealed record UploadMediaDto(
     string Caption,
 
     [property: Required(ErrorMessage = "Orijinal dosya URL zorunludur.")]
-    string OriginalFileUrl);
+    string OriginalFileUrl,
+
+    string? ThumbnailUrl = null,
+
+    List<string>? Hashtags = null);

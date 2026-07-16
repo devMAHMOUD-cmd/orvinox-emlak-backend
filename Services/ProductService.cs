@@ -13,8 +13,10 @@ namespace CraftoraApi.Services;
 
 public sealed class ProductService : IProductService
 {
-    private const string PopularProductsCacheKey = "products:popular:public-active-shops:v2";
+    private const string PopularProductsCacheKey = "products:popular:public-active-shops:v3";
+    private const string PublicAssetsBucketName = "public-assets";
     private const string PrivateProductsBucketName = "private-products";
+    private const int PublicAssetUrlExpiryMinutes = 60;
     private const int PrivateProductDownloadUrlExpiryMinutes = 60;
 
     private readonly AppDbContext _dbContext;
@@ -381,7 +383,7 @@ public sealed class ProductService : IProductService
         return category.Id;
     }
 
-    private static ProductResponseDto MapToResponse(Product product)
+    private ProductResponseDto MapToResponse(Product product)
     {
         return new ProductResponseDto(
             Id: product.Id,
@@ -392,12 +394,49 @@ public sealed class ProductService : IProductService
             Price: product.Price,
             OriginalPrice: product.OriginalPrice,
             CoverImageUrl: product.CoverImageUrl,
+            CoverImagePublicUrl: GeneratePublicAssetUrl(product.CoverImageUrl),
             PreviewVideoUrl: product.PreviewVideoUrl,
+            PreviewVideoPublicUrl: GeneratePublicAssetUrl(product.PreviewVideoUrl),
             Status: product.Status,
             Tags: product.Tags ?? new List<string>(),
             RatingAverage: product.RatingAverage,
             ReviewCount: product.ReviewCount ?? 0,
             SalesCount: product.SalesCount ?? 0);
+    }
+
+    private string? GeneratePublicAssetUrl(string? urlOrObjectKey)
+    {
+        var objectKey = ExtractObjectKey(urlOrObjectKey, PublicAssetsBucketName);
+        if (string.IsNullOrWhiteSpace(objectKey))
+        {
+            return null;
+        }
+
+        return _storageService.GeneratePresignedDownloadUrl(
+            PublicAssetsBucketName,
+            objectKey,
+            PublicAssetUrlExpiryMinutes);
+    }
+
+    private static string? ExtractObjectKey(string? urlOrObjectKey, string bucketName)
+    {
+        if (string.IsNullOrWhiteSpace(urlOrObjectKey))
+        {
+            return null;
+        }
+
+        if (!Uri.TryCreate(urlOrObjectKey, UriKind.Absolute, out var uri))
+        {
+            return urlOrObjectKey.TrimStart('/');
+        }
+
+        var path = Uri.UnescapeDataString(uri.AbsolutePath).TrimStart('/');
+        var bucketPrefix = $"{bucketName}/";
+        var bucketIndex = path.IndexOf(bucketPrefix, StringComparison.OrdinalIgnoreCase);
+
+        return bucketIndex >= 0
+            ? path[(bucketIndex + bucketPrefix.Length)..]
+            : path;
     }
 
     private static string GetFileName(string objectKey)
