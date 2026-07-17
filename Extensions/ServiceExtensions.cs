@@ -191,6 +191,7 @@ public static class ServiceExtensions
         dataSourceBuilder.MapEnum<OrderStatus>("order_status");
         dataSourceBuilder.MapEnum<PaymentStatusType>("payment_status_type");
         dataSourceBuilder.MapEnum<SubStatus>("sub_status");
+        dataSourceBuilder.MapEnum<AnalyticsEventType>("analytics_event_type");
         dataSourceBuilder.MapEnum<SupportTicketStatus>("support_ticket_status");
         dataSourceBuilder.MapEnum<SupportMessageSenderRole>("support_message_sender_role");
 
@@ -212,6 +213,7 @@ public static class ServiceExtensions
                     npgsqlOptions.MapEnum<OrderStatus>("order_status");
                     npgsqlOptions.MapEnum<PaymentStatusType>("payment_status_type");
                     npgsqlOptions.MapEnum<SubStatus>("sub_status");
+                    npgsqlOptions.MapEnum<AnalyticsEventType>("analytics_event_type");
                     npgsqlOptions.MapEnum<SupportTicketStatus>("support_ticket_status");
                     npgsqlOptions.MapEnum<SupportMessageSenderRole>("support_message_sender_role");
 
