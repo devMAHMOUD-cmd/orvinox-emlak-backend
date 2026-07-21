@@ -1,3 +1,4 @@
+using System.Security.Claims;
 using CraftoraApi.DTOs.Search;
 using CraftoraApi.Services.Interfaces;
 using Microsoft.AspNetCore.Mvc;
@@ -22,5 +23,20 @@ public sealed class SearchController : ControllerBase
     {
         var result = await _searchService.SearchProductsAsync(request);
         return Ok(result);
+    }
+
+    [HttpGet("global")]
+    public async Task<IActionResult> SearchGlobalAsync([FromQuery] GlobalSearchRequestDto request)
+    {
+        var result = await _searchService.SearchGlobalAsync(request, GetOptionalCurrentUserId());
+        return Ok(result);
+    }
+
+    private Guid? GetOptionalCurrentUserId()
+    {
+        var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value
+            ?? User.FindFirst("sub")?.Value;
+
+        return Guid.TryParse(userIdClaim, out var userId) ? userId : null;
     }
 }

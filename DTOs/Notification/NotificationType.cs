@@ -7,5 +7,6 @@ public enum NotificationType
     NewLike,
     NewComment,
     NewOrder,
+    ProductQuestionAnswer,
     System
 }

@@ -103,6 +103,8 @@ services:
     container_name: craftora_api
     env_file:
       - .env
+    volumes:
+      - dataprotection_keys:/root/.aspnet/DataProtection-Keys
     environment:
       ASPNETCORE_ENVIRONMENT: Production
       ASPNETCORE_URLS: "http://+:5000"
@@ -187,3 +189,4 @@ volumes:
   redis_data:
   rabbitmq_data:
   elasticsearch_data:
+  dataprotection_keys:

@@ -29,6 +29,15 @@ public sealed class OrderController : ControllerBase
         return Ok(result);
     }
 
+    [HttpPost("checkout/direct")]
+    public async Task<IActionResult> DirectCheckoutAsync([FromBody] DirectCheckoutRequestDto request)
+    {
+        var buyerId = GetCurrentUserId();
+        var result = await _orderService.CheckoutDirectAsync(buyerId, request);
+
+        return Ok(result);
+    }
+
     [HttpGet("me")]
     public async Task<IActionResult> GetMyOrdersAsync()
     {

@@ -79,8 +79,17 @@ public static class DatabaseHardening
                 amount DECIMAL(12,2),
                 currency VARCHAR(3),
                 note TEXT,
+                certificate_url TEXT,
                 created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
             );
+
+            ALTER TABLE admin_competition_rewards ADD COLUMN IF NOT EXISTS certificate_url TEXT;
+            ALTER TABLE admin_competition_rewards DROP CONSTRAINT IF EXISTS check_admin_competition_rewards_type;
+            ALTER TABLE admin_competition_rewards
+                ADD CONSTRAINT check_admin_competition_rewards_type
+                CHECK (reward_type IN ('money', 'premium_1_month', 'certificate'));
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_admin_competition_rewards_contest_user
+                ON admin_competition_rewards (contest_id, user_id);
 
             CREATE INDEX IF NOT EXISTS idx_admin_reports_status_type ON admin_reports(status, type);
             CREATE INDEX IF NOT EXISTS idx_admin_warnings_user ON admin_warnings(user_id, created_at DESC);
@@ -94,6 +103,18 @@ public static class DatabaseHardening
             CREATE UNIQUE INDEX IF NOT EXISTS uq_point_logs_complete_lesson_once
                 ON point_logs(user_id, reference_id)
                 WHERE action_type = 'complete_lesson';
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_point_logs_make_sale_once
+                ON point_logs(user_id, reference_id)
+                WHERE action_type = 'make_sale';
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_point_logs_purchase_product_once
+                ON point_logs(user_id, reference_id)
+                WHERE action_type = 'purchase_product';
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_point_logs_create_product_once
+                ON point_logs(user_id, reference_id)
+                WHERE action_type = 'create_product';
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_point_logs_watch_reels_once
+                ON point_logs(user_id, reference_id)
+                WHERE action_type = 'watch_reels';
 
             ALTER TABLE orders DROP CONSTRAINT IF EXISTS check_fee_logic;
             ALTER TABLE orders ADD CONSTRAINT check_fee_logic CHECK (ABS(amount - (platform_fee + seller_earnings)) <= 0.01);
@@ -116,6 +137,7 @@ public static class DatabaseHardening
                 'order_completed',
                 'new_video',
                 'new_product',
+                'product_question_answer',
                 'system'
             ));
 
@@ -184,7 +206,7 @@ public static class DatabaseHardening
 
             CREATE OR REPLACE FUNCTION process_completed_order()
             RETURNS TRIGGER AS $$
-            DECLARE v_seller_id UUID;
+            DECLARE v_seller_id UUID; v_point_log_id UUID;
             BEGIN
                 SELECT user_id INTO v_seller_id FROM shops WHERE id = NEW.shop_id;
 
@@ -193,13 +215,17 @@ public static class DatabaseHardening
 
                     IF v_seller_id IS NOT NULL THEN
                         INSERT INTO point_logs (user_id, action_type, points_earned, reference_id)
-                        VALUES (v_seller_id, 'make_sale', 20.0, NEW.id);
+                        VALUES (v_seller_id, 'make_sale', 20.0, NEW.id)
+                        ON CONFLICT DO NOTHING
+                        RETURNING id INTO v_point_log_id;
 
-                        INSERT INTO user_points (user_id, total_points)
-                        VALUES (v_seller_id, 20.0)
-                        ON CONFLICT (user_id) DO UPDATE
-                        SET total_points = user_points.total_points + 20.0,
-                            updated_at = CURRENT_TIMESTAMP;
+                        IF v_point_log_id IS NOT NULL THEN
+                            INSERT INTO user_points (user_id, total_points)
+                            VALUES (v_seller_id, 20.0)
+                            ON CONFLICT (user_id) DO UPDATE
+                            SET total_points = user_points.total_points + 20.0,
+                                updated_at = CURRENT_TIMESTAMP;
+                        END IF;
                     END IF;
                 ELSIF (NEW.status = 'refunded' AND TG_OP = 'UPDATE' AND OLD.status != 'refunded') THEN
                     UPDATE products SET sales_count = GREATEST(sales_count - 1, 0) WHERE id = NEW.product_id;
@@ -254,12 +280,12 @@ public static class DatabaseHardening
 
                 IF v_seller_id IS NOT NULL THEN
                     INSERT INTO point_logs (user_id, action_type, points_earned, reference_id)
-                    VALUES (v_seller_id, 'receive_like', 0.5, NEW.media_id);
+                    VALUES (v_seller_id, 'receive_like', 2.0, NEW.id);
 
                     INSERT INTO user_points (user_id, total_points)
-                    VALUES (v_seller_id, 0.5)
+                    VALUES (v_seller_id, 2.0)
                     ON CONFLICT (user_id) DO UPDATE
-                    SET total_points = user_points.total_points + 0.5,
+                    SET total_points = user_points.total_points + 2.0,
                         updated_at = CURRENT_TIMESTAMP;
                 END IF;
 
@@ -269,7 +295,7 @@ public static class DatabaseHardening
 
             CREATE OR REPLACE FUNCTION award_viewer_points()
             RETURNS TRIGGER AS $$
-            DECLARE v_daily_points DECIMAL;
+            DECLARE v_daily_points DECIMAL; v_point_log_id UUID;
             BEGIN
                 SELECT COALESCE(SUM(points_earned), 0) INTO v_daily_points
                 FROM point_logs
@@ -277,17 +303,21 @@ public static class DatabaseHardening
                   AND action_type = 'watch_reels'
                   AND created_at::date = CURRENT_DATE;
 
-                IF v_daily_points < 120 THEN
+                IF v_daily_points < 50 THEN
                     INSERT INTO point_logs (user_id, action_type, points_earned, reference_id)
-                    VALUES (NEW.user_id, 'watch_reels', 1.0, NEW.media_id);
+                    VALUES (NEW.user_id, 'watch_reels', 5.0, NEW.media_id)
+                    ON CONFLICT DO NOTHING
+                    RETURNING id INTO v_point_log_id;
 
-                    INSERT INTO user_points (user_id, total_points)
-                    VALUES (NEW.user_id, 1.0)
-                    ON CONFLICT (user_id) DO UPDATE
-                    SET total_points = user_points.total_points + 1.0,
-                        updated_at = CURRENT_TIMESTAMP;
+                    IF v_point_log_id IS NOT NULL THEN
+                        INSERT INTO user_points (user_id, total_points)
+                        VALUES (NEW.user_id, 5.0)
+                        ON CONFLICT (user_id) DO UPDATE
+                        SET total_points = user_points.total_points + 5.0,
+                            updated_at = CURRENT_TIMESTAMP;
 
-                    NEW.is_point_earned := TRUE;
+                        NEW.is_point_earned := TRUE;
+                    END IF;
                 END IF;
 
                 RETURN NEW;
@@ -298,6 +328,7 @@ public static class DatabaseHardening
             RETURNS TRIGGER AS $$
             DECLARE
                 v_product_shop_id UUID;
+                v_media_shop_id UUID;
                 v_order_shop_id UUID;
             BEGIN
                 IF NEW.product_id IS NOT NULL THEN
@@ -310,6 +341,18 @@ public static class DatabaseHardening
                     END IF;
 
                     NEW.shop_id := v_product_shop_id;
+                END IF;
+
+                IF NEW.media_id IS NOT NULL THEN
+                    SELECT shop_id INTO v_media_shop_id
+                    FROM media
+                    WHERE id = NEW.media_id;
+
+                    IF v_media_shop_id IS NULL THEN
+                        RAISE EXCEPTION 'Analytics event media_id gecersiz: %', NEW.media_id;
+                    END IF;
+
+                    NEW.shop_id := v_media_shop_id;
                 END IF;
 
                 IF NEW.order_id IS NOT NULL THEN
@@ -348,16 +391,16 @@ public static class DatabaseHardening
                     END IF;
 
                     INSERT INTO point_logs (user_id, action_type, points_earned, reference_id)
-                    VALUES (NEW.user_id, 'complete_lesson', 2.0, NEW.course_lesson_id)
+                    VALUES (NEW.user_id, 'complete_lesson', 5.0, NEW.course_lesson_id)
                     ON CONFLICT (user_id, reference_id) WHERE action_type = 'complete_lesson'
                     DO NOTHING
                     RETURNING id INTO v_point_log_id;
 
                     IF v_point_log_id IS NOT NULL THEN
                         INSERT INTO user_points (user_id, total_points)
-                        VALUES (NEW.user_id, 2.0)
+                        VALUES (NEW.user_id, 5.0)
                         ON CONFLICT (user_id) DO UPDATE
-                        SET total_points = user_points.total_points + 2.0,
+                        SET total_points = user_points.total_points + 5.0,
                             updated_at = CURRENT_TIMESTAMP;
                     END IF;
                 END IF;

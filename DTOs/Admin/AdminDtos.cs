@@ -23,6 +23,50 @@ public sealed record AdminOverviewDto(
     int NewUsersToday,
     int OrdersToday);
 
+public sealed record AdminFinanceOverviewDto(
+    decimal GrossSales,
+    decimal PlatformCommissionRate,
+    decimal CommissionRevenue,
+    decimal SubscriptionRevenue,
+    bool HistoricalRevenueAvailable,
+    decimal TotalPlatformRevenue,
+    int TotalOrders,
+    int ActiveSubscriptions,
+    int ExpiringSubscriptions);
+
+public sealed record AdminCommissionListItemDto(
+    Guid OrderId,
+    string OrderNumber,
+    Guid SellerId,
+    Guid ShopId,
+    string ShopName,
+    Guid ProductId,
+    string ProductTitle,
+    decimal GrossAmount,
+    decimal CommissionRate,
+    decimal PlatformFee,
+    decimal SellerEarnings,
+    string Currency,
+    string PaymentStatus,
+    DateTime? CreatedAt);
+
+public sealed record AdminSubscriptionFinanceListItemDto(
+    Guid SubscriptionId,
+    Guid UserId,
+    Guid ShopId,
+    string ShopName,
+    string? OwnerName,
+    string OwnerEmail,
+    string PlanName,
+    decimal Amount,
+    string Currency,
+    string Status,
+    string ShopStatus,
+    DateTime? StartedAt,
+    DateTime ExpiresAt,
+    int RemainingDays,
+    DateTime? LastPaymentAt);
+
 public sealed record AdminUserListItemDto(
     Guid Id,
     string Email,
@@ -31,6 +75,7 @@ public sealed record AdminUserListItemDto(
     string Status,
     Guid? ShopId,
     string? ShopName,
+    string? ShopLogoPublicUrl,
     string? AvatarUrl,
     DateTime? CreatedAt,
     DateTime? LastLoginAt,
@@ -113,14 +158,34 @@ public sealed record AdminSuspendUserRequestDto(
 public sealed record AdminReportDto(
     Guid Id,
     string Type,
+    string TargetType,
     Guid TargetId,
     string? TargetTitle,
+    Guid? TargetOwnerUserId,
+    string? TargetOwnerName,
+    string? TargetOwnerEmail,
+    Guid? TargetShopId,
     Guid? ReportedByUserId,
     string? ReportedByEmail,
     string Reason,
     string? Description,
     string Status,
     DateTime CreatedAt);
+
+public sealed record AdminReportTargetDto(
+    Guid ReportId,
+    string TargetType,
+    Guid TargetId,
+    Guid? TargetOwnerUserId,
+    string? TargetOwnerName,
+    string? TargetOwnerEmail,
+    Guid? TargetShopId,
+    object Target);
+
+public sealed record AdminBlockReportTargetRequestDto(
+    [property: Required(ErrorMessage = "Engelleme nedeni zorunludur.")]
+    [property: StringLength(1000, MinimumLength = 2, ErrorMessage = "Engelleme nedeni 2 ile 1000 karakter arasinda olmalidir.")]
+    string Reason);
 
 public sealed record AdminCompetitionDto(
     Guid Id,
@@ -131,7 +196,9 @@ public sealed record AdminCompetitionDto(
     bool RewardsHidden,
     string? PrizePool,
     string Status,
-    bool IsActive);
+    bool IsActive,
+    bool RewardsDistributed,
+    int RewardedCount);
 
 public sealed record AdminUpsertCompetitionDto(
     [property: Required(ErrorMessage = "Yarisma basligi zorunludur.")]
@@ -156,15 +223,68 @@ public sealed record AdminUpsertCompetitionDto(
     string Status);
 
 public sealed record AdminDistributeRewardsRequestDto(
+    [property: Required(ErrorMessage = "En az bir kazanan gereklidir.")]
+    [property: MinLength(1, ErrorMessage = "En az bir kazanan gereklidir.")]
     IReadOnlyList<AdminRewardWinnerDto> Winners);
 
 public sealed record AdminRewardWinnerDto(
     Guid UserId,
+    [property: Range(1, int.MaxValue, ErrorMessage = "Derece 1 veya daha buyuk olmalidir.")]
     int Rank,
+    [property: Required(ErrorMessage = "Odul tipi zorunludur.")]
+    [property: RegularExpression("^(money|premium_1_month|certificate)$", ErrorMessage = "Odul tipi money, premium_1_month veya certificate olmalidir.")]
     string RewardType,
     decimal? Amount,
     string? Currency,
     string? Note);
+
+public sealed record AdminCompetitionLeaderboardResponseDto(
+    Guid CompetitionId,
+    string Status,
+    IReadOnlyList<AdminCompetitionLeaderboardItemDto> Items,
+    int Page,
+    int PageSize,
+    int TotalCount,
+    int TotalPages);
+
+public sealed record AdminCompetitionLeaderboardItemDto(
+    int Rank,
+    Guid UserId,
+    string? DisplayName,
+    string? AvatarPublicUrl,
+    Guid? ShopId,
+    string? ShopName,
+    string? ShopLogoPublicUrl,
+    decimal Score,
+    decimal SalesPoints,
+    decimal ViewPoints,
+    decimal EngagementPoints,
+    decimal LearningPoints);
+
+public sealed record AdminCompetitionParticipantsResponseDto(
+    Guid CompetitionId,
+    IReadOnlyList<AdminCompetitionParticipantDto> Items,
+    int Page,
+    int PageSize,
+    int TotalCount,
+    int TotalPages);
+
+public sealed record AdminCompetitionParticipantDto(
+    Guid UserId,
+    string? DisplayName,
+    string? AvatarPublicUrl,
+    Guid? ShopId,
+    string? ShopName,
+    string? ShopLogoPublicUrl,
+    DateTime? JoinedAt,
+    decimal Score,
+    int? Rank);
+
+public sealed record CompetitionCertificateData(
+    string CompetitionTitle,
+    string RecipientName,
+    int Rank,
+    DateTime IssuedAt);
 
 public sealed record PulseNewsDto(
     Guid Id,

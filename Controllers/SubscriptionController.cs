@@ -19,7 +19,7 @@ public sealed class SubscriptionController : ControllerBase
         _subscriptionService = subscriptionService ?? throw new ArgumentNullException(nameof(subscriptionService));
     }
 
-    [Authorize(Policy = "SellerOnly")]
+    [Authorize]
     [HttpGet("me")]
     public async Task<IActionResult> GetMySubscriptionAsync()
     {

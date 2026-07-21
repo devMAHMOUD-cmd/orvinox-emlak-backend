@@ -1199,3 +1199,70 @@ User → Google Sign In → id_token → Backend → Validate Token → Check Us
 
 **Analiz Tarihi:** 30 Mayıs 2026
 **Sistem Durumu:** Production Ready ✅
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Bir hata düzgün yakalanmıyor, 500 yerine 400 dönmeli. Düzelt.
+
+SORUN: Kullanıcı zaten sahip olduğu (kütüphanesindeki) bir ürünü sepete eklemeye 
+çalışınca, DB trigger'ı prevent_duplicate_purchase şu hatayı fırlatıyor:
+  PostgresException P0001: "Bu urun zaten kutuphanenizde mevcut!"
+
+Bu hata CartService.AddToCartAsync (line 55 civarı, SaveChangesAsync sırasında) 
+yakalanmadığı için kullanıcıya 500 Internal Server Error dönüyor. Halbuki bu bir 
+KULLANICI hatası, 400 Bad Request + anlamlı mesaj dönmeli.
+
+YAPILACAK:
+1. CartService.AddToCartAsync içinde, SaveChangesAsync'i try-catch ile sar.
+2. PostgresException yakala, SqlState == "P0001" ise (ya da mesajda 
+   "zaten kutuphanenizde" geçiyorsa) bunu bizim BadRequestException'a çevir 
+   (mesaj: "Bu ürün zaten kütüphanenizde mevcut.") → böylece kullanıcı 400 + 
+   net mesaj alır.
+3. Aynı P0001 hatası CHECKOUT sırasında da (OrderService) oluşabilir mi kontrol 
+   et. Eğer checkout'ta da bu trigger patlayıp 500 dönebiliyorsa, orada da aynı 
+   şekilde yakala. (Ama checkout mantığını/lock'u/completed persist'i BOZMA.)
+
+KURALLAR:
+- Sadece hata yakalama ekle, iş mantığını değiştirme.
+- Trigger'a DOKUNMA (o doğru çalışıyor, sadece hatayı düzgün karşılayacağız).
+- Başka PostgresException tiplerini yutma, sadece bu duplicate purchase 
+  (P0001) durumunu çevir. Diğer hatalar yine yukarı gitsin.
+- CartService.cs ve gerekiyorsa OrderService.cs'e dokun.
+
+Build al. Ne değiştirdiğini açıkla. Önce sadece bu iki dosyayı incele, P0001 
+nerede oluşabilir söyle, sonra düzelt.
+
+
+
+
+
+
+Propmt Hazirlarken 
+1.Adim : Sorunu Anlat
+2.Adim : Yapilacak Islemi Anlat
+3.Adim : Islemi Yapareken Kurali Anlat 
+
+
+
+🟡 NOT: Fatura presigned URL'leri 7 gün (604800s) token'sız erişilebilir.
+   İyileştirme: Süreyi kısalt (örn. birkaç saat/gün), ve/veya fatura 
+   indirmeyi auth'lu bir endpoint arkasına al.
+   Ayrıca: linkler https://localhost:9000 üretiyor ama MinIO https değil 
+   → prod'da MinIO public adresi/protokolü doğru ayarlanmalı.
+
+
+🟡 Fatura presigned URL 7 gün token'sız açık → süre kısalt / auth'lu endpoint
+🟡 Fatura linkleri https://localhost:9000 üretiyor ama MinIO https değil 
+   → prod'da MinIO adresi/protokolü düzeltilmeli (senin eski "download hatası" 
+     muhtemelen buydu)

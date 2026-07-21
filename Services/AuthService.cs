@@ -159,6 +159,7 @@ public sealed class AuthService : IAuthService
             throw new UnauthorizedException("Lütfen önce e-posta adresinizi doğrulayın.");
         }
 
+        await EnsureUserCanAuthenticateAsync(user);
         await PromoteShopOwnerToSellerAsync(user);
 
         return await IssueTokensAsync(user);
@@ -222,6 +223,7 @@ public sealed class AuthService : IAuthService
             user.ProviderId ??= payload.Subject;
         }
 
+        await EnsureUserCanAuthenticateAsync(user);
         await PromoteShopOwnerToSellerAsync(user);
 
         return await IssueTokensAsync(user);
@@ -252,6 +254,7 @@ public sealed class AuthService : IAuthService
             throw new UnauthorizedException("Süresi dolmuş refresh token.");
         }
 
+        await EnsureUserCanAuthenticateAsync(session.User);
         await PromoteShopOwnerToSellerAsync(session.User);
 
         var tokens = _jwtProvider.GenerateTokens(session.User);
@@ -379,6 +382,8 @@ public sealed class AuthService : IAuthService
 
     private async Task<TokenDto> IssueTokensAsync(User user)
     {
+        await EnsureUserCanAuthenticateAsync(user);
+
         var tokens = _jwtProvider.GenerateTokens(user);
         var now = DateTime.UtcNow;
 
@@ -393,6 +398,26 @@ public sealed class AuthService : IAuthService
         await _dbContext.SaveChangesAsync();
 
         return tokens;
+    }
+
+    private static Task EnsureUserCanAuthenticateAsync(User user)
+    {
+        if (user.DeletedAt is not null)
+        {
+            throw new UnauthorizedException("Hesap kullanima kapatildi.");
+        }
+
+        if (user.IsActive != true)
+        {
+            throw new UnauthorizedException("Hesap askiya alindi.");
+        }
+
+        if (user.LockedUntil.HasValue && user.LockedUntil.Value > DateTime.UtcNow)
+        {
+            throw new AccountLockedException(user.LockReason, user.LockedUntil.Value);
+        }
+
+        return Task.CompletedTask;
     }
 
     private static string NormalizeEmail(string email)

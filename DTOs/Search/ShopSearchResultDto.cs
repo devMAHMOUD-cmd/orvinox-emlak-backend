@@ -7,4 +7,5 @@ public sealed record ShopSearchResultDto(
     string? ShortDescription,
     string? LogoPublicUrl,
     string? BannerPublicUrl,
-    bool? IsVerified);
+    bool? IsVerified,
+    bool IsFollowedByCurrentUser = false);

@@ -1,5 +1,13 @@
 namespace CraftoraApi.DTOs.Notification;
 
+public sealed record NotificationActorDto(
+    Guid? UserId,
+    string? FullName,
+    string? AvatarPublicUrl,
+    Guid? ShopId,
+    string? ShopName,
+    string? ShopLogoPublicUrl);
+
 public sealed record NotificationDto(
     Guid Id,
     Guid UserId,
@@ -9,4 +17,7 @@ public sealed record NotificationDto(
     bool IsRead,
     string? ReferenceType,
     Guid? ReferenceId,
-    DateTime? CreatedAt);
+    DateTime? CreatedAt,
+    Guid? ProductId = null,
+    Guid? QuestionId = null,
+    NotificationActorDto? Actor = null);

@@ -1,0 +1,227 @@
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: postgres_server
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - craftora_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    mem_limit: 2g
+    logging: *default-logging
+
+  minio:
+    image: minio/minio:latest
+    container_name: craftora_minio
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+    networks:
+      - craftora_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    mem_limit: 1g
+    logging: *default-logging
+
+  minio_init:
+    image: minio/mc:latest
+    container_name: craftora_minio_init
+    restart: "no"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    entrypoint: ["/bin/sh", "-c"]
+    command: >-
+      mc alias set craftora http://minio:9000 "$${MINIO_ROOT_USER}" "$${MINIO_ROOT_PASSWORD}" &&
+      mc mb --ignore-existing craftora/public-assets &&
+      mc mb --ignore-existing craftora/private-products &&
+      mc anonymous set download craftora/public-assets &&
+      mc anonymous set private craftora/private-products
+    networks:
+      - craftora_network
+    depends_on:
+      minio:
+        condition: service_healthy
+    logging: *default-logging
+
+  redis:
+    image: redis:7-alpine
+    container_name: craftora_redis
+    restart: unless-stopped
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    volumes:
+      - redis_data:/data
+    command: ["sh", "-c", "redis-server --requirepass \"$${REDIS_PASSWORD}\" --appendonly yes"]
+    networks:
+      - craftora_network
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$${REDIS_PASSWORD}\" ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    mem_limit: 512m
+    logging: *default-logging
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: craftora_rabbitmq
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS}
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    networks:
+      - craftora_network
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 30s
+      timeout: 20s
+      retries: 5
+      start_period: 60s
+    mem_limit: 1g
+    logging: *default-logging
+
+  elasticsearch:
+    image: elasticsearch:8.13.0
+    container_name: craftora_elasticsearch
+    restart: unless-stopped
+    environment:
+      discovery.type: single-node
+      # Faz 0: host portu kapali, security auth mevcut client ile henuz uyumlu degil.
+      # Auth acilacaksa client credentials de ayni deploy'da yapilandirilmalidir.
+      xpack.security.enabled: ${ELASTICSEARCH_SECURITY_ENABLED:-false}
+      ES_JAVA_OPTS: "-Xms2g -Xmx2g"
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+    networks:
+      - craftora_network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9200/_cluster/health || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+    mem_limit: 4g
+    logging: *default-logging
+
+  craftora_api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: craftora_api:prod
+    container_name: craftora_api
+    restart: unless-stopped
+    env_file:
+      - .env.production
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_URLS: "http://+:5000"
+      ConnectionStrings__PostgreSQL: "Host=postgres;Port=5432;Database=${POSTGRES_DB};Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
+      ConnectionStrings__DefaultConnection: "Host=postgres;Port=5432;Database=${POSTGRES_DB};Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}"
+      ConnectionStrings__Redis: "redis:6379,password=${REDIS_PASSWORD},abortConnect=false"
+      ConnectionStrings__RabbitMQ: "amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@rabbitmq:5672"
+      ConnectionStrings__Elasticsearch: "http://elasticsearch:9200"
+      Jwt__Secret: "${JWT_SECRET}"
+      OAuth__Google__ClientId: "${GOOGLE_CLIENT_ID}"
+      OAuth__Google__ClientSecret: "${GOOGLE_CLIENT_SECRET}"
+      Email__Provider: "${EMAIL_PROVIDER:-resend}"
+      Email__ApiKey: "${RESEND_API_KEY}"
+      Email__Resend__ApiKey: "${RESEND_API_KEY}"
+      Email__FromEmail: "${EMAIL_FROM}"
+      Email__FromName: "${EMAIL_FROM_NAME:-Craftora}"
+      SendGrid__ApiKey: "${SENDGRID_API_KEY}"
+      Stripe__PublishableKey: "${STRIPE_PUBLISHABLE_KEY}"
+      Stripe__SecretKey: "${STRIPE_SECRET_KEY}"
+      Stripe__WebhookSecret: "${STRIPE_WEBHOOK_SECRET}"
+      MINIO_INTERNAL_ENDPOINT: "minio:9000"
+      MINIO_PUBLIC_ENDPOINT: "${MINIO_PUBLIC_ENDPOINT}"
+      MINIO_USE_SSL: "false"
+      MinIO__Endpoint: "minio:9000"
+      MinIO__InternalEndpoint: "minio:9000"
+      MinIO__PublicEndpoint: "${MINIO_PUBLIC_ENDPOINT}"
+      MinIO__AccessKey: "${MINIO_ROOT_USER}"
+      MinIO__SecretKey: "${MINIO_ROOT_PASSWORD}"
+      MinIO__UseSSL: "false"
+      MinIO__PublicUseSSL: "${MINIO_PUBLIC_USE_SSL}"
+      Storage__ServiceUrl: "http://minio:9000"
+      Storage__PublicServiceUrl: "${STORAGE_PUBLIC_SERVICE_URL}"
+      Storage__AccessKey: "${MINIO_ROOT_USER}"
+      Storage__SecretKey: "${MINIO_ROOT_PASSWORD}"
+      Storage__ForcePathStyle: "true"
+      Storage__CorsAllowedOrigins__0: "${CORS_ORIGIN_0}"
+      Storage__CorsAllowedOrigins__1: "${CORS_ORIGIN_1:-}"
+      Sentry__Dsn: "${SENTRY_DSN}"
+    expose:
+      - "5000"
+    networks:
+      - craftora_network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      minio_init:
+        condition: service_completed_successfully
+    mem_limit: 1g
+    logging: *default-logging
+
+  nginx:
+    image: nginx:alpine
+    container_name: craftora_nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+    networks:
+      - craftora_network
+    depends_on:
+      craftora_api:
+        condition: service_started
+    mem_limit: 256m
+    logging: *default-logging
+
+networks:
+  craftora_network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  minio_data:
+  redis_data:
+  rabbitmq_data:
+  elasticsearch_data:

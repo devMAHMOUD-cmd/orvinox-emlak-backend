@@ -29,6 +29,13 @@ public interface ISellerAnalyticsService
         int limit = 10,
         CancellationToken cancellationToken = default);
 
+    Task<SellerAnalyticsTimeseriesDto> GetTimeseriesAsync(
+        Guid userId,
+        DateTime? startDate,
+        DateTime? endDate,
+        string? granularity,
+        CancellationToken cancellationToken = default);
+
     Task<IReadOnlyList<CourseAnalyticsDto>> GetCoursesAsync(
         Guid userId,
         DateTime? startDate,

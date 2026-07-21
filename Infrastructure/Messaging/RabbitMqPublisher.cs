@@ -55,6 +55,40 @@ public sealed class RabbitMqPublisher : IRabbitMqPublisher
             message.Action);
     }
 
+    public async Task PublishShopSyncMessage(
+        ShopSyncMessage message,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(message);
+
+        await PublishSearchSyncMessageAsync(
+            RabbitMqQueues.ShopSync,
+            message,
+            cancellationToken);
+
+        _logger.LogInformation(
+            "Shop sync message published. ShopId: {ShopId}, Action: {Action}",
+            message.ShopId,
+            message.Action);
+    }
+
+    public async Task PublishMediaSyncMessage(
+        MediaSyncMessage message,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(message);
+
+        await PublishSearchSyncMessageAsync(
+            RabbitMqQueues.MediaSync,
+            message,
+            cancellationToken);
+
+        _logger.LogInformation(
+            "Media sync message published. MediaId: {MediaId}, Action: {Action}",
+            message.MediaId,
+            message.Action);
+    }
+
     public async Task PublishProcessVideoCommand(
         ProcessVideoCommand command,
         CancellationToken cancellationToken = default)
@@ -95,5 +129,44 @@ public sealed class RabbitMqPublisher : IRabbitMqPublisher
             "Generate invoice command published. OrderId: {OrderId}, UserId: {UserId}",
             command.OrderId,
             command.UserId);
+    }
+
+    public async Task PublishSendEmailCommand(
+        SendEmailCommand command,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(command);
+
+        await _bus.Publish(command, cancellationToken);
+
+        _logger.LogInformation(
+            "Send email command published. To: {To}, Subject: {Subject}",
+            command.To,
+            command.Subject);
+    }
+
+    private async Task PublishSearchSyncMessageAsync<TMessage>(
+        string queueName,
+        TMessage message,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = await _connectionFactory.CreateConnectionAsync(cancellationToken);
+        await using var channel = await connection.CreateChannelAsync(cancellationToken: cancellationToken);
+
+        await channel.QueueDeclareAsync(
+            queue: queueName,
+            durable: true,
+            exclusive: false,
+            autoDelete: false,
+            arguments: null,
+            cancellationToken: cancellationToken);
+
+        var body = JsonSerializer.SerializeToUtf8Bytes(message, JsonOptions);
+
+        await channel.BasicPublishAsync(
+            exchange: string.Empty,
+            routingKey: queueName,
+            body: body,
+            cancellationToken: cancellationToken);
     }
 }

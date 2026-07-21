@@ -10,7 +10,9 @@ namespace CraftoraApi.Services;
 public sealed class CompetitionService : ICompetitionService
 {
     private const string PublicAssetsBucketName = "public-assets";
+    private const string PrivateProductsBucketName = "private-products";
     private const int PublicMediaUrlExpiryMinutes = 60;
+    private const int CertificateUrlExpiryMinutes = 60 * 24 * 7;
 
     private readonly AppDbContext _dbContext;
     private readonly IStorageService _storageService;
@@ -97,6 +99,68 @@ public sealed class CompetitionService : ICompetitionService
         return new CompetitionHistoryDto(items);
     }
 
+    public async Task<MyCompetitionHistoryDto> GetMyHistoryAsync(
+        Guid currentUserId,
+        int months,
+        CancellationToken cancellationToken = default)
+    {
+        var normalizedMonths = Math.Clamp(months, 1, 24);
+        var now = DateTime.UtcNow;
+        var from = now.AddMonths(-normalizedMonths);
+
+        var joinedResults = await _dbContext.ContestResults
+            .AsNoTracking()
+            .Include(result => result.Contest)
+            .Where(result =>
+                result.UserId == currentUserId &&
+                result.Contest.EndDate >= from &&
+                result.Contest.EndDate <= now)
+            .OrderByDescending(result => result.Contest.EndDate)
+            .ToListAsync(cancellationToken);
+
+        if (joinedResults.Count == 0)
+        {
+            return new MyCompetitionHistoryDto(Array.Empty<MyCompetitionHistoryItemDto>());
+        }
+
+        var contestIds = joinedResults.Select(result => result.ContestId).ToList();
+        var rewardsByContestId = await _dbContext.AdminCompetitionRewards
+            .AsNoTracking()
+            .Where(reward => reward.UserId == currentUserId && contestIds.Contains(reward.ContestId))
+            .ToDictionaryAsync(reward => reward.ContestId, cancellationToken);
+
+        var items = new List<MyCompetitionHistoryItemDto>(joinedResults.Count);
+        foreach (var result in joinedResults)
+        {
+            var contest = result.Contest;
+            var scoreRows = await BuildScoreRowsAsync(contest, cancellationToken);
+            var scoreIndex = scoreRows.FindIndex(row => row.UserId == currentUserId);
+            var scoreRow = scoreIndex >= 0 ? scoreRows[scoreIndex] : null;
+            var score = scoreRow?.Score ?? 0m;
+            rewardsByContestId.TryGetValue(contest.Id, out var reward);
+
+            items.Add(new MyCompetitionHistoryItemDto(
+                CompetitionId: contest.Id,
+                Title: contest.Title,
+                StartDate: contest.StartDate,
+                EndDate: contest.EndDate,
+                Status: GetCompetitionStatus(contest),
+                IsJoined: true,
+                Rank: result.FinalRank ?? (score == 0m ? null : scoreIndex + 1),
+                Score: score,
+                SalesPoints: scoreRow?.SalesPoints ?? 0m,
+                ViewPoints: scoreRow?.ViewPoints ?? 0m,
+                EngagementPoints: scoreRow?.EngagementPoints ?? 0m,
+                LearningPoints: scoreRow?.LearningPoints ?? 0m,
+                RewardType: reward?.RewardType,
+                RewardAmount: reward?.Amount,
+                RewardCurrency: reward?.Currency,
+                CertificatePublicUrl: GenerateCertificateUrl(reward?.CertificateUrl)));
+        }
+
+        return new MyCompetitionHistoryDto(items);
+    }
+
     public async Task<ActiveCompetitionDto> GetCompetitionAsync(
         Guid competitionId,
         Guid? currentUserId,
@@ -152,14 +216,25 @@ public sealed class CompetitionService : ICompetitionService
 
         int? myRank = null;
         decimal? myScore = null;
-        if (currentUserId.HasValue)
+        CompetitionPointsBreakdownDto? myBreakdown = null;
+        if (currentUserId.HasValue && isJoined)
         {
             var rankings = await BuildScoreRowsAsync(contest, cancellationToken);
             var myIndex = rankings.FindIndex(row => row.UserId == currentUserId.Value);
             if (myIndex >= 0)
             {
-                myRank = myIndex + 1;
+                myRank = rankings[myIndex].Score == 0m ? null : myIndex + 1;
                 myScore = rankings[myIndex].Score;
+                myBreakdown = new CompetitionPointsBreakdownDto(
+                    rankings[myIndex].SalesPoints,
+                    rankings[myIndex].ViewPoints,
+                    rankings[myIndex].EngagementPoints,
+                    rankings[myIndex].LearningPoints);
+            }
+            else
+            {
+                myScore = 0m;
+                myBreakdown = new CompetitionPointsBreakdownDto(0m, 0m, 0m, 0m);
             }
         }
 
@@ -174,7 +249,8 @@ public sealed class CompetitionService : ICompetitionService
             IsJoined: isJoined,
             TotalParticipants: totalParticipants,
             MyRank: myRank,
-            MyScore: myScore);
+            MyScore: myScore,
+            MyBreakdown: myBreakdown);
     }
 
     private async Task<CompetitionLeaderboardResponseDto> BuildLeaderboardAsync(
@@ -238,22 +314,38 @@ public sealed class CompetitionService : ICompetitionService
         Contest contest,
         CancellationToken cancellationToken)
     {
-        return await _dbContext.PointLogs
+        var scoreRows = await _dbContext.PointLogs
             .AsNoTracking()
             .Where(log =>
                 log.CreatedAt >= contest.StartDate &&
-                log.CreatedAt <= contest.EndDate)
+                log.CreatedAt <= contest.EndDate &&
+                _dbContext.ContestResults.Any(result =>
+                    result.ContestId == contest.Id &&
+                    result.UserId == log.UserId &&
+                    log.CreatedAt >= (result.JoinedAt ?? contest.StartDate)))
             .GroupBy(log => log.UserId)
-            .Select(group => new CompetitionScoreRow(
-                group.Key,
-                group.Sum(log => log.PointsEarned),
-                group.Where(log => log.ActionType == "make_sale").Sum(log => log.PointsEarned),
-                group.Where(log => log.ActionType == "watch_reels").Sum(log => log.PointsEarned),
-                group.Where(log => log.ActionType == "receive_like").Sum(log => log.PointsEarned),
-                group.Where(log => log.ActionType == "complete_lesson").Sum(log => log.PointsEarned)))
+            .Select(group => new
+            {
+                UserId = group.Key,
+                Score = group.Sum(log => log.PointsEarned),
+                SalesPoints = group.Sum(log => log.ActionType == "make_sale" ? log.PointsEarned : 0m),
+                ViewPoints = group.Sum(log => log.ActionType == "watch_reels" ? log.PointsEarned : 0m),
+                EngagementPoints = group.Sum(log => log.ActionType == "receive_like" ? log.PointsEarned : 0m),
+                LearningPoints = group.Sum(log => log.ActionType == "complete_lesson" ? log.PointsEarned : 0m)
+            })
             .OrderByDescending(row => row.Score)
             .ThenBy(row => row.UserId)
             .ToListAsync(cancellationToken);
+
+        return scoreRows
+            .Select(row => new CompetitionScoreRow(
+                row.UserId,
+                row.Score,
+                row.SalesPoints,
+                row.ViewPoints,
+                row.EngagementPoints,
+                row.LearningPoints))
+            .ToList();
     }
 
     private async Task<IReadOnlyList<CompetitionLeaderboardItemDto>> MapLeaderboardItemsAsync(
@@ -307,6 +399,26 @@ public sealed class CompetitionService : ICompetitionService
             PublicAssetsBucketName,
             objectKey,
             PublicMediaUrlExpiryMinutes);
+    }
+
+    private string? GenerateCertificateUrl(string? objectKey)
+    {
+        if (string.IsNullOrWhiteSpace(objectKey))
+        {
+            return null;
+        }
+
+        return _storageService.GeneratePresignedDownloadUrl(
+            PrivateProductsBucketName,
+            objectKey,
+            CertificateUrlExpiryMinutes);
+    }
+
+    private static string GetCompetitionStatus(Contest contest)
+    {
+        return contest.EndDate <= DateTime.UtcNow && contest.IsActive != true
+            ? "finished"
+            : contest.IsActive == true ? "active" : "draft";
     }
 
     private sealed record CompetitionScoreRow(

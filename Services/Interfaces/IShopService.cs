@@ -10,9 +10,15 @@ public interface IShopService
 
     Task<ShopResponseDto> GetMyShopAsync(Guid userId);
 
-    Task<PublicShopResponseDto> GetShopBySlugAsync(string slug);
+    Task<ShopFollowerListResponseDto> GetMyShopFollowersAsync(Guid userId, int page = 1, int pageSize = 30);
 
-    Task ToggleFollowAsync(Guid shopId, Guid userId);
+    Task<FollowedShopListResponseDto> GetFollowedShopsAsync(Guid userId, int page = 1, int pageSize = 20);
+
+    Task<PublicShopResponseDto> GetShopBySlugAsync(string slug, Guid? currentUserId = null);
+
+    Task<PublicShopResponseDto> GetPublicShopByIdAsync(Guid shopId, Guid? currentUserId = null);
+
+    Task<ShopFollowResponseDto> ToggleFollowAsync(Guid shopId, Guid userId);
 
     Task<ShopTrafficReportDto> GetShopTrafficReportAsync(
         Guid shopId,

@@ -1,5 +1,7 @@
 using CraftoraApi.Data;
 using CraftoraApi.DTOs.Notification;
+using CraftoraApi.Infrastructure.Messaging;
+using CraftoraApi.Models.Elasticsearch;
 using CraftoraApi.Models.Enums;
 using CraftoraApi.Services.Interfaces;
 using Microsoft.EntityFrameworkCore;
@@ -12,13 +14,16 @@ public sealed class SubscriptionMonitorWorker : BackgroundService
     private static readonly TimeSpan GracePeriod = TimeSpan.FromDays(3);
 
     private readonly IServiceScopeFactory _scopeFactory;
+    private readonly IRabbitMqPublisher _rabbitMqPublisher;
     private readonly ILogger<SubscriptionMonitorWorker> _logger;
 
     public SubscriptionMonitorWorker(
         IServiceScopeFactory scopeFactory,
+        IRabbitMqPublisher rabbitMqPublisher,
         ILogger<SubscriptionMonitorWorker> logger)
     {
         _scopeFactory = scopeFactory ?? throw new ArgumentNullException(nameof(scopeFactory));
+        _rabbitMqPublisher = rabbitMqPublisher ?? throw new ArgumentNullException(nameof(rabbitMqPublisher));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
 
@@ -72,6 +77,11 @@ public sealed class SubscriptionMonitorWorker : BackgroundService
                 subscription.GracePeriodEnd <= now)
             .ToListAsync(cancellationToken);
 
+        var deactivatedShopIds = unpaidSubscriptions
+            .Select(subscription => subscription.ShopId)
+            .Distinct()
+            .ToList();
+
         foreach (var subscription in unpaidSubscriptions)
         {
             subscription.Status = SubStatus.Unpaid;
@@ -80,7 +90,16 @@ public sealed class SubscriptionMonitorWorker : BackgroundService
             subscription.Shop.UpdatedAt = now;
         }
 
-        await dbContext.SaveChangesAsync(cancellationToken);
+        await using (var transaction = await dbContext.Database.BeginTransactionAsync(cancellationToken))
+        {
+            await dbContext.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+        }
+
+        foreach (var shopId in deactivatedShopIds)
+        {
+            await PublishDeactivationMessagesAsync(shopId, cancellationToken);
+        }
 
         foreach (var subscription in expiredActiveSubscriptions)
         {
@@ -101,5 +120,63 @@ public sealed class SubscriptionMonitorWorker : BackgroundService
                 NotificationType.System,
                 subscription.Id);
         }
+    }
+
+    private async Task PublishDeactivationMessagesAsync(Guid shopId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _rabbitMqPublisher.PublishShopSyncMessage(new ShopSyncMessage(
+                ShopId: shopId,
+                Action: "Delete",
+                Document: null), cancellationToken);
+
+            var productIds = await GetProductIdsAsync(shopId, cancellationToken);
+            foreach (var productId in productIds)
+            {
+                await _rabbitMqPublisher.PublishProductSyncMessage(new ProductSyncMessage(
+                    ProductId: productId,
+                    Action: "Delete",
+                    Document: null), cancellationToken);
+            }
+
+            var mediaIds = await GetMediaIdsAsync(shopId, cancellationToken);
+            foreach (var mediaId in mediaIds)
+            {
+                await _rabbitMqPublisher.PublishMediaSyncMessage(new MediaSyncMessage(
+                    MediaId: mediaId,
+                    Action: "Delete",
+                    Document: null), cancellationToken);
+            }
+        }
+        catch (Exception exception)
+        {
+            _logger.LogError(
+                exception,
+                "Elasticsearch deactivation messages could not be published for ShopId: {ShopId}",
+                shopId);
+        }
+    }
+
+    private async Task<List<Guid>> GetProductIdsAsync(Guid shopId, CancellationToken cancellationToken)
+    {
+        using var scope = _scopeFactory.CreateScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        return await dbContext.Products
+            .AsNoTracking()
+            .Where(product => product.ShopId == shopId)
+            .Select(product => product.Id)
+            .ToListAsync(cancellationToken);
+    }
+
+    private async Task<List<Guid>> GetMediaIdsAsync(Guid shopId, CancellationToken cancellationToken)
+    {
+        using var scope = _scopeFactory.CreateScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        return await dbContext.Media
+            .AsNoTracking()
+            .Where(media => media.ShopId == shopId)
+            .Select(media => media.Id)
+            .ToListAsync(cancellationToken);
     }
 }

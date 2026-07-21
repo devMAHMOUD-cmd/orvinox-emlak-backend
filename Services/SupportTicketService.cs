@@ -72,6 +72,21 @@ public sealed class SupportTicketService : ISupportTicketService
         await _dbContext.SaveChangesAsync();
         await transaction.CommitAsync();
 
+        var adminIds = await _dbContext.Users
+            .AsNoTracking()
+            .Where(item => item.Role == UserRole.Admin && item.IsActive == true && item.DeletedAt == null)
+            .Select(item => item.Id)
+            .ToListAsync();
+
+        foreach (var adminId in adminIds)
+        {
+            await TrySendSupportNotificationAsync(
+                adminId,
+                ticket.Id,
+                "Yeni destek talebi",
+                "Yeni bir destek talebi olusturuldu.");
+        }
+
         return await GetMyTicketDetailAsync(userId, ticket.Id);
     }
 
@@ -108,19 +123,48 @@ public sealed class SupportTicketService : ISupportTicketService
                 LastMessageSenderRole = ticket.Messages
                     .OrderByDescending(message => message.CreatedAt)
                     .Select(message => (SupportMessageSenderRole?)message.SenderRole)
+                    .FirstOrDefault(),
+                LastMessagePreview = ticket.Messages
+                    .OrderByDescending(message => message.CreatedAt)
+                    .Select(message => message.Message)
                     .FirstOrDefault()
             })
             .ToListAsync();
 
+        var ticketIds = ticketRows.Select(ticket => ticket.Id).ToList();
+        var messageRows = ticketIds.Count == 0
+            ? new List<(Guid TicketId, SupportMessageSenderRole SenderRole, DateTime CreatedAt)>()
+            : (await _dbContext.SupportTicketMessages
+                .AsNoTracking()
+                .Where(message => ticketIds.Contains(message.TicketId))
+                .Select(message => new { message.TicketId, message.SenderRole, message.CreatedAt })
+                .ToListAsync())
+                .Select(message => (message.TicketId, message.SenderRole, message.CreatedAt))
+                .ToList();
+
         var items = ticketRows
-            .Select(ticket => new TicketListItemDto(
-                ticket.Id,
-                ticket.Subject,
-                ToApiValue(ticket.Status),
-                ticket.CreatedAt,
-                ticket.UpdatedAt,
-                ticket.LastMessageAt,
-                ticket.LastMessageSenderRole is null ? null : ToApiValue(ticket.LastMessageSenderRole.Value)))
+            .Select(ticket =>
+            {
+                var ticketMessages = messageRows.Where(message => message.TicketId == ticket.Id).ToList();
+                var lastUserMessageAt = ticketMessages
+                    .Where(message => message.SenderRole == SupportMessageSenderRole.User)
+                    .Select(message => (DateTime?)message.CreatedAt)
+                    .Max();
+                var unreadCount = ticketMessages.Count(message =>
+                    message.SenderRole == SupportMessageSenderRole.Admin &&
+                    (!lastUserMessageAt.HasValue || message.CreatedAt > lastUserMessageAt.Value));
+
+                return new TicketListItemDto(
+                    ticket.Id,
+                    ticket.Subject,
+                    ToApiValue(ticket.Status),
+                    ticket.CreatedAt,
+                    ticket.UpdatedAt,
+                    ticket.LastMessageAt,
+                    ticket.LastMessageSenderRole is null ? null : ToApiValue(ticket.LastMessageSenderRole.Value),
+                    ticket.LastMessagePreview,
+                    unreadCount);
+            })
             .ToList();
 
         return new TicketListResponseDto(
@@ -133,20 +177,27 @@ public sealed class SupportTicketService : ISupportTicketService
 
     public async Task<TicketDetailDto> GetMyTicketDetailAsync(Guid userId, Guid ticketId)
     {
-        await EnsureActiveUserAsync(userId);
+        var requester = await EnsureActiveUserAsync(userId);
 
-        var ticket = await _dbContext.SupportTickets
+        var ticketQuery = _dbContext.SupportTickets
             .AsNoTracking()
             .Include(item => item.Messages)
                 .ThenInclude(message => message.Sender)
-            .FirstOrDefaultAsync(item => item.Id == ticketId && item.UserId == userId);
+            .AsQueryable();
+
+        if (requester.Role != UserRole.Admin)
+        {
+            ticketQuery = ticketQuery.Where(item => item.UserId == userId);
+        }
+
+        var ticket = await ticketQuery.FirstOrDefaultAsync(item => item.Id == ticketId);
 
         return ticket is null
             ? throw new NotFoundException("Destek talebi bulunamadi.")
             : MapToUserDetail(ticket);
     }
 
-    public async Task<TicketMessageDto> AddMessageAsync(Guid userId, Guid ticketId, AddMessageDto dto)
+    public async Task<SupportMessageResponseDto> AddMessageAsync(Guid userId, Guid ticketId, AddMessageDto dto)
     {
         ArgumentNullException.ThrowIfNull(dto);
 
@@ -156,7 +207,8 @@ public sealed class SupportTicketService : ISupportTicketService
         await using var transaction = await _dbContext.Database.BeginTransactionAsync();
         var ticket = await GetTicketForUpdateAsync(ticketId);
 
-        if (ticket.UserId != userId)
+        var isAdmin = user.Role == UserRole.Admin;
+        if (ticket.UserId != userId && !isAdmin)
         {
             throw new NotFoundException("Destek talebi bulunamadi.");
         }
@@ -172,12 +224,12 @@ public sealed class SupportTicketService : ISupportTicketService
             Id = Guid.NewGuid(),
             TicketId = ticket.Id,
             SenderId = userId,
-            SenderRole = SupportMessageSenderRole.User,
+            SenderRole = isAdmin ? SupportMessageSenderRole.Admin : SupportMessageSenderRole.User,
             Message = messageText,
             CreatedAt = now
         };
 
-        ticket.Status = SupportTicketStatus.Open;
+        ticket.Status = isAdmin ? SupportTicketStatus.Answered : SupportTicketStatus.Open;
         ticket.LastMessageAt = now;
         ticket.UpdatedAt = now;
         _dbContext.SupportTicketMessages.Add(message);
@@ -185,12 +237,23 @@ public sealed class SupportTicketService : ISupportTicketService
         await _dbContext.SaveChangesAsync();
         await transaction.CommitAsync();
 
-        return new TicketMessageDto(
+        if (isAdmin)
+        {
+            await TrySendSupportNotificationAsync(
+                ticket.UserId,
+                ticketId,
+                "Destek talebinize yanit verildi",
+                "Destek talebinize bir admin yaniti eklendi.");
+        }
+
+        return new SupportMessageResponseDto(new TicketMessageDto(
             message.Id,
-            ToApiValue(message.SenderRole),
+            message.SenderId,
+            ToApiValue(message.SenderRole, user.Role),
             user.FullName,
             message.Message,
-            message.CreatedAt);
+            message.CreatedAt),
+            ToApiValue(ticket.Status));
     }
 
     public async Task<AdminTicketListResponseDto> GetAllTicketsAsync(string? status, string? query, int page, int pageSize)
@@ -477,7 +540,8 @@ public sealed class SupportTicketService : ISupportTicketService
             .OrderBy(message => message.CreatedAt)
             .Select(message => new TicketMessageDto(
                 message.Id,
-                ToApiValue(message.SenderRole),
+                message.SenderId,
+                ToApiValue(message.SenderRole, message.Sender.Role),
                 message.Sender.FullName,
                 message.Message,
                 message.CreatedAt))
@@ -584,5 +648,15 @@ public sealed class SupportTicketService : ISupportTicketService
             SupportMessageSenderRole.Admin => "admin",
             _ => throw new ArgumentOutOfRangeException(nameof(senderRole), senderRole, null)
         };
+    }
+
+    private static string ToApiValue(SupportMessageSenderRole senderRole, UserRole senderUserRole)
+    {
+        if (senderUserRole == UserRole.Admin)
+        {
+            return "admin";
+        }
+
+        return senderUserRole == UserRole.Seller ? "seller" : "user";
     }
 }

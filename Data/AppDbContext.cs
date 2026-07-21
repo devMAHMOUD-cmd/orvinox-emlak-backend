@@ -19,6 +19,8 @@ public partial class AppDbContext : DbContext
 
     public virtual DbSet<AnalyticsEvent> AnalyticsEvents { get; set; }
 
+    public virtual DbSet<AdminCompetitionReward> AdminCompetitionRewards { get; set; }
+
     public virtual DbSet<Category> Categories { get; set; }
 
     public virtual DbSet<Contest> Contests { get; set; }
@@ -75,6 +77,10 @@ public partial class AppDbContext : DbContext
 
     public virtual DbSet<SellerSubscription> SellerSubscriptions { get; set; }
 
+    public virtual DbSet<SellerSubscriptionPayment> SellerSubscriptionPayments { get; set; }
+
+    public virtual DbSet<SellerNotificationPreference> SellerNotificationPreferences { get; set; }
+
     public virtual DbSet<Shop> Shops { get; set; }
 
     public virtual DbSet<ShopVisit> ShopVisits { get; set; }
@@ -103,6 +109,37 @@ public partial class AppDbContext : DbContext
             .HasPostgresExtension("citext")
             .HasPostgresExtension("uuid-ossp");
 
+        modelBuilder.Entity<AdminCompetitionReward>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("admin_competition_rewards_pkey");
+
+            entity.ToTable("admin_competition_rewards");
+
+            entity.HasIndex(e => new { e.ContestId, e.UserId }, "uq_admin_competition_rewards_contest_user")
+                .IsUnique();
+
+            entity.Property(e => e.Id)
+                .HasDefaultValueSql("uuid_generate_v4()")
+                .HasColumnName("id");
+            entity.Property(e => e.Amount)
+                .HasPrecision(12, 2)
+                .HasColumnName("amount");
+            entity.Property(e => e.CertificateUrl).HasColumnName("certificate_url");
+            entity.Property(e => e.ContestId).HasColumnName("contest_id");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("CURRENT_TIMESTAMP")
+                .HasColumnName("created_at");
+            entity.Property(e => e.Currency)
+                .HasMaxLength(3)
+                .HasColumnName("currency");
+            entity.Property(e => e.Note).HasColumnName("note");
+            entity.Property(e => e.Rank).HasColumnName("rank");
+            entity.Property(e => e.RewardType)
+                .HasMaxLength(50)
+                .HasColumnName("reward_type");
+            entity.Property(e => e.UserId).HasColumnName("user_id");
+        });
+
         modelBuilder.Entity<AnalyticsEvent>(entity =>
         {
             entity.HasKey(e => e.Id).HasName("analytics_events_pkey");
@@ -118,6 +155,10 @@ public partial class AppDbContext : DbContext
             entity.HasIndex(e => new { e.ProductId, e.EventType, e.CreatedAt }, "idx_analytics_product_event_date")
                 .IsDescending(false, false, true)
                 .HasFilter("product_id IS NOT NULL");
+
+            entity.HasIndex(e => new { e.MediaId, e.EventType, e.CreatedAt }, "idx_analytics_media_event_date")
+                .IsDescending(false, false, true)
+                .HasFilter("media_id IS NOT NULL");
 
             entity.HasIndex(e => e.OrderId, "idx_analytics_order")
                 .HasFilter("order_id IS NOT NULL");
@@ -146,6 +187,7 @@ public partial class AppDbContext : DbContext
                 .HasColumnName("id");
             entity.Property(e => e.ShopId).HasColumnName("shop_id");
             entity.Property(e => e.ProductId).HasColumnName("product_id");
+            entity.Property(e => e.MediaId).HasColumnName("media_id");
             entity.Property(e => e.UserId).HasColumnName("user_id");
             entity.Property(e => e.OrderId).HasColumnName("order_id");
             entity.Property(e => e.EventType)
@@ -189,6 +231,11 @@ public partial class AppDbContext : DbContext
                 .HasForeignKey(d => d.ProductId)
                 .OnDelete(DeleteBehavior.SetNull)
                 .HasConstraintName("analytics_events_product_id_fkey");
+
+            entity.HasOne(d => d.Media).WithMany()
+                .HasForeignKey(d => d.MediaId)
+                .OnDelete(DeleteBehavior.SetNull)
+                .HasConstraintName("analytics_events_media_id_fkey");
 
             entity.HasOne(d => d.User).WithMany()
                 .HasForeignKey(d => d.UserId)
@@ -886,6 +933,9 @@ public partial class AppDbContext : DbContext
             entity.Property(e => e.ReferenceType)
                 .HasMaxLength(50)
                 .HasColumnName("reference_type");
+            entity.Property(e => e.Data)
+                .HasColumnType("jsonb")
+                .HasColumnName("data");
             entity.Property(e => e.Title)
                 .HasMaxLength(255)
                 .HasColumnName("title");
@@ -1231,8 +1281,6 @@ public partial class AppDbContext : DbContext
 
             entity.ToTable("reviews");
 
-            entity.HasIndex(e => new { e.ProductId, e.UserId }, "unique_user_review").IsUnique();
-
             entity.Property(e => e.Id)
                 .HasDefaultValueSql("uuid_generate_v4()")
                 .HasColumnName("id");
@@ -1314,6 +1362,84 @@ public partial class AppDbContext : DbContext
             entity.HasOne(d => d.Shop).WithOne(p => p.SellerSubscription)
                 .HasForeignKey<SellerSubscription>(d => d.ShopId)
                 .HasConstraintName("seller_subscriptions_shop_id_fkey");
+        });
+
+        modelBuilder.Entity<SellerSubscriptionPayment>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("seller_subscription_payments_pkey");
+
+            entity.ToTable("seller_subscription_payments");
+
+            entity.HasIndex(e => new { e.SubscriptionId, e.CreatedAt }, "idx_seller_subscription_payments_subscription_date")
+                .IsDescending(false, true);
+            entity.HasIndex(e => new { e.Status, e.CreatedAt }, "idx_seller_subscription_payments_status_date")
+                .IsDescending(false, true);
+            entity.HasIndex(e => new { e.PaymentProvider, e.ProviderTransactionId }, "uq_seller_subscription_payments_provider_transaction")
+                .IsUnique()
+                .HasFilter("provider_transaction_id IS NOT NULL");
+            entity.HasIndex(e => new { e.SubscriptionId, e.BillingPeriodStart, e.BillingPeriodEnd }, "uq_seller_subscription_payments_subscription_period")
+                .IsUnique()
+                .HasFilter("billing_period_start IS NOT NULL AND billing_period_end IS NOT NULL");
+
+            entity.Property(e => e.Id)
+                .HasDefaultValueSql("uuid_generate_v4()")
+                .HasColumnName("id");
+            entity.Property(e => e.Amount)
+                .HasPrecision(12, 2)
+                .HasColumnName("amount");
+            entity.Property(e => e.BillingPeriodEnd).HasColumnName("billing_period_end");
+            entity.Property(e => e.BillingPeriodStart).HasColumnName("billing_period_start");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("CURRENT_TIMESTAMP")
+                .HasColumnName("created_at");
+            entity.Property(e => e.Currency)
+                .HasMaxLength(3)
+                .HasColumnName("currency");
+            entity.Property(e => e.PaymentProvider)
+                .HasMaxLength(50)
+                .HasColumnName("payment_provider");
+            entity.Property(e => e.ProviderTransactionId)
+                .HasMaxLength(255)
+                .HasColumnName("provider_transaction_id");
+            entity.Property(e => e.ShopId).HasColumnName("shop_id");
+            entity.Property(e => e.Status)
+                .HasMaxLength(30)
+                .HasColumnName("status");
+            entity.Property(e => e.SubscriptionId).HasColumnName("subscription_id");
+        });
+
+        modelBuilder.Entity<SellerNotificationPreference>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("seller_notification_preferences_pkey");
+
+            entity.ToTable("seller_notification_preferences");
+
+            entity.HasIndex(e => e.UserId, "idx_seller_notification_preferences_user");
+
+            entity.HasIndex(e => e.UserId, "seller_notification_preferences_user_id_key")
+                .IsUnique();
+
+            entity.Property(e => e.Id)
+                .HasDefaultValueSql("uuid_generate_v4()")
+                .HasColumnName("id");
+            entity.Property(e => e.UserId).HasColumnName("user_id");
+            entity.Property(e => e.OrderEmails)
+                .HasDefaultValue(true)
+                .HasColumnName("order_emails");
+            entity.Property(e => e.WeeklyReportEmails)
+                .HasDefaultValue(true)
+                .HasColumnName("weekly_report_emails");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("CURRENT_TIMESTAMP")
+                .HasColumnName("created_at");
+            entity.Property(e => e.UpdatedAt)
+                .HasDefaultValueSql("CURRENT_TIMESTAMP")
+                .HasColumnName("updated_at");
+
+            entity.HasOne(d => d.User).WithOne(p => p.SellerNotificationPreference)
+                .HasForeignKey<SellerNotificationPreference>(d => d.UserId)
+                .OnDelete(DeleteBehavior.Cascade)
+                .HasConstraintName("seller_notification_preferences_user_id_fkey");
         });
 
         modelBuilder.Entity<Shop>(entity =>
@@ -1553,6 +1679,7 @@ public partial class AppDbContext : DbContext
                 .HasColumnName("is_email_verified");
             entity.Property(e => e.LastLoginAt).HasColumnName("last_login_at");
             entity.Property(e => e.LockedUntil).HasColumnName("locked_until");
+            entity.Property(e => e.LockReason).HasColumnName("lock_reason");
             entity.Property(e => e.PasswordHash).HasColumnName("password_hash");
             entity.Property(e => e.Preferences)
                 .HasDefaultValueSql("'{}'::jsonb")

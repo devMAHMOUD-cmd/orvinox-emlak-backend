@@ -10,6 +10,18 @@ public sealed class CommentDto
 
     public string? UserName { get; set; }
 
+    public string? UserEmail { get; set; }
+
+    public string? AvatarPublicUrl { get; set; }
+
+    public Guid? ShopId { get; set; }
+
+    public string? ShopName { get; set; }
+
+    public string? ShopLogoPublicUrl { get; set; }
+
+    public bool IsShopAuthor { get; set; }
+
     public string Text { get; set; } = string.Empty;
 
     public DateTime? CreatedAt { get; set; }

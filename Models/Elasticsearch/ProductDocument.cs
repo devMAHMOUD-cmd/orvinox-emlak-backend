@@ -14,6 +14,8 @@ public sealed class ProductDocument
 
     public Guid ShopId { get; set; }
 
+    public string? ShopName { get; set; }
+
     public bool IsActive { get; set; }
 
     public bool IsPublished { get; set; }

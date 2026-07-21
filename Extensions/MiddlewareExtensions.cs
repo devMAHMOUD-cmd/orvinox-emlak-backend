@@ -1,4 +1,5 @@
 using CraftoraApi.Middleware;
+using CraftoraApi.Hubs;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.HttpOverrides;
 using Serilog;
@@ -111,6 +112,7 @@ public static class MiddlewareExtensions
         }
 
         app.MapControllers();
+        app.MapHub<NotificationHub>("/hubs/notifications");
 
         return app;
     }

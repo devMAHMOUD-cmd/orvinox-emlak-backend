@@ -29,6 +29,45 @@ public sealed class MediaController : ControllerBase
         return Ok(result);
     }
 
+    [Authorize]
+    [HttpGet("saved")]
+    public async Task<IActionResult> GetSavedMediaAsync(
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 12)
+    {
+        var result = await _mediaService.GetSavedMediaAsync(GetCurrentUserId(), page, pageSize);
+        return Ok(result);
+    }
+
+    [Authorize]
+    [HttpGet("liked")]
+    public async Task<IActionResult> GetLikedMediaAsync(
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 30)
+    {
+        var result = await _mediaService.GetLikedMediaAsync(GetCurrentUserId(), page, pageSize);
+        return Ok(result);
+    }
+
+    [AllowAnonymous]
+    [HttpGet("{id:guid}")]
+    public async Task<IActionResult> GetMediaByIdAsync([FromRoute] Guid id)
+    {
+        var result = await _mediaService.GetMediaByIdAsync(id, TryGetCurrentUserId());
+        return Ok(result);
+    }
+
+    [AllowAnonymous]
+    [HttpGet("{id:guid}/likes")]
+    public async Task<ActionResult<MediaLikeListResponseDto>> GetMediaLikesAsync(
+        [FromRoute] Guid id,
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 30)
+    {
+        var result = await _mediaService.GetMediaLikesAsync(id, page, pageSize);
+        return Ok(result);
+    }
+
     [AllowAnonymous]
     [HttpGet("shop/{shopId:guid}")]
     public async Task<IActionResult> GetShopMediaAsync(
@@ -54,20 +93,16 @@ public sealed class MediaController : ControllerBase
     [HttpPost("{id:guid}/like")]
     public async Task<IActionResult> ToggleLikeAsync([FromRoute] Guid id)
     {
-        var userId = GetCurrentUserId();
-        await _mediaService.ToggleLikeAsync(id, userId);
-
-        return Ok(new { message = "Beğeni durumu güncellendi." });
+        var result = await _mediaService.ToggleLikeAsync(id, GetCurrentUserId());
+        return Ok(result);
     }
 
     [Authorize]
     [HttpPost("{id:guid}/save")]
     public async Task<IActionResult> ToggleSaveAsync([FromRoute] Guid id)
     {
-        var userId = GetCurrentUserId();
-        await _mediaService.ToggleSaveAsync(id, userId);
-
-        return Ok(new { message = "Kaydetme durumu güncellendi." });
+        var result = await _mediaService.ToggleSaveAsync(id, GetCurrentUserId());
+        return Ok(result);
     }
 
     [Authorize]
@@ -85,9 +120,7 @@ public sealed class MediaController : ControllerBase
         [FromRoute] Guid id,
         [FromBody] CreateMediaCommentDto dto)
     {
-        var userId = GetCurrentUserId();
-        var result = await _mediaService.AddCommentAsync(id, userId, dto.Text, dto.ParentCommentId);
-
+        var result = await _mediaService.AddCommentAsync(id, GetCurrentUserId(), dto.Text, dto.ParentCommentId);
         return Ok(result);
     }
 
@@ -106,19 +139,15 @@ public sealed class MediaController : ControllerBase
     [HttpDelete("comments/{commentId:guid}")]
     public async Task<IActionResult> DeleteCommentAsync([FromRoute] Guid commentId)
     {
-        var userId = GetCurrentUserId();
-        await _mediaService.DeleteCommentAsync(commentId, userId);
-
-        return NoContent();
+        var result = await _mediaService.DeleteCommentAsync(commentId, GetCurrentUserId());
+        return Ok(result);
     }
 
     [Authorize]
     [HttpDelete("{id:guid}")]
     public async Task<IActionResult> DeleteMediaAsync([FromRoute] Guid id)
     {
-        var userId = GetCurrentUserId();
-        await _mediaService.DeleteMediaAsync(id, userId);
-
+        await _mediaService.DeleteMediaAsync(id, GetCurrentUserId());
         return NoContent();
     }
 
@@ -126,8 +155,16 @@ public sealed class MediaController : ControllerBase
     [HttpPost("{id:guid}/view")]
     public async Task<IActionResult> RecordViewAsync([FromRoute] Guid id)
     {
-        await _mediaService.RecordViewAsync(id, TryGetCurrentUserId());
-        return Ok(new { message = "Görüntülenme kaydedildi." });
+        var userAgent = Request.Headers.UserAgent.ToString();
+        var referrer = Request.Headers.Referer.ToString();
+
+        await _mediaService.RecordViewAsync(
+            id,
+            TryGetCurrentUserId(),
+            HttpContext.Connection.RemoteIpAddress,
+            string.IsNullOrWhiteSpace(userAgent) ? null : userAgent,
+            string.IsNullOrWhiteSpace(referrer) ? null : referrer);
+        return Ok(new { message = "Goruntulenme kaydedildi." });
     }
 
     private Guid GetCurrentUserId()
@@ -137,7 +174,7 @@ public sealed class MediaController : ControllerBase
 
         if (!Guid.TryParse(userIdClaim, out var userId))
         {
-            throw new UnauthorizedException("Geçersiz kullanıcı token'ı.");
+            throw new UnauthorizedException("Gecersiz kullanici token'i.");
         }
 
         return userId;

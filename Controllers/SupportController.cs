@@ -25,7 +25,7 @@ public sealed class SupportController : ControllerBase
     public async Task<IActionResult> CreateTicketAsync([FromBody] CreateTicketDto dto)
     {
         var result = await _supportTicketService.CreateTicketAsync(GetCurrentUserId(), dto);
-        return CreatedAtAction(nameof(GetTicketDetailAsync), new { id = result.Id }, result);
+        return Created($"/api/support/tickets/{result.Id}", result);
     }
 
     [HttpGet]

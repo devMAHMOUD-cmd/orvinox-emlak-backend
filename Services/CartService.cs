@@ -12,10 +12,14 @@ namespace CraftoraApi.Services;
 public sealed class CartService : ICartService
 {
     private readonly AppDbContext _dbContext;
+    private readonly IAnalyticsEventService _analyticsEventService;
 
-    public CartService(AppDbContext dbContext)
+    public CartService(
+        AppDbContext dbContext,
+        IAnalyticsEventService analyticsEventService)
     {
         _dbContext = dbContext ?? throw new ArgumentNullException(nameof(dbContext));
+        _analyticsEventService = analyticsEventService ?? throw new ArgumentNullException(nameof(analyticsEventService));
     }
 
     public async Task<CartResponseDto> AddToCartAsync(Guid userId, AddToCartDto dto)
@@ -61,6 +65,8 @@ public sealed class CartService : ICartService
         {
             throw new BadRequestException("Bu ürün zaten kütüphanenizde mevcut.");
         }
+
+        await _analyticsEventService.TrackAddToCartAsync(dto.ProductId, userId);
 
         return await GetUserCartAsync(userId);
     }

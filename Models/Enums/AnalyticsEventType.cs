@@ -10,6 +10,9 @@ public enum AnalyticsEventType
     [PgName("product_view")]
     ProductView,
 
+    [PgName("media_view")]
+    MediaView,
+
     [PgName("add_to_cart")]
     AddToCart,
 

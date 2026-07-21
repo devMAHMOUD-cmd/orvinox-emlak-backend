@@ -11,6 +11,8 @@ public partial class AnalyticsEvent
 
     public Guid? ProductId { get; set; }
 
+    public Guid? MediaId { get; set; }
+
     public Guid? UserId { get; set; }
 
     public Guid? OrderId { get; set; }
@@ -42,6 +44,8 @@ public partial class AnalyticsEvent
     public virtual Shop Shop { get; set; } = null!;
 
     public virtual Product? Product { get; set; }
+
+    public virtual Medium? Media { get; set; }
 
     public virtual User? User { get; set; }
 

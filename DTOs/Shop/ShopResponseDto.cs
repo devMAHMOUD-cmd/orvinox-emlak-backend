@@ -14,4 +14,5 @@ public sealed record ShopResponseDto(
     bool? IsVerified,
     bool? IsActive,
     bool? HasActiveSubscription,
-    DateTime? CreatedAt);
+    DateTime? CreatedAt,
+    int FollowingCount = 0);

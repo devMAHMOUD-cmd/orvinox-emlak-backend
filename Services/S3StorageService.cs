@@ -223,12 +223,21 @@ public sealed class S3StorageService : IStorageService, IDisposable
             }
             catch (AmazonS3Exception exception)
             {
-                _logger.LogWarning(
-                    exception,
-                    "Storage CORS configuration could not be applied. BucketName: {BucketName}, ErrorCode: {ErrorCode}, Message: {Message}",
-                    bucketName,
-                    exception.ErrorCode,
-                    exception.Message);
+                if (string.Equals(exception.ErrorCode, "NotImplemented", StringComparison.OrdinalIgnoreCase))
+                {
+                    _logger.LogWarning(
+                        "S3 provider does not implement bucket CORS configuration. Continuing startup. BucketName: {BucketName}",
+                        bucketName);
+                }
+                else
+                {
+                    _logger.LogWarning(
+                        exception,
+                        "Storage CORS configuration could not be applied. BucketName: {BucketName}, ErrorCode: {ErrorCode}, Message: {Message}",
+                        bucketName,
+                        exception.ErrorCode,
+                        exception.Message);
+                }
             }
             catch (Exception exception)
             {

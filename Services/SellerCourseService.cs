@@ -161,7 +161,7 @@ public sealed class SellerCourseService : ISellerCourseService
             await _gamificationService.AwardPointsAsync(
                 shop.UserId,
                 "create_product",
-                10.0m,
+                5.0m,
                 product.Id,
                 preventDuplicate: true,
                 cancellationToken);
@@ -208,7 +208,7 @@ public sealed class SellerCourseService : ISellerCourseService
             await _gamificationService.AwardPointsAsync(
                 userId,
                 "create_product",
-                10.0m,
+                5.0m,
                 course.ProductId,
                 preventDuplicate: true,
                 cancellationToken);

@@ -1,6 +1,8 @@
 using CraftoraApi.Data;
 using CraftoraApi.DTOs.Subscription;
+using CraftoraApi.Infrastructure.Messaging;
 using CraftoraApi.Middleware;
+using CraftoraApi.Models.Elasticsearch;
 using CraftoraApi.Models.Entities;
 using CraftoraApi.Models.Enums;
 using CraftoraApi.Services.Interfaces;
@@ -10,21 +12,26 @@ namespace CraftoraApi.Services;
 
 public sealed class SubscriptionService : ISubscriptionService
 {
+    private const string PublicAssetsBucketName = "public-assets";
+    private const string PrivateProductsBucketName = "private-products";
     private const decimal MonthlyAmount = 25.00m;
     private const string Currency = "USD";
     private const string PaymentProvider = "stripe_mock";
 
     private readonly AppDbContext _dbContext;
     private readonly IPaymentService _paymentService;
+    private readonly IRabbitMqPublisher _rabbitMqPublisher;
     private readonly ILogger<SubscriptionService> _logger;
 
     public SubscriptionService(
         AppDbContext dbContext,
         IPaymentService paymentService,
+        IRabbitMqPublisher rabbitMqPublisher,
         ILogger<SubscriptionService> logger)
     {
         _dbContext = dbContext ?? throw new ArgumentNullException(nameof(dbContext));
         _paymentService = paymentService ?? throw new ArgumentNullException(nameof(paymentService));
+        _rabbitMqPublisher = rabbitMqPublisher ?? throw new ArgumentNullException(nameof(rabbitMqPublisher));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
 
@@ -65,12 +72,15 @@ public sealed class SubscriptionService : ISubscriptionService
             throw new BadRequestException(paymentResult.ErrorMessage);
         }
 
+        await using var transaction = await _dbContext.Database.BeginTransactionAsync();
+        var now = DateTime.UtcNow;
+
         if (subscription is null)
         {
             subscription = new SellerSubscription
             {
                 ShopId = shop.Id,
-                CreatedAt = DateTime.UtcNow
+                CreatedAt = now
             };
 
             _dbContext.SellerSubscriptions.Add(subscription);
@@ -78,7 +88,7 @@ public sealed class SubscriptionService : ISubscriptionService
 
         subscription.ProviderSubscriptionId = $"sub_mock_{Guid.NewGuid():N}";
         subscription.Status = SubStatus.Active;
-        subscription.CurrentPeriodEnd = DateTime.UtcNow.AddDays(30);
+        subscription.CurrentPeriodEnd = now.AddDays(30);
         subscription.GracePeriodEnd = null;
         subscription.Amount = MonthlyAmount;
         subscription.Currency = Currency;
@@ -105,6 +115,23 @@ public sealed class SubscriptionService : ISubscriptionService
         }
 
         await _dbContext.SaveChangesAsync();
+        _dbContext.SellerSubscriptionPayments.Add(new SellerSubscriptionPayment
+        {
+            SubscriptionId = subscription.Id,
+            ShopId = shop.Id,
+            PaymentProvider = PaymentProvider,
+            ProviderTransactionId = paymentResult.TransactionId,
+            Amount = MonthlyAmount,
+            Currency = Currency,
+            Status = "succeeded",
+            BillingPeriodStart = now,
+            BillingPeriodEnd = subscription.CurrentPeriodEnd,
+            CreatedAt = now
+        });
+        await _dbContext.SaveChangesAsync();
+        await transaction.CommitAsync();
+        await PublishShopIndexMessageAsync(shop.Id);
+        await PublishActiveShopContentAsync(shop.Id);
 
         return MapToResponse(subscription);
     }
@@ -124,10 +151,174 @@ public sealed class SubscriptionService : ISubscriptionService
 
         subscription.Status = SubStatus.Canceled;
         subscription.UpdatedAt = DateTime.UtcNow;
+        shop.IsActive = false;
+        shop.UpdatedAt = subscription.UpdatedAt;
 
         await _dbContext.SaveChangesAsync();
+        await PublishShopIndexMessageAsync(shop.Id);
+        await PublishInactiveShopContentAsync(shop.Id);
 
         return MapToResponse(subscription);
+    }
+
+    private async Task PublishShopIndexMessageAsync(Guid shopId)
+    {
+        var shop = await _dbContext.Shops
+            .AsNoTracking()
+            .FirstOrDefaultAsync(item => item.Id == shopId);
+
+        if (shop is null || shop.IsActive != true)
+        {
+            await _rabbitMqPublisher.PublishShopSyncMessage(new ShopSyncMessage(
+                ShopId: shopId,
+                Action: "Delete",
+                Document: null));
+            return;
+        }
+
+        await _rabbitMqPublisher.PublishShopSyncMessage(new ShopSyncMessage(
+            ShopId: shop.Id,
+            Action: "Index",
+            Document: new ShopDocument
+            {
+                Id = shop.Id,
+                ShopName = shop.ShopName,
+                Slug = shop.Slug,
+                ShortDescription = shop.ShortDescription,
+                LogoObjectKey = shop.LogoUrl,
+                BannerObjectKey = shop.BannerUrl,
+                IsActive = true,
+                IsVerified = shop.IsVerified == true,
+                FollowerCount = shop.FollowerCount ?? 0
+            }));
+    }
+
+    private async Task PublishInactiveShopContentAsync(Guid shopId)
+    {
+        var productIds = await _dbContext.Products
+            .AsNoTracking()
+            .Where(product => product.ShopId == shopId)
+            .Select(product => product.Id)
+            .ToListAsync();
+
+        foreach (var productId in productIds)
+        {
+            await _rabbitMqPublisher.PublishProductSyncMessage(new ProductSyncMessage(
+                ProductId: productId,
+                Action: "Delete",
+                Document: null));
+        }
+
+        var mediaIds = await _dbContext.Media
+            .AsNoTracking()
+            .Where(media => media.ShopId == shopId)
+            .Select(media => media.Id)
+            .ToListAsync();
+
+        foreach (var mediaId in mediaIds)
+        {
+            await _rabbitMqPublisher.PublishMediaSyncMessage(new MediaSyncMessage(
+                MediaId: mediaId,
+                Action: "Delete",
+                Document: null));
+        }
+    }
+
+    private async Task PublishActiveShopContentAsync(Guid shopId)
+    {
+        var products = await _dbContext.Products
+            .AsNoTracking()
+            .Where(product =>
+                product.ShopId == shopId &&
+                product.IsActive == true &&
+                product.Status == ProductStatus.Published &&
+                product.Shop.IsActive == true)
+            .Select(product => new ProductDocument
+            {
+                Id = product.Id,
+                Name = product.Title,
+                Description = product.Description,
+                Price = product.Price,
+                CategoryId = product.CategoryId,
+                ShopId = product.ShopId,
+                ShopName = product.Shop.ShopName,
+                IsActive = true,
+                IsPublished = true,
+                ShopIsActive = true
+            })
+            .ToListAsync();
+
+        foreach (var product in products)
+        {
+            await _rabbitMqPublisher.PublishProductSyncMessage(new ProductSyncMessage(
+                ProductId: product.Id,
+                Action: "Index",
+                Document: product));
+        }
+
+        var media = await _dbContext.Media
+            .AsNoTracking()
+            .Include(item => item.Shop)
+            .Include(item => item.Product)
+            .Where(item =>
+                item.ShopId == shopId &&
+                item.IsActive == true &&
+                item.Shop.IsActive == true)
+            .ToListAsync();
+
+        foreach (var item in media)
+        {
+            await _rabbitMqPublisher.PublishMediaSyncMessage(new MediaSyncMessage(
+                MediaId: item.Id,
+                Action: "Index",
+                Document: new MediaDocument
+                {
+                    Id = item.Id,
+                    Caption = item.Caption,
+                    Hashtags = item.Hashtags ?? new List<string>(),
+                    ShopId = item.ShopId,
+                    ShopName = item.Shop.ShopName,
+                    ShopSlug = item.Shop.Slug,
+                    ProductId = item.ProductId,
+                    ProductTitle = item.Product?.Title,
+                    ProductType = item.Product?.Type switch
+                    {
+                        ProductType.Course => "course",
+                        ProductType.DigitalFile => "digital_file",
+                        _ => null
+                    },
+                    ThumbnailObjectKey = ExtractObjectKey(item.ThumbnailUrl, PublicAssetsBucketName),
+                    VideoObjectKey = ExtractObjectKey(item.VideoUrl, PrivateProductsBucketName),
+                    ProductCoverImageObjectKey = ExtractObjectKey(item.Product?.CoverImageUrl, PublicAssetsBucketName),
+                    IsActive = true,
+                    ShopIsActive = true,
+                    CreatedAt = item.CreatedAt,
+                    ViewCount = item.ViewCount ?? 0,
+                    LikeCount = item.LikeCount ?? 0,
+                    SaveCount = item.SaveCount ?? 0,
+                    ShareCount = item.ShareCount ?? 0
+                }));
+        }
+    }
+
+    private static string? ExtractObjectKey(string? value, string bucketName)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        if (!Uri.TryCreate(value, UriKind.Absolute, out var uri))
+        {
+            return value.TrimStart('/');
+        }
+
+        var path = Uri.UnescapeDataString(uri.AbsolutePath).TrimStart('/');
+        var bucketPrefix = $"{bucketName}/";
+        var bucketIndex = path.IndexOf(bucketPrefix, StringComparison.OrdinalIgnoreCase);
+        return bucketIndex >= 0
+            ? path[(bucketIndex + bucketPrefix.Length)..]
+            : path;
     }
 
     private async Task<Shop> GetSellerShopAsync(Guid userId)

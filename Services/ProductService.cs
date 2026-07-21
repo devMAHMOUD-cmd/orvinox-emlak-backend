@@ -23,25 +23,28 @@ public sealed class ProductService : IProductService
     private readonly IRabbitMqPublisher _rabbitMqPublisher;
     private readonly ICacheService _cacheService;
     private readonly IStorageService _storageService;
+    private readonly IGamificationService _gamificationService;
 
     public ProductService(
         AppDbContext dbContext,
         IRabbitMqPublisher rabbitMqPublisher,
         ICacheService cacheService,
-        IStorageService storageService)
+        IStorageService storageService,
+        IGamificationService gamificationService)
     {
         _dbContext = dbContext ?? throw new ArgumentNullException(nameof(dbContext));
         _rabbitMqPublisher = rabbitMqPublisher ?? throw new ArgumentNullException(nameof(rabbitMqPublisher));
         _cacheService = cacheService ?? throw new ArgumentNullException(nameof(cacheService));
         _storageService = storageService ?? throw new ArgumentNullException(nameof(storageService));
+        _gamificationService = gamificationService ?? throw new ArgumentNullException(nameof(gamificationService));
     }
 
     public async Task<ProductResponseDto> CreateProductAsync(Guid shopId, CreateProductDto dto)
     {
         ArgumentNullException.ThrowIfNull(dto);
 
-        var shopExists = await _dbContext.Shops.AnyAsync(shop => shop.Id == shopId && shop.IsActive == true);
-        if (!shopExists)
+        var shop = await _dbContext.Shops.FirstOrDefaultAsync(shop => shop.Id == shopId && shop.IsActive == true);
+        if (shop is null)
         {
             throw new NotFoundException("Magaza bulunamadi.");
         }
@@ -73,6 +76,15 @@ public sealed class ProductService : IProductService
 
         _dbContext.Products.Add(product);
         await _dbContext.SaveChangesAsync();
+        if (product.Status == ProductStatus.Published)
+        {
+            await _gamificationService.AwardPointsAsync(
+                shop.UserId,
+                "create_product",
+                5m,
+                product.Id,
+                preventDuplicate: true);
+        }
         await InvalidatePopularProductsCacheAsync();
         await PublishProductIndexMessageAsync(product);
 
@@ -238,6 +250,7 @@ public sealed class ProductService : IProductService
         }
 
         var categoryId = await ResolveCategoryIdAsync(dto.CategoryId);
+        var previousStatus = product.Status;
 
         product.CategoryId = categoryId;
         product.Title = dto.Title.Trim();
@@ -252,6 +265,19 @@ public sealed class ProductService : IProductService
         product.Tags = NormalizeTags(dto.Tags);
 
         await _dbContext.SaveChangesAsync();
+        if (previousStatus != ProductStatus.Published && product.Status == ProductStatus.Published)
+        {
+            var shopOwnerId = await _dbContext.Shops
+                .Where(shop => shop.Id == shopId)
+                .Select(shop => shop.UserId)
+                .SingleAsync();
+            await _gamificationService.AwardPointsAsync(
+                shopOwnerId,
+                "create_product",
+                5m,
+                product.Id,
+                preventDuplicate: true);
+        }
         await InvalidatePopularProductsCacheAsync();
         await PublishProductIndexMessageAsync(product);
 
@@ -334,10 +360,14 @@ public sealed class ProductService : IProductService
 
     private async Task PublishProductIndexMessageAsync(Product product)
     {
-        var shopIsActive = await _dbContext.Shops
+        var shopInfo = await _dbContext.Shops
             .AsNoTracking()
             .Where(shop => shop.Id == product.ShopId)
-            .Select(shop => shop.IsActive == true)
+            .Select(shop => new
+            {
+                IsActive = shop.IsActive == true,
+                shop.ShopName
+            })
             .FirstOrDefaultAsync();
 
         var document = new ProductDocument
@@ -348,9 +378,10 @@ public sealed class ProductService : IProductService
             Price = product.Price,
             CategoryId = product.CategoryId,
             ShopId = product.ShopId,
+            ShopName = shopInfo?.ShopName,
             IsActive = product.IsActive == true,
             IsPublished = product.Status == ProductStatus.Published,
-            ShopIsActive = shopIsActive
+            ShopIsActive = shopInfo?.IsActive == true
         };
 
         await _rabbitMqPublisher.PublishProductSyncMessage(new ProductSyncMessage(
@@ -385,6 +416,9 @@ public sealed class ProductService : IProductService
 
     private ProductResponseDto MapToResponse(Product product)
     {
+        var productFileObjectKey = ExtractObjectKey(product.FileUrl, PrivateProductsBucketName);
+        var hasProductFile = !string.IsNullOrWhiteSpace(productFileObjectKey);
+
         return new ProductResponseDto(
             Id: product.Id,
             ShopId: product.ShopId,
@@ -397,6 +431,8 @@ public sealed class ProductService : IProductService
             CoverImagePublicUrl: GeneratePublicAssetUrl(product.CoverImageUrl),
             PreviewVideoUrl: product.PreviewVideoUrl,
             PreviewVideoPublicUrl: GeneratePublicAssetUrl(product.PreviewVideoUrl),
+            HasProductFile: hasProductFile,
+            ProductFileName: hasProductFile ? GetFileName(productFileObjectKey!) : null,
             Status: product.Status,
             Tags: product.Tags ?? new List<string>(),
             RatingAverage: product.RatingAverage,

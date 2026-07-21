@@ -51,6 +51,23 @@ public class ExceptionMiddleware
 
         // Response headers'ı ayarla
         context.Response.ContentType = "application/json; charset=utf-8";
+        if (exception is AccountLockedException accountLockedException)
+        {
+            context.Response.StatusCode = accountLockedException.StatusCode;
+            var lockedResponse = new
+            {
+                code = accountLockedException.ErrorCode,
+                message = accountLockedException.Message,
+                reason = accountLockedException.Reason,
+                lockedUntil = accountLockedException.LockedUntil.ToString("O")
+            };
+
+            var lockedJson = JsonSerializer.Serialize(
+                lockedResponse,
+                new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
+            await context.Response.WriteAsync(lockedJson);
+            return;
+        }
 
         // Request bilgilerini çıkar
         var requestId = context.Request.HttpContext.TraceIdentifier;

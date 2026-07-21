@@ -27,10 +27,58 @@ public sealed class AdminController : ControllerBase
         return Ok(await _adminService.GetOverviewAsync(cancellationToken));
     }
 
+    [HttpGet("finance/overview")]
+    public async Task<IActionResult> GetFinanceOverviewAsync(
+        [FromQuery] DateTime? startDate,
+        [FromQuery] DateTime? endDate,
+        CancellationToken cancellationToken = default)
+    {
+        return Ok(await _adminService.GetFinanceOverviewAsync(startDate, endDate, cancellationToken));
+    }
+
+    [HttpGet("finance/commissions")]
+    public async Task<IActionResult> GetCommissionsAsync(
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 20,
+        [FromQuery] DateTime? startDate = null,
+        [FromQuery] DateTime? endDate = null,
+        [FromQuery] string? query = null,
+        CancellationToken cancellationToken = default)
+    {
+        return Ok(await _adminService.GetCommissionsAsync(
+            page, pageSize, startDate, endDate, query, cancellationToken));
+    }
+
+    [HttpGet("finance/subscriptions")]
+    public async Task<IActionResult> GetSubscriptionFinanceAsync(
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 20,
+        [FromQuery] string? status = null,
+        [FromQuery] string? query = null,
+        CancellationToken cancellationToken = default)
+    {
+        return Ok(await _adminService.GetSubscriptionFinanceAsync(
+            page, pageSize, status, query, cancellationToken));
+    }
+
     [HttpPost("reindex-products")]
     public async Task<IActionResult> ReindexProductsAsync(CancellationToken cancellationToken = default)
     {
         var indexedCount = await _adminService.ReindexProductsAsync(GetCurrentUserId(), cancellationToken);
+        return Ok(new { indexedCount });
+    }
+
+    [HttpPost("reindex-shops")]
+    public async Task<IActionResult> ReindexShopsAsync(CancellationToken cancellationToken = default)
+    {
+        var indexedCount = await _adminService.ReindexShopsAsync(GetCurrentUserId(), cancellationToken);
+        return Ok(new { indexedCount });
+    }
+
+    [HttpPost("reindex-media")]
+    public async Task<IActionResult> ReindexMediaAsync(CancellationToken cancellationToken = default)
+    {
+        var indexedCount = await _adminService.ReindexMediaAsync(GetCurrentUserId(), cancellationToken);
         return Ok(new { indexedCount });
     }
 
@@ -123,6 +171,34 @@ public sealed class AdminController : ControllerBase
         return Ok(await _adminService.GetReportsAsync(status, type, page, pageSize, cancellationToken));
     }
 
+    [HttpGet("reports/{reportId:guid}/target")]
+    public async Task<IActionResult> GetReportTargetAsync(
+        [FromRoute] Guid reportId,
+        CancellationToken cancellationToken = default)
+    {
+        return Ok(await _adminService.GetReportTargetAsync(GetCurrentUserId(), reportId, cancellationToken));
+    }
+
+    [HttpPost("reports/{reportId:guid}/warn")]
+    public async Task<IActionResult> WarnReportTargetAsync(
+        [FromRoute] Guid reportId,
+        [FromBody] AdminWarnUserRequestDto dto,
+        CancellationToken cancellationToken = default)
+    {
+        await _adminService.WarnReportTargetAsync(GetCurrentUserId(), reportId, dto, cancellationToken);
+        return Ok(new { message = "Hedef sahibi uyarildi." });
+    }
+
+    [HttpPost("reports/{reportId:guid}/block-target")]
+    public async Task<IActionResult> BlockReportTargetAsync(
+        [FromRoute] Guid reportId,
+        [FromBody] AdminBlockReportTargetRequestDto dto,
+        CancellationToken cancellationToken = default)
+    {
+        await _adminService.BlockReportTargetAsync(GetCurrentUserId(), reportId, dto, cancellationToken);
+        return Ok(new { message = "Rapor hedefi engellendi." });
+    }
+
     [HttpPost("reports/{reportId:guid}/resolve")]
     public async Task<IActionResult> ResolveReportAsync(
         [FromRoute] Guid reportId,
@@ -145,6 +221,26 @@ public sealed class AdminController : ControllerBase
     public async Task<IActionResult> GetCompetitionsAsync(CancellationToken cancellationToken = default)
     {
         return Ok(await _adminService.GetCompetitionsAsync(cancellationToken));
+    }
+
+    [HttpGet("competitions/{id:guid}/leaderboard")]
+    public async Task<IActionResult> GetCompetitionLeaderboardAsync(
+        [FromRoute] Guid id,
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 100,
+        CancellationToken cancellationToken = default)
+    {
+        return Ok(await _adminService.GetCompetitionLeaderboardAsync(id, page, pageSize, cancellationToken));
+    }
+
+    [HttpGet("competitions/{id:guid}/participants")]
+    public async Task<IActionResult> GetCompetitionParticipantsAsync(
+        [FromRoute] Guid id,
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 100,
+        CancellationToken cancellationToken = default)
+    {
+        return Ok(await _adminService.GetCompetitionParticipantsAsync(id, page, pageSize, cancellationToken));
     }
 
     [HttpPost("competitions")]

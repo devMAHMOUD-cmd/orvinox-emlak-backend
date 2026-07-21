@@ -26,6 +26,8 @@ public partial class User
 
     public DateTime? LockedUntil { get; set; }
 
+    public string? LockReason { get; set; }
+
     public string? StripeCustomerId { get; set; }
 
     public string? StripeAccountId { get; set; }
@@ -73,6 +75,8 @@ public partial class User
     public virtual ICollection<Review> Reviews { get; set; } = new List<Review>();
 
     public virtual Shop? Shop { get; set; }
+
+    public virtual SellerNotificationPreference? SellerNotificationPreference { get; set; }
 
     public virtual ICollection<ShopVisit> ShopVisits { get; set; } = new List<ShopVisit>();
 

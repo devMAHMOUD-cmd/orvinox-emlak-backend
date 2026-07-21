@@ -14,7 +14,9 @@ public sealed record TicketListItemDto(
     DateTime CreatedAt,
     DateTime UpdatedAt,
     DateTime LastMessageAt,
-    string? LastMessageSenderRole);
+    string? LastMessageSenderRole,
+    string? LastMessagePreview,
+    int UnreadCount);
 
 public sealed record TicketDetailDto(
     Guid Id,
@@ -28,10 +30,15 @@ public sealed record TicketDetailDto(
 
 public sealed record TicketMessageDto(
     Guid Id,
+    Guid SenderUserId,
     string SenderRole,
     string? SenderName,
     string Message,
     DateTime CreatedAt);
+
+public sealed record SupportMessageResponseDto(
+    TicketMessageDto Message,
+    string TicketStatus);
 
 public sealed record AdminTicketListResponseDto(
     IReadOnlyList<AdminTicketListItemDto> Items,

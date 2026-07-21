@@ -20,4 +20,12 @@ public interface IAnalyticsEventService
     Task TrackPurchaseCompletedAsync(Guid orderId, Guid userId, CancellationToken cancellationToken = default);
 
     Task TrackDownloadClickedAsync(Guid productId, Guid userId, CancellationToken cancellationToken = default);
+
+    Task TrackMediaViewAsync(
+        Guid mediaId,
+        Guid? userId,
+        IPAddress? ipAddress,
+        string? userAgent,
+        string? referrer,
+        CancellationToken cancellationToken = default);
 }

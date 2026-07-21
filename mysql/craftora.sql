@@ -42,6 +42,7 @@ COMMENT ON EXTENSION "uuid-ossp" IS 'generate universally unique identifiers (UU
 CREATE TYPE public.analytics_event_type AS ENUM (
     'shop_visit',
     'product_view',
+    'media_view',
     'add_to_cart',
     'checkout_started',
     'purchase_completed',
@@ -113,12 +114,12 @@ BEGIN
     WHERE m.id = NEW.media_id;
     
     INSERT INTO point_logs (user_id, action_type, points_earned, reference_id) 
-    VALUES (v_seller_id, 'receive_like', 0.5, NEW.media_id);
+    VALUES (v_seller_id, 'receive_like', 2.0, NEW.id);
     
     INSERT INTO user_points (user_id, total_points) 
-    VALUES (v_seller_id, 0.5)
+    VALUES (v_seller_id, 2.0)
     ON CONFLICT (user_id) DO UPDATE 
-    SET total_points = user_points.total_points + 0.5, 
+    SET total_points = user_points.total_points + 2.0,
         updated_at = CURRENT_TIMESTAMP;
     
     RETURN NEW;
@@ -129,24 +130,30 @@ CREATE FUNCTION public.award_viewer_points() RETURNS trigger
     LANGUAGE plpgsql SECURITY DEFINER
     SET search_path TO 'public'
     AS $$
-DECLARE v_daily_points DECIMAL;
+DECLARE
+    v_daily_points DECIMAL;
+    v_point_log_id UUID;
 BEGIN
     SELECT COALESCE(SUM(points_earned), 0) INTO v_daily_points 
     FROM point_logs 
     WHERE user_id = NEW.user_id 
       AND action_type = 'watch_reels' 
       AND created_at::date = CURRENT_DATE;
-    IF v_daily_points < 120 THEN
+    IF v_daily_points < 50 THEN
         INSERT INTO point_logs (user_id, action_type, points_earned, reference_id) 
-        VALUES (NEW.user_id, 'watch_reels', 1.0, NEW.media_id);
-        
-        INSERT INTO user_points (user_id, total_points) 
-        VALUES (NEW.user_id, 1.0)
-        ON CONFLICT (user_id) DO UPDATE 
-        SET total_points = user_points.total_points + 1.0, 
-            updated_at = CURRENT_TIMESTAMP;
-        
-        NEW.is_point_earned := TRUE;
+        VALUES (NEW.user_id, 'watch_reels', 5.0, NEW.media_id)
+        ON CONFLICT DO NOTHING
+        RETURNING id INTO v_point_log_id;
+
+        IF v_point_log_id IS NOT NULL THEN
+            INSERT INTO user_points (user_id, total_points)
+            VALUES (NEW.user_id, 5.0)
+            ON CONFLICT (user_id) DO UPDATE
+            SET total_points = user_points.total_points + 5.0,
+                updated_at = CURRENT_TIMESTAMP;
+
+            NEW.is_point_earned := TRUE;
+        END IF;
     END IF;
     RETURN NEW;
 END;
@@ -197,6 +204,7 @@ CREATE FUNCTION public.normalize_analytics_event_shop_id() RETURNS trigger
     AS $$
 DECLARE
     v_product_shop_id UUID;
+    v_media_shop_id UUID;
     v_order_shop_id UUID;
 BEGIN
     -- product_id varsa Ã¼rÃ¼nÃ¼n gerÃ§ek shop_id'sini bul
@@ -208,6 +216,15 @@ BEGIN
             RAISE EXCEPTION 'Analytics event product_id geÃ§ersiz: %', NEW.product_id;
         END IF;
         NEW.shop_id := v_product_shop_id;
+    END IF;
+    IF NEW.media_id IS NOT NULL THEN
+        SELECT shop_id INTO v_media_shop_id
+        FROM media
+        WHERE id = NEW.media_id;
+        IF v_media_shop_id IS NULL THEN
+            RAISE EXCEPTION 'Analytics event media_id gecersiz: %', NEW.media_id;
+        END IF;
+        NEW.shop_id := v_media_shop_id;
     END IF;
     -- order_id varsa order'Ä±n gerÃ§ek shop_id'sini bul
     IF NEW.order_id IS NOT NULL THEN
@@ -245,6 +262,7 @@ CREATE FUNCTION public.process_completed_order() RETURNS trigger
     AS $$
 DECLARE 
     v_seller_id UUID;
+    v_point_log_id UUID;
 BEGIN
     -- SatÄ±cÄ±yÄ± bul
     SELECT user_id INTO v_seller_id FROM shops WHERE id = NEW.shop_id;
@@ -256,13 +274,17 @@ BEGIN
         
         -- 2. SatÄ±cÄ±ya 20 puan (UPSERT ile)
         INSERT INTO point_logs (user_id, action_type, points_earned, reference_id) 
-        VALUES (v_seller_id, 'make_sale', 20.0, NEW.id);
-        
-        INSERT INTO user_points (user_id, total_points) 
-        VALUES (v_seller_id, 20.0)
-        ON CONFLICT (user_id) DO UPDATE 
-        SET total_points = user_points.total_points + 20.0, 
-            updated_at = CURRENT_TIMESTAMP;
+        VALUES (v_seller_id, 'make_sale', 20.0, NEW.id)
+        ON CONFLICT DO NOTHING
+        RETURNING id INTO v_point_log_id;
+
+        IF v_point_log_id IS NOT NULL THEN
+            INSERT INTO user_points (user_id, total_points)
+            VALUES (v_seller_id, 20.0)
+            ON CONFLICT (user_id) DO UPDATE
+            SET total_points = user_points.total_points + 20.0,
+                updated_at = CURRENT_TIMESTAMP;
+        END IF;
     
     -- ============ SÄ°PARÄ°Å Ä°ADE EDÄ°LDÄ° (REFUND) ============
     ELSIF (NEW.status = 'refunded' AND TG_OP = 'UPDATE' AND OLD.status != 'refunded') THEN
@@ -306,16 +328,16 @@ BEGIN
         END IF;
 
         INSERT INTO point_logs (user_id, action_type, points_earned, reference_id)
-        VALUES (NEW.user_id, 'complete_lesson', 2.0, NEW.course_lesson_id)
+        VALUES (NEW.user_id, 'complete_lesson', 5.0, NEW.course_lesson_id)
         ON CONFLICT (user_id, reference_id) WHERE action_type = 'complete_lesson'
         DO NOTHING
         RETURNING id INTO v_point_log_id;
 
         IF v_point_log_id IS NOT NULL THEN
             INSERT INTO user_points (user_id, total_points)
-            VALUES (NEW.user_id, 2.0)
+            VALUES (NEW.user_id, 5.0)
             ON CONFLICT (user_id) DO UPDATE
-            SET total_points = user_points.total_points + 2.0,
+            SET total_points = user_points.total_points + 5.0,
                 updated_at = CURRENT_TIMESTAMP;
         END IF;
     END IF;
@@ -437,6 +459,7 @@ CREATE TABLE public.admin_competition_rewards (
     amount numeric(12,2),
     currency character varying(3),
     note text,
+    certificate_url text,
     created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -466,6 +489,7 @@ CREATE TABLE public.analytics_events (
     id uuid DEFAULT public.uuid_generate_v4() NOT NULL,
     shop_id uuid NOT NULL,
     product_id uuid,
+    media_id uuid,
     user_id uuid,
     order_id uuid,
     event_type public.analytics_event_type NOT NULL,
@@ -481,6 +505,7 @@ CREATE TABLE public.analytics_events (
     metadata jsonb DEFAULT '{}'::jsonb,
     created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT check_analytics_order_events CHECK (((event_type <> 'purchase_completed'::public.analytics_event_type) OR (order_id IS NOT NULL))),
+    CONSTRAINT check_analytics_media_events CHECK (((event_type <> 'media_view'::public.analytics_event_type) OR (media_id IS NOT NULL))),
     CONSTRAINT check_analytics_product_events CHECK (((event_type <> ALL (ARRAY['product_view'::public.analytics_event_type, 'add_to_cart'::public.analytics_event_type, 'download_clicked'::public.analytics_event_type])) OR (product_id IS NOT NULL))),
     CONSTRAINT check_analytics_session_or_user CHECK (((user_id IS NOT NULL) OR (session_id IS NOT NULL) OR (ip_address IS NOT NULL)))
 );
@@ -711,10 +736,11 @@ CREATE TABLE public.notifications (
     body text NOT NULL,
     reference_type character varying(50),
     reference_id uuid,
+    data jsonb,
     is_read boolean DEFAULT false,
     read_at timestamp with time zone,
     created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP,
-    CONSTRAINT check_notification_type CHECK (((type)::text = ANY ((ARRAY['sale_completed'::character varying, 'new_follower'::character varying, 'new_review'::character varying, 'new_question'::character varying, 'media_liked'::character varying, 'media_commented'::character varying, 'contest_result'::character varying, 'order_completed'::character varying, 'new_video'::character varying, 'new_product'::character varying, 'system'::character varying])::text[])))
+    CONSTRAINT check_notification_type CHECK (((type)::text = ANY ((ARRAY['sale_completed'::character varying, 'new_follower'::character varying, 'new_review'::character varying, 'new_question'::character varying, 'media_liked'::character varying, 'media_commented'::character varying, 'contest_result'::character varying, 'order_completed'::character varying, 'new_video'::character varying, 'new_product'::character varying, 'product_question_answer'::character varying, 'system'::character varying])::text[])))
 );
 
 CREATE TABLE public.orders (
@@ -963,6 +989,7 @@ CREATE TABLE public.users (
     password_hash text,
     is_email_verified boolean DEFAULT false,
     locked_until timestamp with time zone,
+    lock_reason text,
     stripe_customer_id character varying(255),
     stripe_account_id character varying(255),
     preferences jsonb DEFAULT '{}'::jsonb,
@@ -1012,6 +1039,9 @@ ALTER TABLE ONLY public.admin_audit_logs
 
 ALTER TABLE ONLY public.admin_competition_rewards
     ADD CONSTRAINT admin_competition_rewards_pkey PRIMARY KEY (id);
+
+ALTER TABLE ONLY public.admin_competition_rewards
+    ADD CONSTRAINT check_admin_competition_rewards_type CHECK (((reward_type)::text = ANY ((ARRAY['money'::character varying, 'premium_1_month'::character varying, 'certificate'::character varying])::text[])));
 
 ALTER TABLE ONLY public.admin_reports
     ADD CONSTRAINT admin_reports_pkey PRIMARY KEY (id);
@@ -1124,6 +1154,9 @@ ALTER TABLE ONLY public.shops
 ALTER TABLE ONLY public.subscriptions
     ADD CONSTRAINT subscriptions_pkey PRIMARY KEY (id);
 
+ALTER TABLE ONLY public.subscriptions
+    ADD CONSTRAINT unique_subscription UNIQUE (shop_id, user_id);
+
 ALTER TABLE ONLY public.support_ticket_messages
     ADD CONSTRAINT support_ticket_messages_pkey PRIMARY KEY (id);
 
@@ -1158,6 +1191,8 @@ CREATE INDEX "IX_cart_items_product_id" ON public.cart_items USING btree (produc
 CREATE INDEX "IX_categories_parent_id" ON public.categories USING btree (parent_id);
 
 CREATE INDEX "IX_contest_results_user_id" ON public.contest_results USING btree (user_id);
+
+CREATE UNIQUE INDEX uq_admin_competition_rewards_contest_user ON public.admin_competition_rewards USING btree (contest_id, user_id);
 
 CREATE INDEX "IX_contests_created_by" ON public.contests USING btree (created_by);
 
@@ -1208,6 +1243,8 @@ CREATE INDEX idx_admin_reports_status_type ON public.admin_reports USING btree (
 CREATE INDEX idx_admin_warnings_user ON public.admin_warnings USING btree (user_id, created_at DESC);
 
 CREATE INDEX idx_analytics_metadata ON public.analytics_events USING gin (metadata);
+
+CREATE INDEX idx_analytics_media_event_date ON public.analytics_events USING btree (media_id, event_type, created_at DESC) WHERE (media_id IS NOT NULL);
 
 CREATE INDEX idx_analytics_order ON public.analytics_events USING btree (order_id) WHERE (order_id IS NOT NULL);
 
@@ -1278,6 +1315,14 @@ CREATE INDEX idx_payments_transaction_id ON public.payments USING btree (provide
 CREATE INDEX idx_point_logs_user_date ON public.point_logs USING btree (user_id, created_at);
 
 CREATE UNIQUE INDEX uq_point_logs_complete_lesson_once ON public.point_logs USING btree (user_id, reference_id) WHERE (action_type = 'complete_lesson');
+
+CREATE UNIQUE INDEX uq_point_logs_make_sale_once ON public.point_logs USING btree (user_id, reference_id) WHERE (action_type = 'make_sale');
+
+CREATE UNIQUE INDEX uq_point_logs_purchase_product_once ON public.point_logs USING btree (user_id, reference_id) WHERE (action_type = 'purchase_product');
+
+CREATE UNIQUE INDEX uq_point_logs_create_product_once ON public.point_logs USING btree (user_id, reference_id) WHERE (action_type = 'create_product');
+
+CREATE UNIQUE INDEX uq_point_logs_watch_reels_once ON public.point_logs USING btree (user_id, reference_id) WHERE (action_type = 'watch_reels');
 
 CREATE INDEX idx_product_images_product ON public.product_images USING btree (product_id);
 
@@ -1624,6 +1669,9 @@ ALTER TABLE ONLY public.analytics_events
 
 ALTER TABLE ONLY public.analytics_events
     ADD CONSTRAINT analytics_events_product_id_fkey FOREIGN KEY (product_id) REFERENCES public.products(id) ON DELETE SET NULL;
+
+ALTER TABLE ONLY public.analytics_events
+    ADD CONSTRAINT analytics_events_media_id_fkey FOREIGN KEY (media_id) REFERENCES public.media(id) ON DELETE SET NULL;
 
 ALTER TABLE ONLY public.analytics_events
     ADD CONSTRAINT analytics_events_shop_id_fkey FOREIGN KEY (shop_id) REFERENCES public.shops(id) ON DELETE CASCADE;

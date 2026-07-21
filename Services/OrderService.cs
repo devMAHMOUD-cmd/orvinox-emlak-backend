@@ -23,19 +23,28 @@ public sealed class OrderService : IOrderService
     private readonly INotificationService _notificationService;
     private readonly IRabbitMqPublisher _rabbitMqPublisher;
     private readonly ICacheService _cacheService;
+    private readonly IAnalyticsEventService _analyticsEventService;
+    private readonly ISellerNotificationPreferenceService _sellerNotificationPreferenceService;
+    private readonly IGamificationService _gamificationService;
 
     public OrderService(
         AppDbContext dbContext,
         IPaymentService paymentService,
         INotificationService notificationService,
         IRabbitMqPublisher rabbitMqPublisher,
-        ICacheService cacheService)
+        ICacheService cacheService,
+        IAnalyticsEventService analyticsEventService,
+        ISellerNotificationPreferenceService sellerNotificationPreferenceService,
+        IGamificationService gamificationService)
     {
         _dbContext = dbContext ?? throw new ArgumentNullException(nameof(dbContext));
         _paymentService = paymentService ?? throw new ArgumentNullException(nameof(paymentService));
         _notificationService = notificationService ?? throw new ArgumentNullException(nameof(notificationService));
         _rabbitMqPublisher = rabbitMqPublisher ?? throw new ArgumentNullException(nameof(rabbitMqPublisher));
         _cacheService = cacheService ?? throw new ArgumentNullException(nameof(cacheService));
+        _analyticsEventService = analyticsEventService ?? throw new ArgumentNullException(nameof(analyticsEventService));
+        _sellerNotificationPreferenceService = sellerNotificationPreferenceService ?? throw new ArgumentNullException(nameof(sellerNotificationPreferenceService));
+        _gamificationService = gamificationService ?? throw new ArgumentNullException(nameof(gamificationService));
     }
 
     public async Task<List<OrderResponseDto>> CheckoutCartAsync(Guid buyerId, CheckoutRequestDto request)
@@ -118,6 +127,8 @@ public sealed class OrderService : IOrderService
             _dbContext.Orders.Add(order);
             await _dbContext.SaveChangesAsync();
 
+            await _analyticsEventService.TrackCheckoutStartedAsync(cartItem.ProductId, buyerId);
+
             // TODO: Pass a durable per-cart-item provider idempotency key when real payments are introduced.
             var paymentResult = await _paymentService.ProcessPaymentAsync(
                 amount,
@@ -159,6 +170,17 @@ public sealed class OrderService : IOrderService
             await _dbContext.SaveChangesAsync();
             await transaction.CommitAsync();
             createdOrders.Add(order);
+
+            if (paymentResult.IsSuccess)
+            {
+                await _analyticsEventService.TrackPurchaseCompletedAsync(order.Id, buyerId);
+                await _gamificationService.AwardPointsAsync(
+                    buyerId,
+                    "purchase_product",
+                    5m,
+                    order.Id,
+                    preventDuplicate: true);
+            }
         }
 
         foreach (var (order, product) in successfulOrders)
@@ -168,6 +190,135 @@ public sealed class OrderService : IOrderService
         }
 
         return createdOrders.Select(MapToResponse).ToList();
+        }
+        finally
+        {
+            await ReleaseCheckoutLockSafelyAsync(checkoutLockKey, checkoutLockValue);
+        }
+    }
+
+    public async Task<OrderResponseDto> CheckoutDirectAsync(Guid buyerId, DirectCheckoutRequestDto request)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        var buyer = await _dbContext.Users
+            .AsNoTracking()
+            .FirstOrDefaultAsync(user => user.Id == buyerId);
+
+        if (buyer is null)
+        {
+            throw new UnauthorizedException("Gecersiz kullanici.");
+        }
+
+        var checkoutLockKey = GetCheckoutLockKey(buyerId);
+        var checkoutLockValue = Guid.NewGuid().ToString("N");
+        var lockAcquired = await TryAcquireCheckoutLockAsync(checkoutLockKey, checkoutLockValue);
+
+        if (!lockAcquired)
+        {
+            throw new BadRequestException("Devam eden bir odeme isleminiz var.");
+        }
+
+        try
+        {
+            var product = await _dbContext.Products
+                .Include(item => item.Shop)
+                .FirstOrDefaultAsync(item =>
+                    item.Id == request.ProductId &&
+                    item.IsActive == true &&
+                    item.Status == ProductStatus.Published &&
+                    item.Shop.IsActive == true);
+
+            if (product is null)
+            {
+                throw new NotFoundException("Urun bulunamadi.");
+            }
+
+            if (product.Shop.UserId == buyerId)
+            {
+                throw new BadRequestException("Kendi urununuzu satin alamazsiniz.");
+            }
+
+            var alreadyOwned = await _dbContext.UserLibraries
+                .AsNoTracking()
+                .AnyAsync(item => item.UserId == buyerId && item.ProductId == product.Id);
+
+            if (alreadyOwned)
+            {
+                throw new BadRequestException("Bu urun zaten kutuphanenizde mevcut.");
+            }
+
+            await using var transaction = await _dbContext.Database.BeginTransactionAsync();
+
+            var amount = Math.Round(product.Price, 2, MidpointRounding.AwayFromZero);
+            var platformFee = Math.Round(amount * PlatformFeeRate, 2, MidpointRounding.AwayFromZero);
+            var sellerEarnings = amount - platformFee;
+            var currency = string.IsNullOrWhiteSpace(product.Currency)
+                ? DefaultCurrency
+                : product.Currency;
+
+            var order = new Order
+            {
+                Id = Guid.NewGuid(),
+                BuyerId = buyerId,
+                ProductId = product.Id,
+                ShopId = product.ShopId,
+                OrderNumber = await GenerateOrderNumberAsync(),
+                Amount = amount,
+                Currency = currency,
+                PlatformFee = platformFee,
+                SellerEarnings = sellerEarnings,
+                Status = OrderStatus.Pending,
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow
+            };
+
+            _dbContext.Orders.Add(order);
+            await _dbContext.SaveChangesAsync();
+
+            await _analyticsEventService.TrackCheckoutStartedAsync(product.Id, buyerId);
+
+            // TODO: Send a durable direct-checkout idempotency key to the real payment provider.
+            var paymentResult = await _paymentService.ProcessPaymentAsync(amount, currency, request.CardNumber);
+            var paymentStatus = paymentResult.IsSuccess
+                ? PaymentStatusType.Succeeded
+                : PaymentStatusType.Failed;
+
+            _dbContext.Payments.Add(new Payment
+            {
+                Id = Guid.NewGuid(),
+                OrderId = order.Id,
+                PaymentProvider = "mock",
+                ProviderTransactionId = paymentResult.IsSuccess ? paymentResult.TransactionId : null,
+                GrossAmount = amount,
+                PlatformFeeAmount = platformFee,
+                NetEarnings = sellerEarnings,
+                Status = paymentStatus,
+                ErrorMessage = paymentResult.IsSuccess ? null : paymentResult.ErrorMessage,
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow
+            });
+
+            order.Status = paymentResult.IsSuccess ? OrderStatus.Completed : OrderStatus.Failed;
+            order.UpdatedAt = DateTime.UtcNow;
+
+            await _dbContext.SaveChangesAsync();
+            await transaction.CommitAsync();
+
+            if (paymentResult.IsSuccess)
+            {
+                await _analyticsEventService.TrackPurchaseCompletedAsync(order.Id, buyerId);
+                await _gamificationService.AwardPointsAsync(
+                    buyerId,
+                    "purchase_product",
+                    5m,
+                    order.Id,
+                    preventDuplicate: true);
+                await SendOrderNotificationsAsync(order, product, buyer);
+                await PublishInvoiceCommandAsync(order, buyer);
+            }
+
+            return MapToResponse(order);
         }
         finally
         {
@@ -232,7 +383,40 @@ public sealed class OrderService : IOrderService
                 $"{buyer.FullName ?? buyer.Email}, {product.Title} ürününü satın aldı.",
                 NotificationType.NewOrder,
                 order.Id);
+
+            await PublishSellerOrderEmailIfEnabledAsync(order, product, buyer);
         }
+    }
+
+    private async Task PublishSellerOrderEmailIfEnabledAsync(Order order, Product product, User buyer)
+    {
+        var sellerUserId = product.Shop.UserId;
+        if (!await _sellerNotificationPreferenceService.AreOrderEmailsEnabledAsync(sellerUserId))
+        {
+            return;
+        }
+
+        var seller = await _dbContext.Users
+            .AsNoTracking()
+            .FirstOrDefaultAsync(user => user.Id == sellerUserId);
+
+        if (seller is null || string.IsNullOrWhiteSpace(seller.Email))
+        {
+            return;
+        }
+
+        await _rabbitMqPublisher.PublishSendEmailCommand(new SendEmailCommand(
+            To: seller.Email,
+            Subject: "Yeni sipariş aldınız",
+            Body: SellerNotificationPreferenceService.BuildOrderEmailBody(
+                product.Shop.ShopName,
+                product.Title,
+                order.OrderNumber,
+                buyer.FullName ?? buyer.Email,
+                order.Amount,
+                order.Currency,
+                order.Id),
+            IsHtml: true));
     }
 
     private async Task PublishInvoiceCommandAsync(Order order, User buyer)

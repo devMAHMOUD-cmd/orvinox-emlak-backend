@@ -14,6 +14,8 @@ public sealed record ProductResponseDto(
     string? CoverImagePublicUrl,
     string? PreviewVideoUrl,
     string? PreviewVideoPublicUrl,
+    bool HasProductFile,
+    string? ProductFileName,
     ProductStatus Status,
     List<string> Tags,
     decimal? RatingAverage,

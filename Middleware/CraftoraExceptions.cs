@@ -55,6 +55,23 @@ public class UnauthorizedException : CraftoraException
     }
 }
 
+public class AccountLockedException : CraftoraException
+{
+    public string? Reason { get; }
+
+    public DateTime LockedUntil { get; }
+
+    public AccountLockedException(string? reason, DateTime lockedUntil)
+        : base(
+            "Hesabınız geçici olarak kilitlendi.",
+            statusCode: 423,
+            errorCode: "account_locked")
+    {
+        Reason = reason;
+        LockedUntil = lockedUntil;
+    }
+}
+
 /// <summary>
 /// 403 Forbidden
 /// Kullanıcı yapma yetkisine sahip değil

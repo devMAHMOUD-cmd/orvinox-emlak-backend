@@ -6,6 +6,7 @@ public sealed record TrackAnalyticsEventDto(
     string EventType,
     Guid? ShopId,
     Guid? ProductId,
+    Guid? MediaId,
     Guid? OrderId,
     string? SessionId,
     string? Source,

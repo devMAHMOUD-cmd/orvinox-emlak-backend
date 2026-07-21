@@ -1,9 +1,12 @@
 using System.Security.Cryptography;
+using System.Data;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using CraftoraApi.Data;
 using CraftoraApi.DTOs.Shop;
+using CraftoraApi.Infrastructure.Messaging;
 using CraftoraApi.Middleware;
+using CraftoraApi.Models.Elasticsearch;
 using CraftoraApi.Models.Entities;
 using CraftoraApi.Models.Enums;
 using CraftoraApi.Services.Interfaces;
@@ -26,17 +29,20 @@ public sealed class ShopService : IShopService
     private readonly ILogger<ShopService> _logger;
     private readonly IDistributedCache _cache;
     private readonly IStorageService _storageService;
+    private readonly IRabbitMqPublisher _rabbitMqPublisher;
 
     public ShopService(
         AppDbContext dbContext,
         ILogger<ShopService> logger,
         IDistributedCache cache,
-        IStorageService storageService)
+        IStorageService storageService,
+        IRabbitMqPublisher rabbitMqPublisher)
     {
         _dbContext = dbContext ?? throw new ArgumentNullException(nameof(dbContext));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _cache = cache ?? throw new ArgumentNullException(nameof(cache));
         _storageService = storageService ?? throw new ArgumentNullException(nameof(storageService));
+        _rabbitMqPublisher = rabbitMqPublisher ?? throw new ArgumentNullException(nameof(rabbitMqPublisher));
     }
 
     public async Task<ShopResponseDto> CreateShopAsync(Guid userId, CreateShopDto dto)
@@ -81,6 +87,7 @@ public sealed class ShopService : IShopService
             await _dbContext.SaveChangesAsync();
             var response = await MapToResponseAsync(shop);
             await transaction.CommitAsync();
+            await PublishShopIndexMessageAsync(shop.Id);
 
             _logger.LogInformation("Shop created. ShopId: {ShopId}, UserId: {UserId}", shop.Id, userId);
 
@@ -107,7 +114,7 @@ public sealed class ShopService : IShopService
         return await MapToResponseAsync(shop);
     }
 
-    public async Task<PublicShopResponseDto> GetShopBySlugAsync(string slug)
+    public async Task<PublicShopResponseDto> GetShopBySlugAsync(string slug, Guid? currentUserId = null)
     {
         if (string.IsNullOrWhiteSpace(slug))
         {
@@ -123,7 +130,7 @@ public sealed class ShopService : IShopService
             var cachedResponse = JsonSerializer.Deserialize<PublicShopResponseDto>(cachedShop);
             if (cachedResponse is not null)
             {
-                return cachedResponse;
+                return await ApplyCurrentUserFollowStateAsync(cachedResponse, currentUserId);
             }
         }
 
@@ -142,7 +149,22 @@ public sealed class ShopService : IShopService
             JsonSerializer.Serialize(response),
             ShopCacheOptions);
 
-        return response;
+        return await ApplyCurrentUserFollowStateAsync(response, currentUserId);
+    }
+
+    public async Task<PublicShopResponseDto> GetPublicShopByIdAsync(Guid shopId, Guid? currentUserId = null)
+    {
+        var shop = await _dbContext.Shops
+            .AsNoTracking()
+            .FirstOrDefaultAsync(item => item.Id == shopId && item.IsActive == true);
+
+        if (shop is null)
+        {
+            throw new NotFoundException("Magaza bulunamadi.");
+        }
+
+        var response = await MapToPublicResponseAsync(shop);
+        return await ApplyCurrentUserFollowStateAsync(response, currentUserId);
     }
 
     private async Task DeleteShopHardAsync(Guid id, Guid userId)
@@ -256,40 +278,206 @@ public sealed class ShopService : IShopService
             await _cache.RemoveAsync(GetShopSlugCacheKey(shop.Slug));
         }
 
+        await PublishShopIndexMessageAsync(shop.Id);
+
         return await MapToResponseAsync(shop);
     }
 
-    public async Task ToggleFollowAsync(Guid shopId, Guid userId)
+    public async Task<ShopFollowerListResponseDto> GetMyShopFollowersAsync(
+        Guid userId,
+        int page = 1,
+        int pageSize = 30)
     {
-        var shop = await _dbContext.Shops.FirstOrDefaultAsync(shop => shop.Id == shopId && shop.IsActive == true);
+        var shop = await _dbContext.Shops
+            .AsNoTracking()
+            .FirstOrDefaultAsync(item => item.UserId == userId);
+
         if (shop is null)
         {
             throw new NotFoundException("Magaza bulunamadi.");
         }
 
-        if (shop.UserId == userId)
-        {
-            throw new BadRequestException("Kendi magazanizi takip edemezsiniz.");
-        }
+        var normalizedPage = Math.Max(page, 1);
+        var normalizedPageSize = Math.Clamp(pageSize, 1, 50);
+        var followersQuery = _dbContext.Subscriptions
+            .AsNoTracking()
+            .Where(subscription =>
+                subscription.ShopId == shop.Id &&
+                subscription.User.IsActive == true &&
+                subscription.User.DeletedAt == null)
+            .OrderByDescending(subscription => subscription.CreatedAt);
 
-        var subscription = await _dbContext.Subscriptions
-            .FirstOrDefaultAsync(subscription => subscription.ShopId == shopId && subscription.UserId == userId);
+        var totalCount = await followersQuery.CountAsync();
+        var followers = await followersQuery
+            .Include(subscription => subscription.User)
+                .ThenInclude(user => user.Shop)
+            .Skip((normalizedPage - 1) * normalizedPageSize)
+            .Take(normalizedPageSize)
+            .ToListAsync();
 
-        if (subscription is null)
-        {
-            _dbContext.Subscriptions.Add(new Subscription
+        var items = followers
+            .Select(subscription =>
             {
-                ShopId = shopId,
-                UserId = userId,
-                WantsNotifications = true
-            });
-        }
-        else
+                var user = subscription.User;
+                var followerShop = user.Shop?.IsActive == true ? user.Shop : null;
+
+                return new ShopFollowerDto(
+                    UserId: user.Id,
+                    FullName: user.FullName,
+                    AvatarPublicUrl: GeneratePublicAssetUrl(user.AvatarUrl),
+                    ShopId: followerShop?.Id,
+                    ShopName: followerShop?.ShopName,
+                    ShopSlug: followerShop?.Slug,
+                    ShopLogoPublicUrl: GeneratePublicAssetUrl(followerShop?.LogoUrl),
+                    IsShopVerified: followerShop?.IsVerified == true,
+                    FollowedAt: subscription.CreatedAt);
+            })
+            .ToList();
+        var totalPages = totalCount == 0
+            ? 0
+            : (int)Math.Ceiling(totalCount / (double)normalizedPageSize);
+
+        return new ShopFollowerListResponseDto(
+            Items: items,
+            Page: normalizedPage,
+            PageSize: normalizedPageSize,
+            TotalCount: totalCount,
+            TotalPages: totalPages);
+    }
+
+    public async Task<FollowedShopListResponseDto> GetFollowedShopsAsync(
+        Guid userId,
+        int page = 1,
+        int pageSize = 20)
+    {
+        var normalizedPage = Math.Max(page, 1);
+        var normalizedPageSize = Math.Clamp(pageSize, 1, 50);
+        var followedShopsQuery = _dbContext.Subscriptions
+            .AsNoTracking()
+            .Where(subscription =>
+                subscription.UserId == userId &&
+                subscription.Shop.IsActive == true)
+            .OrderByDescending(subscription => subscription.CreatedAt);
+
+        var totalCount = await followedShopsQuery.CountAsync();
+        var shops = await followedShopsQuery
+            .Select(subscription => subscription.Shop)
+            .Skip((normalizedPage - 1) * normalizedPageSize)
+            .Take(normalizedPageSize)
+            .ToListAsync();
+
+        if (shops.Count == 0)
         {
-            _dbContext.Subscriptions.Remove(subscription);
+            return new FollowedShopListResponseDto(
+                Items: Array.Empty<PublicShopResponseDto>(),
+                Page: normalizedPage,
+                PageSize: normalizedPageSize,
+                TotalCount: totalCount,
+                TotalPages: 0);
         }
 
-        await _dbContext.SaveChangesAsync();
+        var shopIds = shops.Select(shop => shop.Id).ToList();
+        var productCounts = await _dbContext.Products
+            .AsNoTracking()
+            .Where(product =>
+                shopIds.Contains(product.ShopId) &&
+                product.IsActive == true &&
+                product.Status == ProductStatus.Published)
+            .GroupBy(product => product.ShopId)
+            .Select(group => new { ShopId = group.Key, Count = group.Count() })
+            .ToDictionaryAsync(item => item.ShopId, item => item.Count);
+        var followerCounts = await _dbContext.Subscriptions
+            .AsNoTracking()
+            .Where(subscription => shopIds.Contains(subscription.ShopId))
+            .GroupBy(subscription => subscription.ShopId)
+            .Select(group => new { ShopId = group.Key, Count = group.Count() })
+            .ToDictionaryAsync(item => item.ShopId, item => item.Count);
+
+        var items = shops
+            .Select(shop => new PublicShopResponseDto(
+                Id: shop.Id,
+                ShopName: shop.ShopName,
+                Slug: shop.Slug,
+                ShortDescription: shop.ShortDescription,
+                Description: shop.Description,
+                LogoUrl: shop.LogoUrl,
+                LogoPublicUrl: GeneratePublicAssetUrl(shop.LogoUrl),
+                BannerUrl: shop.BannerUrl,
+                BannerPublicUrl: GeneratePublicAssetUrl(shop.BannerUrl),
+                ExternalUrl: shop.ExternalUrl,
+                SocialLinks: shop.SocialLinks,
+                FollowerCount: followerCounts.GetValueOrDefault(shop.Id),
+                ProductCount: productCounts.GetValueOrDefault(shop.Id),
+                Rating: shop.Rating,
+                IsVerified: shop.IsVerified == true,
+                IsFollowedByCurrentUser: true))
+            .ToList();
+        var totalPages = totalCount == 0
+            ? 0
+            : (int)Math.Ceiling(totalCount / (double)normalizedPageSize);
+
+        return new FollowedShopListResponseDto(
+            Items: items,
+            Page: normalizedPage,
+            PageSize: normalizedPageSize,
+            TotalCount: totalCount,
+            TotalPages: totalPages);
+    }
+
+    public async Task<ShopFollowResponseDto> ToggleFollowAsync(Guid shopId, Guid userId)
+    {
+        await using var transaction = await _dbContext.Database.BeginTransactionAsync(IsolationLevel.Serializable);
+
+        try
+        {
+            var shop = await _dbContext.Shops
+                .FromSqlInterpolated($"SELECT * FROM shops WHERE id = {shopId} AND is_active = true FOR UPDATE")
+                .FirstOrDefaultAsync();
+
+            if (shop is null)
+            {
+                throw new NotFoundException("Magaza bulunamadi.");
+            }
+
+            if (shop.UserId == userId)
+            {
+                throw new BadRequestException("Kendi magazanizi takip edemezsiniz.");
+            }
+
+            var subscription = await _dbContext.Subscriptions
+                .FirstOrDefaultAsync(subscription => subscription.ShopId == shopId && subscription.UserId == userId);
+
+            var isFollowing = subscription is null;
+            if (isFollowing)
+            {
+                _dbContext.Subscriptions.Add(new Subscription
+                {
+                    ShopId = shopId,
+                    UserId = userId,
+                    WantsNotifications = true
+                });
+            }
+            else
+            {
+                _dbContext.Subscriptions.Remove(subscription!);
+            }
+
+            await _dbContext.SaveChangesAsync();
+            var followerCount = await _dbContext.Subscriptions
+                .AsNoTracking()
+                .CountAsync(item => item.ShopId == shopId);
+
+            await transaction.CommitAsync();
+            await _cache.RemoveAsync(GetShopSlugCacheKey(shop.Slug));
+            await PublishShopIndexMessageAsync(shopId);
+
+            return new ShopFollowResponseDto(shopId, isFollowing, followerCount);
+        }
+        catch
+        {
+            await transaction.RollbackAsync();
+            throw;
+        }
     }
 
     public async Task<ShopTrafficReportDto> GetShopTrafficReportAsync(
@@ -346,6 +534,7 @@ public sealed class ShopService : IShopService
         shop.IsActive = false;
         await _dbContext.SaveChangesAsync();
         await _cache.RemoveAsync(GetShopSlugCacheKey(shop.Slug));
+        await PublishShopIndexMessageAsync(shop.Id);
 
         _logger.LogInformation("Shop deactivated. ShopId: {ShopId}, UserId: {UserId}", shopId, userId);
     }
@@ -353,6 +542,53 @@ public sealed class ShopService : IShopService
     private async Task<string> GenerateUniqueSlugAsync(string shopName)
     {
         return await GenerateUniqueSlugAsync(shopName, excludedShopId: null);
+    }
+
+    private async Task PublishShopIndexMessageAsync(Guid shopId)
+    {
+        var shop = await _dbContext.Shops
+            .AsNoTracking()
+            .FirstOrDefaultAsync(item => item.Id == shopId);
+
+        if (shop is null)
+        {
+            await _rabbitMqPublisher.PublishShopSyncMessage(new ShopSyncMessage(
+                ShopId: shopId,
+                Action: "Delete",
+                Document: null));
+            return;
+        }
+
+        if (shop.IsActive != true)
+        {
+            await _rabbitMqPublisher.PublishShopSyncMessage(new ShopSyncMessage(
+                ShopId: shop.Id,
+                Action: "Delete",
+                Document: null));
+            return;
+        }
+
+        var followerCount = await _dbContext.Subscriptions
+            .AsNoTracking()
+            .CountAsync(subscription => subscription.ShopId == shop.Id);
+
+        var document = new ShopDocument
+        {
+            Id = shop.Id,
+            ShopName = shop.ShopName,
+            Slug = shop.Slug,
+            ShortDescription = shop.ShortDescription,
+            LogoObjectKey = shop.LogoUrl,
+            BannerObjectKey = shop.BannerUrl,
+            IsActive = true,
+            IsVerified = shop.IsVerified == true,
+            FollowerCount = followerCount
+        };
+
+        await _rabbitMqPublisher.PublishShopSyncMessage(new ShopSyncMessage(
+            ShopId: shop.Id,
+            Action: "Index",
+            Document: document));
     }
 
     private async Task<string> GenerateUniqueSlugAsync(string shopName, Guid? excludedShopId)
@@ -411,6 +647,10 @@ public sealed class ShopService : IShopService
                 product.IsActive == true &&
                 product.Status == ProductStatus.Published);
 
+        var followerCount = await _dbContext.Subscriptions
+            .AsNoTracking()
+            .CountAsync(subscription => subscription.ShopId == shop.Id);
+
         return new PublicShopResponseDto(
             Id: shop.Id,
             ShopName: shop.ShopName,
@@ -423,15 +663,38 @@ public sealed class ShopService : IShopService
             BannerPublicUrl: GeneratePublicAssetUrl(shop.BannerUrl),
             ExternalUrl: shop.ExternalUrl,
             SocialLinks: shop.SocialLinks,
-            FollowerCount: shop.FollowerCount ?? 0,
+            FollowerCount: followerCount,
             ProductCount: productCount,
             Rating: shop.Rating,
             IsVerified: shop.IsVerified == true);
     }
 
+    private async Task<PublicShopResponseDto> ApplyCurrentUserFollowStateAsync(
+        PublicShopResponseDto response,
+        Guid? currentUserId)
+    {
+        if (!currentUserId.HasValue)
+        {
+            return response with { IsFollowedByCurrentUser = false };
+        }
+
+        var isFollowing = await _dbContext.Subscriptions
+            .AsNoTracking()
+            .AnyAsync(subscription =>
+                subscription.ShopId == response.Id &&
+                subscription.UserId == currentUserId.Value);
+
+        return response with { IsFollowedByCurrentUser = isFollowing };
+    }
+
     private async Task<ShopResponseDto> MapToResponseAsync(Shop shop)
     {
         var hasActiveSubscription = await HasActiveSubscriptionAsync(shop.Id);
+        var followingCount = await _dbContext.Subscriptions
+            .AsNoTracking()
+            .CountAsync(subscription =>
+                subscription.UserId == shop.UserId &&
+                subscription.Shop.IsActive == true);
 
         return new ShopResponseDto(
             Id: shop.Id,
@@ -447,7 +710,8 @@ public sealed class ShopService : IShopService
             IsVerified: shop.IsVerified,
             IsActive: shop.IsActive,
             HasActiveSubscription: hasActiveSubscription,
-            CreatedAt: shop.CreatedAt);
+            CreatedAt: shop.CreatedAt,
+            FollowingCount: followingCount);
     }
 
     private string? GeneratePublicAssetUrl(string? objectKey)

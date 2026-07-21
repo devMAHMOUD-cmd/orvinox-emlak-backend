@@ -19,6 +19,8 @@ public partial class Notification
 
     public Guid? ReferenceId { get; set; }
 
+    public string? Data { get; set; }
+
     public bool? IsRead { get; set; }
 
     public DateTime? ReadAt { get; set; }

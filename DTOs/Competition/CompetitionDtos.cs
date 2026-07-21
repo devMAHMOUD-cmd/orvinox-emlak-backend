@@ -11,7 +11,14 @@ public sealed record ActiveCompetitionDto(
     bool IsJoined,
     int TotalParticipants,
     int? MyRank,
-    decimal? MyScore);
+    decimal? MyScore,
+    CompetitionPointsBreakdownDto? MyBreakdown);
+
+public sealed record CompetitionPointsBreakdownDto(
+    decimal SalesPoints,
+    decimal ViewPoints,
+    decimal EngagementPoints,
+    decimal LearningPoints);
 
 public sealed record CompetitionLeaderboardResponseDto(
     Guid CompetitionId,
@@ -46,3 +53,24 @@ public sealed record CompetitionHistoryItemDto(
     string? PrizePool,
     bool RewardsHidden,
     IReadOnlyList<CompetitionLeaderboardItemDto> Winners);
+
+public sealed record MyCompetitionHistoryDto(
+    IReadOnlyList<MyCompetitionHistoryItemDto> Items);
+
+public sealed record MyCompetitionHistoryItemDto(
+    Guid CompetitionId,
+    string Title,
+    DateTime StartDate,
+    DateTime EndDate,
+    string Status,
+    bool IsJoined,
+    int? Rank,
+    decimal Score,
+    decimal SalesPoints,
+    decimal ViewPoints,
+    decimal EngagementPoints,
+    decimal LearningPoints,
+    string? RewardType,
+    decimal? RewardAmount,
+    string? RewardCurrency,
+    string? CertificatePublicUrl);

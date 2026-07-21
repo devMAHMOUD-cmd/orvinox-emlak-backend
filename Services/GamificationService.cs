@@ -84,7 +84,11 @@ public sealed class GamificationService : IGamificationService
                 .AsNoTracking()
                 .Where(log =>
                     log.CreatedAt >= activeContest.StartDate &&
-                    log.CreatedAt <= activeContest.EndDate)
+                    log.CreatedAt <= activeContest.EndDate &&
+                    _dbContext.ContestResults.Any(result =>
+                        result.ContestId == activeContest.Id &&
+                        result.UserId == log.UserId &&
+                        log.CreatedAt >= (result.JoinedAt ?? activeContest.StartDate)))
                 .GroupBy(log => log.UserId)
                 .Select(group => new
                 {
@@ -148,51 +152,40 @@ public sealed class GamificationService : IGamificationService
         bool preventDuplicate = false,
         CancellationToken cancellationToken = default)
     {
-        if (preventDuplicate && referenceId.HasValue)
-        {
-            var exists = await _dbContext.PointLogs.AnyAsync(
-                log =>
-                    log.UserId == userId &&
-                    log.ActionType == actionType &&
-                    log.ReferenceId == referenceId,
+        await using var transaction = await _dbContext.Database.BeginTransactionAsync(cancellationToken);
+
+        var inserted = preventDuplicate && referenceId.HasValue
+            ? await _dbContext.Database.ExecuteSqlInterpolatedAsync(
+                $"""
+                INSERT INTO point_logs (user_id, action_type, points_earned, reference_id, created_at)
+                VALUES ({userId}, {actionType}, {points}, {referenceId.Value}, {DateTime.UtcNow})
+                ON CONFLICT DO NOTHING
+                """,
+                cancellationToken)
+            : await _dbContext.Database.ExecuteSqlInterpolatedAsync(
+                $"""
+                INSERT INTO point_logs (user_id, action_type, points_earned, reference_id, created_at)
+                VALUES ({userId}, {actionType}, {points}, {referenceId}, {DateTime.UtcNow})
+                """,
                 cancellationToken);
 
-            if (exists)
-            {
-                return;
-            }
+        if (inserted == 0)
+        {
+            await transaction.CommitAsync(cancellationToken);
+            return;
         }
 
-        _dbContext.PointLogs.Add(new PointLog
-        {
-            UserId = userId,
-            ActionType = actionType,
-            PointsEarned = points,
-            ReferenceId = referenceId,
-            CreatedAt = DateTime.UtcNow
-        });
+        await _dbContext.Database.ExecuteSqlInterpolatedAsync(
+            $"""
+            INSERT INTO user_points (user_id, total_points, current_rank, current_streak, updated_at)
+            VALUES ({userId}, {points}, 0, 0, {DateTime.UtcNow})
+            ON CONFLICT (user_id) DO UPDATE
+            SET total_points = user_points.total_points + EXCLUDED.total_points,
+                updated_at = EXCLUDED.updated_at
+            """,
+            cancellationToken);
 
-        var userPoint = await _dbContext.UserPoints
-            .FirstOrDefaultAsync(point => point.UserId == userId, cancellationToken);
-
-        if (userPoint is null)
-        {
-            _dbContext.UserPoints.Add(new UserPoint
-            {
-                UserId = userId,
-                TotalPoints = points,
-                CurrentRank = 0,
-                CurrentStreak = 0,
-                UpdatedAt = DateTime.UtcNow
-            });
-        }
-        else
-        {
-            userPoint.TotalPoints = (userPoint.TotalPoints ?? 0) + points;
-            userPoint.UpdatedAt = DateTime.UtcNow;
-        }
-
-        await _dbContext.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
     }
 
     private static PointLogDto MapToPointLogDto(PointLog log)

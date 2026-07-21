@@ -5,6 +5,7 @@ using CraftoraApi.Services.Interfaces;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using System.Security.Claims;
 
 namespace CraftoraApi.Controllers;
 
@@ -93,17 +94,29 @@ public sealed class HomeController : ControllerBase
             .Select(item => new
             {
                 Shop = item,
+                FollowerCount = _dbContext.Subscriptions.Count(subscription => subscription.ShopId == item.Id),
                 RecentVisits = _dbContext.ShopVisits.Count(visit =>
                     visit.ShopId == item.Id &&
                     visit.VisitedAt >= since)
             })
             .OrderByDescending(item => item.RecentVisits)
-            .ThenByDescending(item => item.Shop.FollowerCount ?? 0)
+            .ThenByDescending(item => item.FollowerCount)
             .ThenByDescending(item => item.Shop.Rating ?? 0)
             .ThenByDescending(item => item.Shop.CreatedAt)
             .Skip((normalizedPage - 1) * normalizedPageSize)
             .Take(normalizedPageSize)
             .ToListAsync(cancellationToken);
+
+        var currentUserId = GetOptionalCurrentUserId();
+        var followedShopIds = currentUserId.HasValue && shops.Count > 0
+            ? await _dbContext.Subscriptions
+                .AsNoTracking()
+                .Where(subscription =>
+                    subscription.UserId == currentUserId.Value &&
+                    shops.Select(item => item.Shop.Id).Contains(subscription.ShopId))
+                .Select(subscription => subscription.ShopId)
+                .ToHashSetAsync(cancellationToken)
+            : new HashSet<Guid>();
 
         return Ok(shops.Select(item => new HomeTrendingShopDto(
             Id: item.Shop.Id,
@@ -112,10 +125,11 @@ public sealed class HomeController : ControllerBase
             ShortDescription: item.Shop.ShortDescription,
             LogoPublicUrl: GeneratePublicAssetUrl(item.Shop.LogoUrl),
             BannerPublicUrl: GeneratePublicAssetUrl(item.Shop.BannerUrl),
-            FollowerCount: item.Shop.FollowerCount ?? 0,
+            FollowerCount: item.FollowerCount,
             Rating: item.Shop.Rating,
             VisitCount: item.RecentVisits,
-            IsVerified: item.Shop.IsVerified == true)));
+            IsVerified: item.Shop.IsVerified == true,
+            IsFollowedByCurrentUser: followedShopIds.Contains(item.Shop.Id))));
     }
 
     [HttpGet("featured-courses")]
@@ -215,6 +229,14 @@ public sealed class HomeController : ControllerBase
             CommentCount: item.CommentCount ?? 0,
             Hashtags: item.Hashtags ?? new List<string>(),
             CreatedAt: item.CreatedAt)));
+    }
+
+    private Guid? GetOptionalCurrentUserId()
+    {
+        var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value
+            ?? User.FindFirst("sub")?.Value;
+
+        return Guid.TryParse(userIdClaim, out var userId) ? userId : null;
     }
 
     private string? GeneratePublicAssetUrl(string? objectKey)

@@ -66,6 +66,19 @@ public sealed class CompetitionsController : ControllerBase
         return Ok(result);
     }
 
+    [Authorize]
+    [HttpGet("me/history")]
+    public async Task<IActionResult> GetMyHistoryAsync(
+        [FromQuery] int months = 12,
+        CancellationToken cancellationToken = default)
+    {
+        var result = await _competitionService.GetMyHistoryAsync(
+            GetCurrentUserId(),
+            months,
+            cancellationToken);
+        return Ok(result);
+    }
+
     [AllowAnonymous]
     [HttpGet("{competitionId:guid}")]
     public async Task<IActionResult> GetCompetitionAsync(

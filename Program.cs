@@ -4,6 +4,8 @@ using Microsoft.Extensions.Hosting;
 using Serilog;
 using Serilog.Events;
 using Serilog.Formatting.Compact;
+using Microsoft.EntityFrameworkCore;
+using CraftoraApi.Data; // AppDbContext'i görmesi için eklendi
 
 namespace CraftoraApi;
 
@@ -70,12 +72,19 @@ class Program
             builder.Host.UseSerilog();
             builder.WebHost.UseSentry(options =>
             {
-                var dsn = builder.Configuration["Sentry:Dsn"]
-                    ?? Environment.GetEnvironmentVariable("SENTRY_DSN");
+                var configuredDsn = builder.Configuration["Sentry:Dsn"];
+                var dsn = string.IsNullOrWhiteSpace(configuredDsn)
+                    ? Environment.GetEnvironmentVariable("SENTRY_DSN")
+                    : configuredDsn;
 
-                if (!string.IsNullOrWhiteSpace(dsn))
+                if (Uri.TryCreate(dsn?.Trim(), UriKind.Absolute, out var dsnUri) &&
+                    (dsnUri.Scheme == Uri.UriSchemeHttp || dsnUri.Scheme == Uri.UriSchemeHttps))
                 {
-                    options.Dsn = dsn;
+                    options.Dsn = dsnUri.AbsoluteUri;
+                }
+                else if (!string.IsNullOrWhiteSpace(dsn))
+                {
+                    Log.Warning("Invalid Sentry DSN configured. Sentry disabled for this process.");
                 }
 
                 options.Environment = builder.Environment.EnvironmentName;
@@ -103,16 +112,52 @@ class Program
                 builder.Environment);
 
             Log.Information("✅ Servisler kayıt edildi");
-
             // ──────────────────────────────────────────────────────────────────────────────
-            // UYGULAMA PIPELINE'I
+            // UYGULAMA PIPELINE'I VE BAŞLATMA
             // ──────────────────────────────────────────────────────────────────────────────
             var app = builder.Build();
 
+            // Scope açarak Başlangıç Servislerini ve Veritabanı Migration'ını çalıştır
             await using (var scope = app.Services.CreateAsyncScope())
             {
-                var storageService = scope.ServiceProvider.GetRequiredService<IStorageService>();
-                await storageService.InitializeBucketsAsync();
+                // 1. VERİTABANI TABLOLARINI OLUŞTUR
+                try
+                {
+                    var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                    Log.Information("🔍 Veritabanı durumu kontrol ediliyor...");
+
+                    var pendingMigrations = await dbContext.Database.GetPendingMigrationsAsync();
+
+                    if (pendingMigrations.Any())
+                    {
+                        Log.Information("⏳ {Count} adet migration uygulanıyor...", pendingMigrations.Count());
+                        await dbContext.Database.MigrateAsync();
+                        Log.Information("✅ Veritabanı migration'ları başarıyla uygulandı.");
+                    }
+                    else
+                    {
+                        // Eğer projede hiç Migration dosyası yoksa tabloları direkt DbContext modellerinden oluştur
+                        Log.Information("🔨 Migration bulunamadı, tablolar modellerden direkt oluşturuluyor...");
+                        await dbContext.Database.EnsureCreatedAsync();
+                        Log.Information("✅ Veritabanı tabloları başarıyla oluşturuldu.");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Log.Error(ex, "❌ Veritabanı tabloları oluşturulurken HATA meydana geldi!");
+                }
+
+                // 2. STORAGE (MinIO) BUCKET'LARINI HAZIRLA
+                try
+                {
+                    var storageService = scope.ServiceProvider.GetRequiredService<IStorageService>();
+                    await storageService.InitializeBucketsAsync();
+                    Log.Information("✅ MinIO Bucket'ları hazırlandı.");
+                }
+                catch (Exception ex)
+                {
+                    Log.Warning(ex, "⚠️ MinIO başlatılırken uyarı alındı.");
+                }
             }
 
             // Tüm middleware'ları doğru sırada ekle
@@ -121,7 +166,7 @@ class Program
             Log.Information("✅ Middleware'lar yapılandırıldı");
 
             // ──────────────────────────────────────────────────────────────────────────────
-            // BAŞLATMA LOGLARı
+            // BAŞLATMA LOGLARI
             // ──────────────────────────────────────────────────────────────────────────────
             var environment = app.Environment.EnvironmentName;
             var url = app.Urls.FirstOrDefault() ?? "http://+:5000";
@@ -135,17 +180,9 @@ class Program
 
             Log.Information("════════════════════════════════════════════════════════════════════════════════════");
             Log.Information("✨ Craftora API başarıyla başlatıldı!");
-            Log.Information("════════════════════════════════════════════════════════════════════════════════════");
+            Log.Information("════════════════════════════════════════════════════════────────────────────");
 
             // Uygulamayı çalıştır
-            // Uygulamayı çalıştır
-            // Uygulamayı çalıştır
-            // Uygulamayı çalıştır
-            // Uygulamayı çalıştır
-            // Uygulamayı çalıştır
-            // ──────────────────────────────────────────────────────────────────────────────
-            // VERİTABANI İNŞASI VE BAŞLATMA
-            // ──────────────────────────────────────────────────────────────────────────────
             await app.RunAsync();
         }
         catch (HostAbortedException)

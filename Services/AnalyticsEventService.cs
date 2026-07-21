@@ -34,11 +34,12 @@ public sealed class AnalyticsEventService : IAnalyticsEventService
         ArgumentNullException.ThrowIfNull(dto);
 
         var eventType = ParseEventType(dto.EventType);
-        ValidatePayload(eventType, dto.ProductId, dto.OrderId, dto.ShopId);
+        ValidatePayload(eventType, dto.ProductId, dto.MediaId, dto.OrderId, dto.ShopId);
 
         var analyticsEvent = await CreateEventAsync(
             eventType,
             dto.ProductId,
+            dto.MediaId,
             dto.OrderId,
             dto.ShopId,
             userId,
@@ -54,32 +55,85 @@ public sealed class AnalyticsEventService : IAnalyticsEventService
             SerializeMetadata(dto.Metadata),
             cancellationToken);
 
+        if (analyticsEvent is null)
+        {
+            return new AnalyticsEventResponseDto(
+                Id: Guid.Empty,
+                ShopId: Guid.Empty,
+                ProductId: dto.ProductId,
+                MediaId: dto.MediaId,
+                UserId: userId,
+                OrderId: dto.OrderId,
+                EventType: ToWireName(eventType),
+                CreatedAt: null);
+        }
+
         return MapToResponse(analyticsEvent);
     }
 
     public Task TrackAddToCartAsync(Guid productId, Guid userId, CancellationToken cancellationToken = default)
     {
-        return TrackInternalAsync(AnalyticsEventType.AddToCart, productId, null, null, userId, cancellationToken);
+        return TrackInternalAsync(AnalyticsEventType.AddToCart, productId, null, null, null, userId, cancellationToken);
     }
 
     public Task TrackCheckoutStartedAsync(Guid productId, Guid userId, CancellationToken cancellationToken = default)
     {
-        return TrackInternalAsync(AnalyticsEventType.CheckoutStarted, productId, null, null, userId, cancellationToken);
+        return TrackInternalAsync(AnalyticsEventType.CheckoutStarted, productId, null, null, null, userId, cancellationToken);
     }
 
     public Task TrackPurchaseCompletedAsync(Guid orderId, Guid userId, CancellationToken cancellationToken = default)
     {
-        return TrackInternalAsync(AnalyticsEventType.PurchaseCompleted, null, orderId, null, userId, cancellationToken);
+        return TrackInternalAsync(AnalyticsEventType.PurchaseCompleted, null, null, orderId, null, userId, cancellationToken);
     }
 
     public Task TrackDownloadClickedAsync(Guid productId, Guid userId, CancellationToken cancellationToken = default)
     {
-        return TrackInternalAsync(AnalyticsEventType.DownloadClicked, productId, null, null, userId, cancellationToken);
+        return TrackInternalAsync(AnalyticsEventType.DownloadClicked, productId, null, null, null, userId, cancellationToken);
+    }
+
+    public async Task TrackMediaViewAsync(
+        Guid mediaId,
+        Guid? userId,
+        IPAddress? ipAddress,
+        string? userAgent,
+        string? referrer,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await CreateEventAsync(
+                AnalyticsEventType.MediaView,
+                productId: null,
+                mediaId,
+                orderId: null,
+                shopId: null,
+                userId,
+                sessionId: null,
+                source: "media_view",
+                referrer,
+                utmSource: null,
+                utmMedium: null,
+                utmCampaign: null,
+                deviceType: null,
+                ipAddress,
+                userAgent,
+                metadata: "{}",
+                cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Media view analytics event kaydedilemedi. MediaId: {MediaId}, UserId: {UserId}",
+                mediaId,
+                userId);
+        }
     }
 
     private async Task TrackInternalAsync(
         AnalyticsEventType eventType,
         Guid? productId,
+        Guid? mediaId,
         Guid? orderId,
         Guid? shopId,
         Guid? userId,
@@ -90,6 +144,7 @@ public sealed class AnalyticsEventService : IAnalyticsEventService
             await CreateEventAsync(
                 eventType,
                 productId,
+                mediaId,
                 orderId,
                 shopId,
                 userId,
@@ -117,9 +172,10 @@ public sealed class AnalyticsEventService : IAnalyticsEventService
         }
     }
 
-    private async Task<AnalyticsEvent> CreateEventAsync(
+    private async Task<AnalyticsEvent?> CreateEventAsync(
         AnalyticsEventType eventType,
         Guid? productId,
+        Guid? mediaId,
         Guid? orderId,
         Guid? shopId,
         Guid? userId,
@@ -135,13 +191,18 @@ public sealed class AnalyticsEventService : IAnalyticsEventService
         string? metadata,
         CancellationToken cancellationToken)
     {
-        var resolvedShopId = await ResolveShopIdAsync(productId, orderId, shopId, cancellationToken);
+        var resolvedShopId = await ResolveShopIdAsync(productId, mediaId, orderId, shopId, cancellationToken);
+        if (userId.HasValue && await IsShopOwnerAsync(resolvedShopId, userId.Value, cancellationToken))
+        {
+            return null;
+        }
 
         var analyticsEvent = new AnalyticsEvent
         {
             Id = Guid.NewGuid(),
             ShopId = resolvedShopId,
             ProductId = productId,
+            MediaId = mediaId,
             OrderId = orderId,
             UserId = userId,
             EventType = eventType,
@@ -166,6 +227,7 @@ public sealed class AnalyticsEventService : IAnalyticsEventService
 
     private async Task<Guid> ResolveShopIdAsync(
         Guid? productId,
+        Guid? mediaId,
         Guid? orderId,
         Guid? shopId,
         CancellationToken cancellationToken)
@@ -184,6 +246,22 @@ public sealed class AnalyticsEventService : IAnalyticsEventService
             }
 
             return productShopId.Value;
+        }
+
+        if (mediaId.HasValue)
+        {
+            var mediaShopId = await _dbContext.Media
+                .AsNoTracking()
+                .Where(media => media.Id == mediaId.Value)
+                .Select(media => (Guid?)media.ShopId)
+                .FirstOrDefaultAsync(cancellationToken);
+
+            if (!mediaShopId.HasValue)
+            {
+                throw new NotFoundException("Medya bulunamadi.");
+            }
+
+            return mediaShopId.Value;
         }
 
         if (orderId.HasValue)
@@ -219,9 +297,17 @@ public sealed class AnalyticsEventService : IAnalyticsEventService
         throw new BadRequestException("Analytics kaydi icin shopId, productId veya orderId gereklidir.");
     }
 
+    private async Task<bool> IsShopOwnerAsync(Guid shopId, Guid userId, CancellationToken cancellationToken)
+    {
+        return await _dbContext.Shops
+            .AsNoTracking()
+            .AnyAsync(shop => shop.Id == shopId && shop.UserId == userId, cancellationToken);
+    }
+
     private static void ValidatePayload(
         AnalyticsEventType eventType,
         Guid? productId,
+        Guid? mediaId,
         Guid? orderId,
         Guid? shopId)
     {
@@ -231,12 +317,17 @@ public sealed class AnalyticsEventService : IAnalyticsEventService
             throw new BadRequestException($"{ToWireName(eventType)} olayi icin productId zorunludur.");
         }
 
+        if (eventType == AnalyticsEventType.MediaView && !mediaId.HasValue)
+        {
+            throw new BadRequestException("media_view olayi icin mediaId zorunludur.");
+        }
+
         if (eventType == AnalyticsEventType.PurchaseCompleted && !orderId.HasValue)
         {
             throw new BadRequestException("purchase_completed olayi icin orderId zorunludur.");
         }
 
-        if (eventType == AnalyticsEventType.ShopVisit && !shopId.HasValue && !productId.HasValue && !orderId.HasValue)
+        if (eventType == AnalyticsEventType.ShopVisit && !shopId.HasValue && !productId.HasValue && !mediaId.HasValue && !orderId.HasValue)
         {
             throw new BadRequestException("shop_visit olayi icin shopId zorunludur.");
         }
@@ -248,6 +339,7 @@ public sealed class AnalyticsEventService : IAnalyticsEventService
         {
             "shop_visit" or "shopvisit" => AnalyticsEventType.ShopVisit,
             "product_view" or "productview" => AnalyticsEventType.ProductView,
+            "media_view" or "mediaview" => AnalyticsEventType.MediaView,
             "add_to_cart" or "addtocart" => AnalyticsEventType.AddToCart,
             "checkout_started" or "checkoutstarted" => AnalyticsEventType.CheckoutStarted,
             "purchase_completed" or "purchasecompleted" => AnalyticsEventType.PurchaseCompleted,
@@ -269,6 +361,7 @@ public sealed class AnalyticsEventService : IAnalyticsEventService
             Id: analyticsEvent.Id,
             ShopId: analyticsEvent.ShopId,
             ProductId: analyticsEvent.ProductId,
+            MediaId: analyticsEvent.MediaId,
             UserId: analyticsEvent.UserId,
             OrderId: analyticsEvent.OrderId,
             EventType: ToWireName(analyticsEvent.EventType),
@@ -281,6 +374,7 @@ public sealed class AnalyticsEventService : IAnalyticsEventService
         {
             AnalyticsEventType.ShopVisit => "shop_visit",
             AnalyticsEventType.ProductView => "product_view",
+            AnalyticsEventType.MediaView => "media_view",
             AnalyticsEventType.AddToCart => "add_to_cart",
             AnalyticsEventType.CheckoutStarted => "checkout_started",
             AnalyticsEventType.PurchaseCompleted => "purchase_completed",

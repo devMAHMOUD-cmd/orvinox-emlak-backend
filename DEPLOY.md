@@ -180,6 +180,119 @@ TODO:
 - MinIO bucket backup icin `mc mirror` scripti ekle.
 - Ayda bir restore testi yap ve sonucu kaydet.
 
+## Production VPS - Faz 0 Kurulum Sirasi
+
+Production icin local `docker-compose.yml` ve `.env` kullanilmaz. VPS'te sablonu
+kopyalayip gercek secret degerlerini doldurun:
+
+```bash
+cp .env.production.example .env.production
+chmod 600 .env.production
+```
+
+Schema ve gerekli seed verisini admin PostgreSQL roluyle yukleyin:
+
+```bash
+docker compose --env-file .env.production -f docker-compose.prod.yml up -d postgres
+docker exec -i postgres_server psql -U admin -d CraftoraMobile < database/production-seed.sql
+docker exec -i postgres_server psql -U admin -d CraftoraMobile < database/patches/2026_07_05_live_db_security_sync.sql
+docker exec -i postgres_server psql -U admin -d CraftoraMobile < database/patches/2026_07_10_create_runtime_role.sql
+```
+
+`production-seed.sql` patch dosyalarini icermeyen temiz schema+seed dosyasidir.
+Iki patch ayri ayri ve sirayla calistirilmalidir:
+
+1. `2026_07_05_live_db_security_sync.sql`: live RLS, policy, trigger,
+   function, constraint ve index hardening'i kurar.
+2. `2026_07_10_create_runtime_role.sql`: `craftora_app` runtime rolunu olusturur.
+
+Runtime role patch'i atlanirsa su anki admin baglantili backend acilabilir; ancak
+RLS icin planlanan `craftora_app` runtime gecisi yapilamaz ve rol/grant adimi
+eksik kalir. Bu patch backend startup tarafindan otomatik calistirilmaz.
+
+### Ilk Admin Hesabi
+
+Production seed'e admin kullanicisi eklenmez. Seed'e sifre veya password hash
+koymak, ilk admin credential'ini dosyaya gommek ve unutulursa kalici risk
+olusturmak olur. Guvenli bootstrap akisi:
+
+1. Normal kayit endpoint'iyle tek seferlik admin e-posta adresi kaydedilir:
+
+```http
+POST /api/auth/register
+{
+  "email": "admin@craftora.com",
+  "fullName": "Craftora Admin",
+  "password": "CHANGE_ME_ONLY_ONCE"
+}
+```
+
+2. E-posta OTP dogrulamasi tamamlanir.
+3. Admin PostgreSQL baglantisiyla rol tek seferlik atanir:
+
+```bash
+docker exec -it postgres_server psql -U admin -d CraftoraMobile
+```
+
+```sql
+UPDATE users
+SET role = 'admin'::public.user_role,
+    is_active = true,
+    deleted_at = NULL,
+    locked_until = NULL
+WHERE lower(email) = lower('admin@craftora.com');
+```
+
+Bu yontem seed'e plaintext sifre koymaz ve admin atamasi operator tarafindan
+izlenebilir bir bootstrap islemi olarak kalir. Admin token alindiktan sonra
+reindex endpointleri cagrilabilir:
+
+```text
+POST /api/admin/reindex-products
+POST /api/admin/reindex-shops
+POST /api/admin/reindex-media
+```
+
+Tum servisleri baslatin. `minio_init` healthcheck sonrasinda bucket'lari
+idempotent olarak olusturur; API bu init tamamlanmadan baslamaz:
+
+```bash
+docker compose --env-file .env.production -f docker-compose.prod.yml up -d --build
+docker compose --env-file .env.production -f docker-compose.prod.yml ps
+```
+
+Ilk indexleri admin token ile olusturun:
+
+```text
+POST /api/admin/reindex-products
+POST /api/admin/reindex-shops
+POST /api/admin/reindex-media
+```
+
+Gunluk SQL backup kurulumu:
+
+```bash
+chmod +x scripts/backup-db.sh
+mkdir -p /backups
+crontab -e
+```
+
+```cron
+0 3 * * * cd /opt/craftora/CoreBackendApi && /opt/craftora/CoreBackendApi/scripts/backup-db.sh >> /backups/backup-db-cron.log 2>&1
+```
+
+Script, `/opt/craftora/.env.production` dosyasini okuyabilir; bu dosya chmod
+`600` olmali ve Git'e commit edilmemelidir.
+
+### Production Faz 0 Sinirlari
+
+- PostgreSQL, Redis, RabbitMQ, Elasticsearch ve MinIO host portlari yayinlanmaz.
+- HTTPS ve MinIO public storage reverse proxy'si henuz bu faza dahil degildir.
+  `MINIO_PUBLIC_ENDPOINT` ve `STORAGE_PUBLIC_SERVICE_URL` TLS/domain kurulumu
+  tamamlanmadan kullanima alinmamalidir.
+- Elasticsearch auth mevcut API client credentials yapilandirmasiyla birlikte
+  ayri bir adimda acilmalidir.
+
 
 
 

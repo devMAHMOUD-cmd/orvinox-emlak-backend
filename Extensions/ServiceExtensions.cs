@@ -25,6 +25,7 @@ using StackExchange.Redis;
 using CraftoraApi.Configuration;
 using CraftoraApi.Data; // ← yeni namespace
 using CraftoraApi.HostedServices;
+using CraftoraApi.Hubs;
 using CraftoraApi.Infrastructure.Messaging;
 using CraftoraApi.Infrastructure.Services;
 using CraftoraApi.Models.Enums;
@@ -126,6 +127,8 @@ public static class ServiceExtensions
         // FluentValidation - yeni syntax'ı kullan
         services.AddFluentValidationAutoValidation()
             .AddFluentValidationClientsideAdapters();
+
+        services.AddSignalR();
 
         #endregion
 
@@ -282,6 +285,8 @@ public static class ServiceExtensions
         services.AddScoped<ISellerCourseService, SellerCourseService>();
         services.AddScoped<ISellerCustomerService, SellerCustomerService>();
         services.AddScoped<ISellerOrderService, SellerOrderService>();
+        services.AddScoped<ISellerNotificationPreferenceService, SellerNotificationPreferenceService>();
+        services.AddScoped<IWeeklySellerReportService, WeeklySellerReportService>();
         services.AddScoped<IMediaService, MediaService>();
         services.AddScoped<INotificationService, NotificationService>();
         services.AddScoped<ICacheService, CacheService>();
@@ -295,6 +300,7 @@ public static class ServiceExtensions
         services.AddHostedService<ElasticsearchSyncWorker>();
         services.AddHostedService<MediaViewCountSyncWorker>();
         services.AddHostedService<SubscriptionMonitorWorker>();
+        services.AddHostedService<WeeklySellerReportWorker>();
 
         #endregion
 
@@ -359,19 +365,95 @@ public static class ServiceExtensions
                     }
                     return Task.CompletedTask;
                 },
+                OnChallenge = async context =>
+                {
+                    context.HandleResponse();
+                    context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+                    context.Response.ContentType = "application/json; charset=utf-8";
+                    await context.Response.WriteAsJsonAsync(new
+                    {
+                        error = new
+                        {
+                            code = "UNAUTHORIZED",
+                            message = "Kimlik dogrulamasi gerekli.",
+                            statusCode = StatusCodes.Status401Unauthorized,
+                            requestId = context.HttpContext.TraceIdentifier
+                        }
+                    });
+                },
+                OnForbidden = async context =>
+                {
+                    context.Response.StatusCode = StatusCodes.Status403Forbidden;
+                    context.Response.ContentType = "application/json; charset=utf-8";
+                    await context.Response.WriteAsJsonAsync(new
+                    {
+                        error = new
+                        {
+                            code = "FORBIDDEN",
+                            message = "Bu isleme yetkiniz yok.",
+                            statusCode = StatusCodes.Status403Forbidden,
+                            requestId = context.HttpContext.TraceIdentifier
+                        }
+                    });
+                },
                 OnTokenValidated = async context =>
                 {
-                    if (context.SecurityToken is not JwtSecurityToken token)
-                    {
-                        return;
-                    }
-
                     var cache = context.HttpContext.RequestServices.GetRequiredService<IDistributedCache>();
-                    var blacklistValue = await cache.GetStringAsync($"blacklist:{token.RawData}");
+                    var rawToken = context.SecurityToken is JwtSecurityToken token
+                        ? token.RawData
+                        : context.Request.Query.TryGetValue("access_token", out var queryToken)
+                            ? queryToken.ToString()
+                            : context.Request.Headers.Authorization.ToString().StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)
+                                ? context.Request.Headers.Authorization.ToString()["Bearer ".Length..].Trim()
+                                : string.Empty;
+
+                    var blacklistValue = string.IsNullOrWhiteSpace(rawToken)
+                        ? null
+                        : await cache.GetStringAsync($"blacklist:{rawToken}");
 
                     if (!string.IsNullOrWhiteSpace(blacklistValue))
                     {
-                        context.Fail("Bu token çıkış yapıldığı için geçersiz kılınmıştır.");
+                        context.Fail("Bu token cikis yapildigi icin gecersiz kilinmistir.");
+                        return;
+                    }
+
+                    var userIdValue = context.Principal?.FindFirst("sub")?.Value
+                        ?? context.Principal?.FindFirst(ClaimTypes.NameIdentifier)?.Value
+                        ?? context.Principal?.FindFirst("nameid")?.Value
+                        ?? context.Principal?.FindFirst("http://schemas.xmlsoap.org/ws/2005/05/identity/claims/nameidentifier")?.Value;
+                    if (!Guid.TryParse(userIdValue, out var userId))
+                    {
+                        context.Fail("Gecersiz kullanici token'i.");
+                        return;
+                    }
+
+                    var dbContext = context.HttpContext.RequestServices.GetRequiredService<AppDbContext>();
+                    var user = await dbContext.Users
+                        .AsNoTracking()
+                        .Where(item => item.Id == userId)
+                        .Select(item => new
+                        {
+                            item.IsActive,
+                            item.LockedUntil,
+                            item.DeletedAt
+                        })
+                        .FirstOrDefaultAsync();
+
+                    if (user is null || user.DeletedAt is not null)
+                    {
+                        context.Fail("Hesap kullanima kapatildi.");
+                        return;
+                    }
+
+                    if (user.IsActive != true)
+                    {
+                        context.Fail("Hesap askiya alindi.");
+                        return;
+                    }
+
+                    if (user.LockedUntil.HasValue && user.LockedUntil.Value > DateTime.UtcNow)
+                    {
+                        context.Fail($"Hesabiniz {user.LockedUntil.Value:O} tarihine kadar kilitli.");
                     }
                 }
             };
@@ -646,6 +728,18 @@ public static class ServiceExtensions
                     }));
 
             // Rate limit aşıldığında 429 Too Many Requests dön
+            options.AddPolicy("seller-email-test", context =>
+                RateLimitPartition.GetFixedWindowLimiter(
+                    GetRateLimitPartitionKey(context),
+                    _ => new FixedWindowRateLimiterOptions
+                    {
+                        PermitLimit = 3,
+                        Window = TimeSpan.FromHours(1),
+                        QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
+                        QueueLimit = 0,
+                        AutoReplenishment = true
+                    }));
+
             options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
             options.OnRejected = async (context, _) =>
             {

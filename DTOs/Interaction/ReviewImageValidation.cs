@@ -25,14 +25,24 @@ internal static class ReviewImageValidation
         foreach (var image in images)
         {
             if (string.IsNullOrWhiteSpace(image) || image.Length > MaxUrlLength ||
-                !Uri.TryCreate(image, UriKind.Absolute, out var uri) ||
-                (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+                !IsValidImageReference(image))
             {
                 yield return new ValidationResult(
-                    "Yorum gorselleri en fazla 2048 karakterlik gecerli bir HTTP/HTTPS URL olmalidir.",
+                    "Yorum gorselleri public-assets yukleme anahtari veya gecerli bir HTTP/HTTPS URL olmalidir.",
                     new[] { "Images" });
                 yield break;
             }
         }
+    }
+
+    private static bool IsValidImageReference(string image)
+    {
+        if (Uri.TryCreate(image, UriKind.Absolute, out var uri))
+        {
+            return uri.Scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) ||
+                uri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase);
+        }
+
+        return image.TrimStart('/').StartsWith("uploads/", StringComparison.OrdinalIgnoreCase);
     }
 }

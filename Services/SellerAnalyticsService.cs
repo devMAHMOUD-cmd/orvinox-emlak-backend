@@ -31,14 +31,22 @@ public sealed class SellerAnalyticsService : ISellerAnalyticsService
         var events = AnalyticsEventsForShop(shop.Id, range);
         var orders = CompletedOrdersForShop(shop.Id, range);
 
+        var shopVisits = await events.CountAsync(
+            item => item.EventType == AnalyticsEventType.ShopVisit,
+            cancellationToken);
         var productViews = await events.CountAsync(
-            item => item.EventType == AnalyticsEventType.ProductView,
+            item => item.EventType == AnalyticsEventType.ProductView &&
+                (item.Product == null || item.Product.Type != ProductType.Course),
             cancellationToken);
         var courseViews = await events.CountAsync(
             item => item.EventType == AnalyticsEventType.ProductView &&
                 item.Product != null &&
                 item.Product.Type == ProductType.Course,
             cancellationToken);
+        var mediaViews = await events.CountAsync(
+            item => item.EventType == AnalyticsEventType.MediaView,
+            cancellationToken);
+        var totalDiscoveryViews = shopVisits + productViews + courseViews + mediaViews;
         var addToCartCount = await events.CountAsync(
             item => item.EventType == AnalyticsEventType.AddToCart,
             cancellationToken);
@@ -65,6 +73,9 @@ public sealed class SellerAnalyticsService : ISellerAnalyticsService
             EndDate: range.End,
             TotalProductViews: productViews,
             TotalCourseViews: courseViews,
+            TotalShopVisits: shopVisits,
+            TotalMediaViews: mediaViews,
+            TotalDiscoveryViews: totalDiscoveryViews,
             AddToCartCount: addToCartCount,
             CheckoutStartedCount: checkoutStartedCount,
             PurchaseCompletedCount: purchaseCompletedCount,
@@ -119,7 +130,10 @@ public sealed class SellerAnalyticsService : ISellerAnalyticsService
         var range = NormalizeRange(startDate, endDate);
 
         var groupedSources = await AnalyticsEventsForShop(shop.Id, range)
-            .Where(item => item.EventType == AnalyticsEventType.ProductView || item.EventType == AnalyticsEventType.ShopVisit)
+            .Where(item =>
+                item.EventType == AnalyticsEventType.ProductView ||
+                item.EventType == AnalyticsEventType.ShopVisit ||
+                item.EventType == AnalyticsEventType.MediaView)
             .GroupBy(item => string.IsNullOrWhiteSpace(item.Source) ? "direct" : item.Source!)
             .Select(group => new
             {
@@ -201,6 +215,98 @@ public sealed class SellerAnalyticsService : ISellerAnalyticsService
             .ThenByDescending(item => item.Views)
             .Take(safeLimit)
             .ToList();
+    }
+
+    public async Task<SellerAnalyticsTimeseriesDto> GetTimeseriesAsync(
+        Guid userId,
+        DateTime? startDate,
+        DateTime? endDate,
+        string? granularity,
+        CancellationToken cancellationToken = default)
+    {
+        var normalizedGranularity = string.IsNullOrWhiteSpace(granularity)
+            ? "day"
+            : granularity.Trim().ToLowerInvariant();
+        if (normalizedGranularity != "day")
+        {
+            throw new BadRequestException("Sadece day granularity destekleniyor.");
+        }
+
+        var shop = await GetSellerShopAsync(userId, cancellationToken);
+        var range = NormalizeTimeseriesRange(startDate, endDate);
+
+        var eventRows = await AnalyticsEventsForShop(shop.Id, range)
+            .Where(item =>
+                item.EventType == AnalyticsEventType.ProductView ||
+                item.EventType == AnalyticsEventType.ShopVisit ||
+                item.EventType == AnalyticsEventType.MediaView ||
+                item.EventType == AnalyticsEventType.AddToCart ||
+                item.EventType == AnalyticsEventType.CheckoutStarted ||
+                item.EventType == AnalyticsEventType.PurchaseCompleted)
+            .Select(item => new
+                TimeseriesEventRow(
+                item.CreatedAt!.Value,
+                item.EventType,
+                item.Product == null
+                    ? (ProductType?)null
+                    : item.Product.Type,
+                item.UserId,
+                item.SessionId,
+                item.IpAddress == null ? null : item.IpAddress.ToString()))
+            .ToListAsync(cancellationToken);
+
+        var orderRows = await CompletedOrdersForShop(shop.Id, range)
+            .Select(order => new
+            {
+                CreatedAt = order.CreatedAt!.Value,
+                order.Amount
+            })
+            .ToListAsync(cancellationToken);
+
+        var eventsByDate = eventRows
+            .GroupBy(item => DateOnly.FromDateTime(item.CreatedAt.Date))
+            .ToDictionary(group => group.Key, group => group.ToList());
+        var revenueByDate = orderRows
+            .GroupBy(item => DateOnly.FromDateTime(item.CreatedAt.Date))
+            .ToDictionary(group => group.Key, group => group.Sum(item => item.Amount));
+
+        var points = new List<SellerAnalyticsTimeseriesPointDto>();
+        for (var date = DateOnly.FromDateTime(range.Start.Date);
+             date <= DateOnly.FromDateTime(range.End.Date);
+             date = date.AddDays(1))
+        {
+            eventsByDate.TryGetValue(date, out var dayEvents);
+            dayEvents ??= [];
+            revenueByDate.TryGetValue(date, out var revenue);
+
+            var courseViews = dayEvents.Count(item =>
+                item.EventType == AnalyticsEventType.ProductView &&
+                item.ProductType == ProductType.Course);
+            var productViews = dayEvents.Count(item =>
+                item.EventType == AnalyticsEventType.ProductView &&
+                item.ProductType != ProductType.Course);
+            var shopVisits = dayEvents.Count(item => item.EventType == AnalyticsEventType.ShopVisit);
+            var mediaViews = dayEvents.Count(item => item.EventType == AnalyticsEventType.MediaView);
+
+            points.Add(new SellerAnalyticsTimeseriesPointDto(
+                Date: date.ToString("yyyy-MM-dd"),
+                ShopVisits: shopVisits,
+                ProductViews: productViews,
+                CourseViews: courseViews,
+                MediaViews: mediaViews,
+                TotalViews: shopVisits + productViews + courseViews + mediaViews,
+                AddToCartCount: dayEvents.Count(item => item.EventType == AnalyticsEventType.AddToCart),
+                CheckoutStartedCount: dayEvents.Count(item => item.EventType == AnalyticsEventType.CheckoutStarted),
+                PurchaseCompletedCount: dayEvents.Count(item => item.EventType == AnalyticsEventType.PurchaseCompleted),
+                Revenue: revenue,
+                UniqueVisitors: CountUniqueVisitors(dayEvents)));
+        }
+
+        return new SellerAnalyticsTimeseriesDto(
+            StartDate: range.Start,
+            EndDate: range.End,
+            Granularity: normalizedGranularity,
+            Points: points);
     }
 
     public async Task<IReadOnlyList<CourseAnalyticsDto>> GetCoursesAsync(
@@ -518,12 +624,52 @@ public sealed class SellerAnalyticsService : ISellerAnalyticsService
         var end = (endDate ?? DateTime.UtcNow).ToUniversalTime();
         var start = (startDate ?? end.Subtract(DefaultRange)).ToUniversalTime();
 
+        if (endDate.HasValue && end.TimeOfDay == TimeSpan.Zero)
+        {
+            end = end.Date.AddDays(1).AddTicks(-1);
+        }
+
         if (start > end)
         {
             throw new BadRequestException("Baslangic tarihi bitis tarihinden buyuk olamaz.");
         }
 
         return new DateRange(start, end);
+    }
+
+    private static DateRange NormalizeTimeseriesRange(DateTime? startDate, DateTime? endDate)
+    {
+        var normalized = NormalizeRange(startDate, endDate);
+        var start = normalized.Start.Date;
+        var end = normalized.End.Date.AddDays(1).AddTicks(-1);
+
+        return new DateRange(start, end);
+    }
+
+    private static int CountUniqueVisitors(IReadOnlyCollection<TimeseriesEventRow> events)
+    {
+        var userCount = events
+            .Where(item => item.UserId.HasValue)
+            .Select(item => item.UserId!.Value)
+            .Distinct()
+            .Count();
+
+        var sessionCount = events
+            .Where(item => !item.UserId.HasValue && !string.IsNullOrWhiteSpace(item.SessionId))
+            .Select(item => item.SessionId!)
+            .Distinct(StringComparer.Ordinal)
+            .Count();
+
+        var ipCount = events
+            .Where(item =>
+                !item.UserId.HasValue &&
+                string.IsNullOrWhiteSpace(item.SessionId) &&
+                !string.IsNullOrWhiteSpace(item.IpAddress))
+            .Select(item => item.IpAddress!)
+            .Distinct(StringComparer.Ordinal)
+            .Count();
+
+        return userCount + sessionCount + ipCount;
     }
 
     private static double CalculateRate(int numerator, int denominator)
@@ -550,6 +696,14 @@ public sealed class SellerAnalyticsService : ISellerAnalyticsService
     }
 
     private sealed record DateRange(DateTime Start, DateTime End);
+
+    private sealed record TimeseriesEventRow(
+        DateTime CreatedAt,
+        AnalyticsEventType EventType,
+        ProductType? ProductType,
+        Guid? UserId,
+        string? SessionId,
+        string? IpAddress);
 
     private sealed record CourseBasic(
         Guid CourseId,

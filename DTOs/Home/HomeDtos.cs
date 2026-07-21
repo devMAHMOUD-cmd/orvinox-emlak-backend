@@ -26,7 +26,8 @@ public sealed record HomeTrendingShopDto(
     int FollowerCount,
     decimal? Rating,
     int VisitCount,
-    bool IsVerified);
+    bool IsVerified,
+    bool IsFollowedByCurrentUser = false);
 
 public sealed record HomeFeaturedCourseDto(
     Guid CourseId,

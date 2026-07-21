@@ -10,7 +10,7 @@ public interface ISupportTicketService
 
     Task<TicketDetailDto> GetMyTicketDetailAsync(Guid userId, Guid ticketId);
 
-    Task<TicketMessageDto> AddMessageAsync(Guid userId, Guid ticketId, AddMessageDto dto);
+    Task<SupportMessageResponseDto> AddMessageAsync(Guid userId, Guid ticketId, AddMessageDto dto);
 
     Task<AdminTicketListResponseDto> GetAllTicketsAsync(string? status, string? query, int page, int pageSize);
 

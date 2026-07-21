@@ -21,6 +21,11 @@ public interface ICompetitionService
         int months,
         CancellationToken cancellationToken = default);
 
+    Task<MyCompetitionHistoryDto> GetMyHistoryAsync(
+        Guid currentUserId,
+        int months,
+        CancellationToken cancellationToken = default);
+
     Task<ActiveCompetitionDto> GetCompetitionAsync(
         Guid competitionId,
         Guid? currentUserId,

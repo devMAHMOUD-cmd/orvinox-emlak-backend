@@ -11,10 +11,14 @@ namespace CraftoraApi.Services;
 public sealed class ProductQaService : IProductQaService
 {
     private readonly AppDbContext _dbContext;
+    private readonly INotificationService _notificationService;
 
-    public ProductQaService(AppDbContext dbContext)
+    public ProductQaService(
+        AppDbContext dbContext,
+        INotificationService notificationService)
     {
         _dbContext = dbContext ?? throw new ArgumentNullException(nameof(dbContext));
+        _notificationService = notificationService ?? throw new ArgumentNullException(nameof(notificationService));
     }
 
     public async Task<QaResponseDto> AskQuestionAsync(Guid userId, CreateQuestionDto dto)
@@ -75,6 +79,18 @@ public sealed class ProductQaService : IProductQaService
 
         _dbContext.ProductQas.Add(answer);
         await _dbContext.SaveChangesAsync();
+
+        if (question.UserId != sellerUserId)
+        {
+            await _notificationService.SendProductQuestionAnswerNotificationAsync(
+                question.UserId,
+                question.ProductId,
+                question.Id,
+                question.Product.ShopId,
+                question.Product.Shop.ShopName,
+                question.Product.Shop.LogoUrl,
+                answer.Message);
+        }
 
         return await GetQaResponseAsync(answer.Id);
     }

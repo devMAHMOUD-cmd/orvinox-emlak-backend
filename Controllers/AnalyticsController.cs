@@ -17,7 +17,9 @@ public sealed class AnalyticsController : ControllerBase
         "shop_visit",
         "shopvisit",
         "product_view",
-        "productview"
+        "productview",
+        "media_view",
+        "mediaview"
     };
 
     private readonly IAnalyticsEventService _analyticsEventService;

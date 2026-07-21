@@ -82,6 +82,23 @@ public sealed class SellerAnalyticsController : ControllerBase
         return Ok(result);
     }
 
+    [HttpGet("timeseries")]
+    public async Task<IActionResult> GetTimeseriesAsync(
+        [FromQuery] DateTime? startDate,
+        [FromQuery] DateTime? endDate,
+        [FromQuery] string? granularity = "day",
+        CancellationToken cancellationToken = default)
+    {
+        var result = await _sellerAnalyticsService.GetTimeseriesAsync(
+            GetCurrentUserId(),
+            startDate,
+            endDate,
+            granularity,
+            cancellationToken);
+
+        return Ok(result);
+    }
+
     [HttpGet("courses")]
     public async Task<IActionResult> GetCoursesAsync(
         [FromQuery] DateTime? startDate,

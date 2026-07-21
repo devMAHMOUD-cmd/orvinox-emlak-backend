@@ -5,6 +5,7 @@ using CraftoraApi.Infrastructure.Messaging;
 using CraftoraApi.Infrastructure.Messaging.Contracts;
 using CraftoraApi.Infrastructure.Security;
 using CraftoraApi.Middleware;
+using CraftoraApi.Models.Elasticsearch;
 using CraftoraApi.Models.Entities;
 using CraftoraApi.Models.Enums;
 using CraftoraApi.Redis;
@@ -20,6 +21,7 @@ public sealed class MediaService : IMediaService
     private const string PrivateProductsBucketName = "private-products";
     private const string TrackedViewsSetKey = "media:tracked-views";
     private const string FeedCacheVersionKey = "media:feed:contract:v2:version";
+    private const string LikedMediaCacheVersionKey = "media:liked:contract:v1:version";
     private const int PublicUrlExpiryMinutes = 60;
     private static readonly TimeSpan FeedCacheTtl = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan ViewCountCacheTtl = TimeSpan.FromHours(24);
@@ -29,19 +31,22 @@ public sealed class MediaService : IMediaService
     private readonly ICacheService _cacheService;
     private readonly IStorageService _storageService;
     private readonly INotificationService _notificationService;
+    private readonly IAnalyticsEventService _analyticsEventService;
 
     public MediaService(
         AppDbContext dbContext,
         IRabbitMqPublisher rabbitMqPublisher,
         ICacheService cacheService,
         IStorageService storageService,
-        INotificationService notificationService)
+        INotificationService notificationService,
+        IAnalyticsEventService analyticsEventService)
     {
         _dbContext = dbContext ?? throw new ArgumentNullException(nameof(dbContext));
         _rabbitMqPublisher = rabbitMqPublisher ?? throw new ArgumentNullException(nameof(rabbitMqPublisher));
         _cacheService = cacheService ?? throw new ArgumentNullException(nameof(cacheService));
         _storageService = storageService ?? throw new ArgumentNullException(nameof(storageService));
         _notificationService = notificationService ?? throw new ArgumentNullException(nameof(notificationService));
+        _analyticsEventService = analyticsEventService ?? throw new ArgumentNullException(nameof(analyticsEventService));
     }
 
     public async Task<List<MediaResponseDto>> GetFeedAsync(Guid? currentUserId, int page = 1, int pageSize = 10)
@@ -78,6 +83,170 @@ public sealed class MediaService : IMediaService
         await _cacheService.SetAsync(cacheKey, anonymousFeed, FeedCacheTtl);
 
         return await ApplyUserMediaStateAsync(anonymousFeed, currentUserId);
+    }
+
+    public async Task<MediaResponseDto> GetMediaByIdAsync(Guid mediaId, Guid? currentUserId)
+    {
+        var media = await _dbContext.Media
+            .AsNoTracking()
+            .Include(item => item.Shop)
+            .Include(item => item.Product)
+            .FirstOrDefaultAsync(item =>
+                item.Id == mediaId &&
+                item.IsActive == true &&
+                item.Shop.IsActive == true);
+
+        if (media is null)
+        {
+            throw new NotFoundException("Medya bulunamadi.");
+        }
+
+        var response = MapToResponse(media);
+        return (await ApplyUserMediaStateAsync([response], currentUserId))[0];
+    }
+
+    public async Task<MediaLikeListResponseDto> GetMediaLikesAsync(
+        Guid mediaId,
+        int page = 1,
+        int pageSize = 30)
+    {
+        _ = await GetActiveMediaAsync(mediaId);
+
+        var normalizedPage = Math.Max(page, 1);
+        var normalizedPageSize = Math.Clamp(pageSize, 1, 50);
+        var likesQuery = _dbContext.MediaLikes
+            .AsNoTracking()
+            .Where(like =>
+                like.MediaId == mediaId &&
+                like.User.IsActive == true &&
+                like.User.DeletedAt == null)
+            .OrderByDescending(like => like.CreatedAt);
+
+        var totalCount = await likesQuery.CountAsync();
+        var likes = await likesQuery
+            .Include(like => like.User)
+                .ThenInclude(user => user.Shop)
+            .Skip((normalizedPage - 1) * normalizedPageSize)
+            .Take(normalizedPageSize)
+            .ToListAsync();
+
+        var items = likes
+            .Select(like =>
+            {
+                var user = like.User;
+                var shop = user.Shop;
+
+                return new MediaLikeUserDto(
+                    UserId: user.Id,
+                    FullName: user.FullName,
+                    AvatarPublicUrl: GenerateStoragePublicUrl(user.AvatarUrl, PublicAssetsBucketName),
+                    ShopId: shop?.Id,
+                    ShopName: shop?.ShopName,
+                    ShopSlug: shop?.Slug,
+                    ShopLogoPublicUrl: GenerateStoragePublicUrl(shop?.LogoUrl, PublicAssetsBucketName),
+                    IsShopVerified: shop?.IsVerified == true,
+                    LikedAt: like.CreatedAt);
+            })
+            .ToList();
+        var totalPages = totalCount == 0
+            ? 0
+            : (int)Math.Ceiling(totalCount / (double)normalizedPageSize);
+
+        return new MediaLikeListResponseDto(
+            Items: items,
+            Page: normalizedPage,
+            PageSize: normalizedPageSize,
+            TotalCount: totalCount,
+            TotalPages: totalPages);
+    }
+
+    public async Task<List<MediaResponseDto>> GetSavedMediaAsync(Guid userId, int page = 1, int pageSize = 12)
+    {
+        var normalizedPage = Math.Max(page, 1);
+        var normalizedPageSize = Math.Clamp(pageSize, 1, 50);
+
+        var mediaIds = await _dbContext.MediaSaves
+            .AsNoTracking()
+            .Where(save => save.UserId == userId)
+            .OrderByDescending(save => save.CreatedAt)
+            .Select(save => save.MediaId)
+            .Skip((normalizedPage - 1) * normalizedPageSize)
+            .Take(normalizedPageSize)
+            .ToListAsync();
+
+        if (mediaIds.Count == 0)
+        {
+            return new List<MediaResponseDto>();
+        }
+
+        var media = await _dbContext.Media
+            .AsNoTracking()
+            .Include(item => item.Shop)
+            .Include(item => item.Product)
+            .Where(item =>
+                mediaIds.Contains(item.Id) &&
+                item.IsActive == true &&
+                item.Shop.IsActive == true)
+            .ToListAsync();
+
+        var mediaById = media.ToDictionary(item => item.Id);
+        var response = mediaIds
+            .Where(mediaById.ContainsKey)
+            .Select(mediaId => MapToResponse(mediaById[mediaId]))
+            .ToList();
+        return await ApplyUserMediaStateAsync(response, userId);
+    }
+
+    public async Task<List<MediaResponseDto>> GetLikedMediaAsync(Guid userId, int page = 1, int pageSize = 12)
+    {
+        var normalizedPage = Math.Max(page, 1);
+        var normalizedPageSize = Math.Clamp(pageSize, 1, 50);
+        var cacheKey = await GetLikedMediaCacheKeyAsync(userId, normalizedPage, normalizedPageSize);
+
+        var cachedMedia = await _cacheService.GetAsync<List<MediaResponseDto>>(cacheKey);
+        if (cachedMedia is not null)
+        {
+            var activeShopMedia = await FilterToActiveShopMediaAsync(cachedMedia);
+            if (activeShopMedia.Count != cachedMedia.Count)
+            {
+                await _cacheService.RemoveAsync(cacheKey);
+            }
+
+            return await ApplyUserMediaStateAsync(activeShopMedia, userId);
+        }
+
+        var mediaIds = await _dbContext.MediaLikes
+            .AsNoTracking()
+            .Where(like => like.UserId == userId)
+            .OrderByDescending(like => like.CreatedAt)
+            .Select(like => like.MediaId)
+            .Skip((normalizedPage - 1) * normalizedPageSize)
+            .Take(normalizedPageSize)
+            .ToListAsync();
+
+        if (mediaIds.Count == 0)
+        {
+            return new List<MediaResponseDto>();
+        }
+
+        var media = await _dbContext.Media
+            .AsNoTracking()
+            .Include(item => item.Shop)
+            .Include(item => item.Product)
+            .Where(item =>
+                mediaIds.Contains(item.Id) &&
+                item.IsActive == true &&
+                item.Shop.IsActive == true)
+            .ToListAsync();
+
+        var mediaById = media.ToDictionary(item => item.Id);
+        var response = mediaIds
+            .Where(mediaById.ContainsKey)
+            .Select(mediaId => MapToResponse(mediaById[mediaId]))
+            .ToList();
+
+        await _cacheService.SetAsync(cacheKey, response, FeedCacheTtl);
+        return await ApplyUserMediaStateAsync(response, userId);
     }
 
     public async Task<List<MediaResponseDto>> GetShopMediaAsync(Guid shopId, int page = 1, int pageSize = 10)
@@ -183,6 +352,7 @@ public sealed class MediaService : IMediaService
         _dbContext.Media.Add(media);
         await _dbContext.SaveChangesAsync();
         await InvalidateFeedCacheAsync();
+        await PublishMediaIndexMessageAsync(media.Id);
 
         await _rabbitMqPublisher.PublishProcessVideoCommand(new ProcessVideoCommand(
             VideoId: media.Id,
@@ -203,7 +373,7 @@ public sealed class MediaService : IMediaService
         return MapToResponse(media);
     }
 
-    public async Task ToggleLikeAsync(Guid mediaId, Guid userId)
+    public async Task<MediaLikeResponseDto> ToggleLikeAsync(Guid mediaId, Guid userId)
     {
         var media = await GetActiveMediaAsync(mediaId);
         var like = await _dbContext.MediaLikes.FirstOrDefaultAsync(item =>
@@ -227,26 +397,40 @@ public sealed class MediaService : IMediaService
 
         media.UpdatedAt = DateTime.UtcNow;
         await _dbContext.SaveChangesAsync();
+        await InvalidateFeedCacheAsync();
 
         if (isNewLike && media.Shop.UserId != userId)
         {
-            await _notificationService.SendNotificationAsync(
+            var actor = await GetNotificationActorAsync(userId);
+
+            await _notificationService.SendActorNotificationAsync(
                 media.Shop.UserId,
                 "Videonuz yeni bir beğeni aldı!",
                 "Paylaştığınız video yeni bir beğeni aldı.",
                 NotificationType.NewLike,
-                media.Id);
+                media.Id,
+                actor.UserId,
+                actor.FullName,
+                actor.AvatarObjectKey,
+                actor.ShopId,
+                actor.ShopName,
+                actor.ShopLogoObjectKey);
         }
+
+        return new MediaLikeResponseDto(
+            IsLiked: isNewLike,
+            LikeCount: await GetMediaLikeCountAsync(mediaId));
     }
 
-    public async Task ToggleSaveAsync(Guid mediaId, Guid userId)
+    public async Task<MediaSaveResponseDto> ToggleSaveAsync(Guid mediaId, Guid userId)
     {
         var media = await GetActiveMediaAsync(mediaId);
         var save = await _dbContext.MediaSaves.FirstOrDefaultAsync(item =>
             item.MediaId == mediaId &&
             item.UserId == userId);
+        var isSaved = save is null;
 
-        if (save is null)
+        if (isSaved)
         {
             _dbContext.MediaSaves.Add(new MediaSafe
             {
@@ -255,13 +439,18 @@ public sealed class MediaService : IMediaService
                 CreatedAt = DateTime.UtcNow
             });
         }
-        else
+        else if (save is not null)
         {
             _dbContext.MediaSaves.Remove(save);
         }
 
         media.UpdatedAt = DateTime.UtcNow;
         await _dbContext.SaveChangesAsync();
+        await InvalidateFeedCacheAsync();
+
+        return new MediaSaveResponseDto(
+            IsSaved: isSaved,
+            SaveCount: await GetMediaSaveCountAsync(mediaId));
     }
 
     public async Task<MediaResponseDto> RecordShareAsync(Guid mediaId, Guid userId)
@@ -294,7 +483,7 @@ public sealed class MediaService : IMediaService
         return (await ApplyUserMediaStateAsync([response], userId))[0];
     }
 
-    public async Task<CommentDto> AddCommentAsync(
+    public async Task<MediaCommentCreateResponseDto> AddCommentAsync(
         Guid mediaId,
         Guid userId,
         string text,
@@ -304,7 +493,7 @@ public sealed class MediaService : IMediaService
 
         var media = await GetActiveMediaAsync(mediaId);
         var user = await _dbContext.Users
-            .AsNoTracking()
+            .Include(item => item.Shop)
             .FirstOrDefaultAsync(user => user.Id == userId);
 
         if (user is null)
@@ -348,18 +537,29 @@ public sealed class MediaService : IMediaService
         media.UpdatedAt = DateTime.UtcNow;
 
         await _dbContext.SaveChangesAsync();
+        await InvalidateFeedCacheAsync();
 
         if (media.Shop.UserId != userId)
         {
-            await _notificationService.SendNotificationAsync(
+            var actor = CreateNotificationActor(user);
+
+            await _notificationService.SendActorNotificationAsync(
                 media.Shop.UserId,
                 "Videonuz yeni bir yorum aldı!",
                 "Paylaştığınız videoya yeni bir yorum geldi.",
                 NotificationType.NewComment,
-                media.Id);
+                media.Id,
+                actor.UserId,
+                actor.FullName,
+                actor.AvatarObjectKey,
+                actor.ShopId,
+                actor.ShopName,
+                actor.ShopLogoObjectKey);
         }
 
-        return MapToComment(comment, user.FullName);
+        return new MediaCommentCreateResponseDto(
+            Comment: MapToComment(comment, user, media.ShopId),
+            CommentCount: await GetMediaCommentCountAsync(mediaId));
     }
 
     public async Task<MediaCommentListResponseDto> GetCommentsAsync(
@@ -367,7 +567,7 @@ public sealed class MediaService : IMediaService
         int page = 1,
         int pageSize = 20)
     {
-        _ = await GetActiveMediaAsync(mediaId);
+        var media = await GetActiveMediaAsync(mediaId);
 
         var normalizedPage = Math.Max(page, 1);
         var normalizedPageSize = Math.Clamp(pageSize, 1, 50);
@@ -378,8 +578,10 @@ public sealed class MediaService : IMediaService
         var totalCount = await commentsQuery.CountAsync();
         var parents = await commentsQuery
             .Include(comment => comment.User)
+                .ThenInclude(user => user.Shop)
             .Include(comment => comment.Replies)
                 .ThenInclude(reply => reply.User)
+                    .ThenInclude(user => user.Shop)
             .OrderByDescending(comment => comment.CreatedAt)
             .Skip((normalizedPage - 1) * normalizedPageSize)
             .Take(normalizedPageSize)
@@ -391,10 +593,10 @@ public sealed class MediaService : IMediaService
             {
                 var replies = parent.Replies
                     .OrderBy(reply => reply.CreatedAt)
-                    .Select(reply => MapToComment(reply, reply.User?.FullName))
+                    .Select(reply => MapToComment(reply, reply.User, media.ShopId))
                     .ToList();
 
-                return MapToComment(parent, parent.User?.FullName, replies);
+                return MapToComment(parent, parent.User, media.ShopId, replies);
             })
             .ToList();
         var totalPages = totalCount == 0
@@ -409,7 +611,7 @@ public sealed class MediaService : IMediaService
             TotalPages: totalPages);
     }
 
-    public async Task DeleteCommentAsync(Guid commentId, Guid userId)
+    public async Task<MediaCommentDeleteResponseDto> DeleteCommentAsync(Guid commentId, Guid userId)
     {
         var comment = await _dbContext.MediaComments
             .Include(item => item.Media)
@@ -429,10 +631,15 @@ public sealed class MediaService : IMediaService
             throw new ForbiddenException("Bu yorumu silme yetkiniz yok.");
         }
 
+        var mediaId = comment.MediaId;
         comment.Media.UpdatedAt = DateTime.UtcNow;
 
         _dbContext.MediaComments.Remove(comment);
         await _dbContext.SaveChangesAsync();
+        await InvalidateFeedCacheAsync();
+
+        return new MediaCommentDeleteResponseDto(
+            CommentCount: await GetMediaCommentCountAsync(mediaId));
     }
 
     public async Task DeleteMediaAsync(Guid mediaId, Guid userId)
@@ -458,6 +665,10 @@ public sealed class MediaService : IMediaService
 
         await _dbContext.SaveChangesAsync();
         await InvalidateFeedCacheAsync();
+        await _rabbitMqPublisher.PublishMediaSyncMessage(new MediaSyncMessage(
+            MediaId: media.Id,
+            Action: "Delete",
+            Document: null));
 
         var videoObjectKey = ExtractObjectKey(media.VideoUrl, PrivateProductsBucketName);
         if (!string.IsNullOrWhiteSpace(videoObjectKey))
@@ -476,7 +687,12 @@ public sealed class MediaService : IMediaService
         await _cacheService.RemoveFromSetAsync(TrackedViewsSetKey, mediaIdValue);
     }
 
-    public async Task RecordViewAsync(Guid mediaId, Guid? userId)
+    public async Task RecordViewAsync(
+        Guid mediaId,
+        Guid? userId,
+        System.Net.IPAddress? ipAddress,
+        string? userAgent,
+        string? referrer)
     {
         var mediaExists = await _dbContext.Media.AnyAsync(item =>
             item.Id == mediaId &&
@@ -501,6 +717,8 @@ public sealed class MediaService : IMediaService
                 ON CONFLICT (user_id, media_id) DO NOTHING
                 """);
         }
+
+        await _analyticsEventService.TrackMediaViewAsync(mediaId, userId, ipAddress, userAgent, referrer);
     }
 
     private async Task<Medium> GetActiveMediaAsync(Guid mediaId)
@@ -621,9 +839,89 @@ public sealed class MediaService : IMediaService
         return $"media:feed:v:{version}:page:{page}:size:{pageSize}";
     }
 
+    private async Task<string> GetLikedMediaCacheKeyAsync(Guid userId, int page, int pageSize)
+    {
+        var version = await _cacheService.GetAsync<long>(LikedMediaCacheVersionKey);
+        return $"media:liked:v:{version}:user:{userId}:page:{page}:size:{pageSize}";
+    }
+
     private async Task InvalidateFeedCacheAsync()
     {
         await _cacheService.IncrementAsync(FeedCacheVersionKey);
+        await _cacheService.IncrementAsync(LikedMediaCacheVersionKey);
+    }
+
+    private async Task<int> GetMediaLikeCountAsync(Guid mediaId)
+    {
+        return await _dbContext.Media
+            .AsNoTracking()
+            .Where(item => item.Id == mediaId)
+            .Select(item => item.LikeCount ?? 0)
+            .FirstAsync();
+    }
+
+    private async Task<int> GetMediaSaveCountAsync(Guid mediaId)
+    {
+        return await _dbContext.Media
+            .AsNoTracking()
+            .Where(item => item.Id == mediaId)
+            .Select(item => item.SaveCount ?? 0)
+            .FirstAsync();
+    }
+
+    private async Task<int> GetMediaCommentCountAsync(Guid mediaId)
+    {
+        return await _dbContext.Media
+            .AsNoTracking()
+            .Where(item => item.Id == mediaId)
+            .Select(item => item.CommentCount ?? 0)
+            .FirstAsync();
+    }
+
+    private async Task PublishMediaIndexMessageAsync(Guid mediaId)
+    {
+        var media = await _dbContext.Media
+            .AsNoTracking()
+            .Include(item => item.Shop)
+            .Include(item => item.Product)
+            .FirstOrDefaultAsync(item => item.Id == mediaId);
+
+        if (media is null || media.IsActive != true || media.Shop.IsActive != true)
+        {
+            await _rabbitMqPublisher.PublishMediaSyncMessage(new MediaSyncMessage(
+                MediaId: mediaId,
+                Action: "Delete",
+                Document: null));
+            return;
+        }
+
+        var document = new MediaDocument
+        {
+            Id = media.Id,
+            Caption = media.Caption,
+            Hashtags = media.Hashtags ?? new List<string>(),
+            ShopId = media.ShopId,
+            ShopName = media.Shop.ShopName,
+            ShopSlug = media.Shop.Slug,
+            ProductId = media.ProductId,
+            ProductTitle = media.Product?.Title,
+            ProductType = ToProductTypeName(media.Product?.Type),
+            ThumbnailObjectKey = ExtractObjectKey(media.ThumbnailUrl, PublicAssetsBucketName),
+            VideoObjectKey = ExtractObjectKey(media.VideoUrl, PrivateProductsBucketName),
+            ProductCoverImageObjectKey = ExtractObjectKey(media.Product?.CoverImageUrl, PublicAssetsBucketName),
+            IsActive = true,
+            ShopIsActive = true,
+            CreatedAt = media.CreatedAt,
+            ViewCount = media.ViewCount ?? 0,
+            LikeCount = media.LikeCount ?? 0,
+            SaveCount = media.SaveCount ?? 0,
+            ShareCount = media.ShareCount ?? 0
+        };
+
+        await _rabbitMqPublisher.PublishMediaSyncMessage(new MediaSyncMessage(
+            MediaId: media.Id,
+            Action: "Index",
+            Document: document));
     }
 
     private string? GenerateStoragePublicUrl(string? urlOrObjectKey, string bucketName)
@@ -687,21 +985,68 @@ public sealed class MediaService : IMediaService
             : path;
     }
 
-    private static CommentDto MapToComment(
+    private CommentDto MapToComment(
         MediaComment comment,
-        string? userName,
+        User? user,
+        Guid mediaShopId,
         IReadOnlyList<CommentDto>? replies = null)
     {
+        var shop = user?.Shop;
+
         return new CommentDto
         {
             Id = comment.Id,
             UserId = comment.UserId,
             ParentCommentId = comment.ParentCommentId,
-            UserName = userName,
+            UserName = user?.FullName,
+            UserEmail = user?.Email,
+            AvatarPublicUrl = GenerateStoragePublicUrl(user?.AvatarUrl, PublicAssetsBucketName),
+            ShopId = shop?.Id,
+            ShopName = shop?.ShopName,
+            ShopLogoPublicUrl = GenerateStoragePublicUrl(shop?.LogoUrl, PublicAssetsBucketName),
+            IsShopAuthor = shop?.Id == mediaShopId,
             Text = comment.CommentText,
             CreatedAt = comment.CreatedAt,
             ReplyCount = replies?.Count ?? 0,
             Replies = replies ?? Array.Empty<CommentDto>()
         };
     }
+
+    private async Task<MediaNotificationActor> GetNotificationActorAsync(Guid userId)
+    {
+        var user = await _dbContext.Users
+            .AsNoTracking()
+            .Include(item => item.Shop)
+            .FirstOrDefaultAsync(item => item.Id == userId);
+
+        if (user is null)
+        {
+            throw new UnauthorizedException("Gecersiz kullanici.");
+        }
+
+        return CreateNotificationActor(user);
+    }
+
+    private static MediaNotificationActor CreateNotificationActor(User user)
+    {
+        var shop = user.Shop?.IsActive == true
+            ? user.Shop
+            : null;
+
+        return new MediaNotificationActor(
+            UserId: user.Id,
+            FullName: user.FullName,
+            AvatarObjectKey: user.AvatarUrl,
+            ShopId: shop?.Id,
+            ShopName: shop?.ShopName,
+            ShopLogoObjectKey: shop?.LogoUrl);
+    }
+
+    private sealed record MediaNotificationActor(
+        Guid UserId,
+        string? FullName,
+        string? AvatarObjectKey,
+        Guid? ShopId,
+        string? ShopName,
+        string? ShopLogoObjectKey);
 }

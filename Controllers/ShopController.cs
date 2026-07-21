@@ -50,10 +50,37 @@ public sealed class ShopController : ControllerBase
         return Ok(result);
     }
 
+    [Authorize]
+    [HttpGet("me/followers")]
+    public async Task<ActionResult<ShopFollowerListResponseDto>> GetMyShopFollowersAsync(
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 30)
+    {
+        var result = await _shopService.GetMyShopFollowersAsync(GetCurrentUserId(), page, pageSize);
+        return Ok(result);
+    }
+
+    [Authorize]
+    [HttpGet("/api/shops/following")]
+    public async Task<ActionResult<FollowedShopListResponseDto>> GetFollowedShopsAsync(
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 20)
+    {
+        var result = await _shopService.GetFollowedShopsAsync(GetCurrentUserId(), page, pageSize);
+        return Ok(result);
+    }
+
     [HttpGet("{slug}")]
     public async Task<ActionResult<PublicShopResponseDto>> GetShopBySlugAsync([FromRoute] string slug)
     {
-        var result = await _shopService.GetShopBySlugAsync(slug);
+        var result = await _shopService.GetShopBySlugAsync(slug, GetOptionalCurrentUserId());
+        return Ok(result);
+    }
+
+    [HttpGet("{id:guid}/public")]
+    public async Task<ActionResult<PublicShopResponseDto>> GetPublicShopByIdAsync([FromRoute] Guid id)
+    {
+        var result = await _shopService.GetPublicShopByIdAsync(id, GetOptionalCurrentUserId());
         return Ok(result);
     }
 
@@ -62,9 +89,9 @@ public sealed class ShopController : ControllerBase
     public async Task<IActionResult> ToggleFollowAsync([FromRoute] Guid id)
     {
         var userId = GetCurrentUserId();
-        await _shopService.ToggleFollowAsync(id, userId);
+        var result = await _shopService.ToggleFollowAsync(id, userId);
 
-        return Ok(new { message = "Takip durumu güncellendi." });
+        return Ok(result);
     }
 
     [Authorize]
@@ -103,5 +130,13 @@ public sealed class ShopController : ControllerBase
         }
 
         return userId;
+    }
+
+    private Guid? GetOptionalCurrentUserId()
+    {
+        var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value
+            ?? User.FindFirst("sub")?.Value;
+
+        return Guid.TryParse(userIdClaim, out var userId) ? userId : null;
     }
 }

@@ -5,17 +5,22 @@ using CraftoraApi.Middleware;
 using CraftoraApi.Models.Entities;
 using CraftoraApi.Services.Interfaces;
 using Microsoft.EntityFrameworkCore;
-using Npgsql;
 
 namespace CraftoraApi.Services;
 
 public sealed class ReviewService : IReviewService
 {
-    private readonly AppDbContext _dbContext;
+    private const string PublicAssetsBucketName = "public-assets";
+    private const int PublicAssetUrlExpiryMinutes = 60;
+    private const int MaximumReviewsPerProduct = 3;
 
-    public ReviewService(AppDbContext dbContext)
+    private readonly AppDbContext _dbContext;
+    private readonly IStorageService _storageService;
+
+    public ReviewService(AppDbContext dbContext, IStorageService storageService)
     {
         _dbContext = dbContext ?? throw new ArgumentNullException(nameof(dbContext));
+        _storageService = storageService ?? throw new ArgumentNullException(nameof(storageService));
     }
 
     public async Task<ReviewResponseDto> AddReviewAsync(Guid userId, CreateReviewDto dto)
@@ -40,41 +45,48 @@ public sealed class ReviewService : IReviewService
             throw new ForbiddenException("Sadece satin aldiginiz urunlere yorum yapabilirsiniz.");
         }
 
-        var alreadyReviewed = await _dbContext.Reviews.AnyAsync(review =>
-            review.ProductId == dto.ProductId &&
-            review.UserId == userId);
-        if (alreadyReviewed)
-        {
-            throw new ConflictException("Bu urune zaten yorum yaptiniz.");
-        }
-
         var comment = PlainTextInputValidator.Optional(dto.Comment, "Yorum metni", 2000);
-        var review = new Review
-        {
-            ProductId = dto.ProductId,
-            UserId = userId,
-            Rating = dto.Rating,
-            Comment = comment,
-            Images = dto.Images ?? new List<string>(),
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow
-        };
+        var images = NormalizeReviewImages(dto.Images);
+        await using var transaction = await _dbContext.Database.BeginTransactionAsync();
 
-        _dbContext.Reviews.Add(review);
         try
         {
+            var lockKey = $"review:{userId:N}:{dto.ProductId:N}";
+            await _dbContext.Database.ExecuteSqlInterpolatedAsync(
+                $"SELECT pg_advisory_xact_lock(hashtext({lockKey}))");
+
+            var reviewCount = await _dbContext.Reviews.CountAsync(review =>
+                review.ProductId == dto.ProductId &&
+                review.UserId == userId);
+            if (reviewCount >= MaximumReviewsPerProduct)
+            {
+                throw new ConflictException("Bu urun icin en fazla 3 yorum yapabilirsiniz.");
+            }
+
+            var review = new Review
+            {
+                ProductId = dto.ProductId,
+                UserId = userId,
+                Rating = dto.Rating,
+                Comment = comment,
+                Images = images,
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow
+            };
+
+            _dbContext.Reviews.Add(review);
             await _dbContext.SaveChangesAsync();
+            await RefreshProductReviewStatsAsync(dto.ProductId);
+            await _dbContext.SaveChangesAsync();
+            await transaction.CommitAsync();
+
+            return await GetReviewResponseAsync(review.Id);
         }
-        catch (DbUpdateException exception) when (IsDuplicateReview(exception))
+        catch
         {
-            _dbContext.Entry(review).State = EntityState.Detached;
-            throw new ConflictException("Bu urune zaten yorum yaptiniz.");
+            await transaction.RollbackAsync();
+            throw;
         }
-
-        await RefreshProductReviewStatsAsync(dto.ProductId);
-        await _dbContext.SaveChangesAsync();
-
-        return await GetReviewResponseAsync(review.Id);
     }
 
     public async Task<ReviewResponseDto> UpdateReviewAsync(Guid reviewId, Guid userId, UpdateReviewDto dto)
@@ -91,7 +103,7 @@ public sealed class ReviewService : IReviewService
 
         review.Rating = dto.Rating;
         review.Comment = PlainTextInputValidator.Optional(dto.Comment, "Yorum metni", 2000);
-        review.Images = dto.Images ?? new List<string>();
+        review.Images = NormalizeReviewImages(dto.Images);
         review.UpdatedAt = DateTime.UtcNow;
 
         await _dbContext.SaveChangesAsync();
@@ -206,14 +218,49 @@ public sealed class ReviewService : IReviewService
         return MapToResponse(review);
     }
 
-    private static bool IsDuplicateReview(DbUpdateException exception)
+    private List<string> NormalizeReviewImages(IEnumerable<string>? images)
     {
-        return exception.InnerException is PostgresException postgresException &&
-            postgresException.SqlState == PostgresErrorCodes.UniqueViolation &&
-            postgresException.ConstraintName == "unique_user_review";
+        return images?
+            .Select(ExtractPublicAssetObjectKey)
+            .ToList() ?? new List<string>();
     }
 
-    private static ReviewResponseDto MapToResponse(Review review)
+    private string ExtractPublicAssetObjectKey(string imageReference)
+    {
+        if (string.IsNullOrWhiteSpace(imageReference))
+        {
+            throw new BadRequestException("Yorum gorsel anahtari bos olamaz.");
+        }
+
+        if (!Uri.TryCreate(imageReference, UriKind.Absolute, out var uri))
+        {
+            var objectKey = imageReference.TrimStart('/');
+            if (!objectKey.StartsWith("uploads/", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new BadRequestException("Yorum gorselleri public-assets bucketindan yuklenmelidir.");
+            }
+
+            return objectKey;
+        }
+
+        var path = Uri.UnescapeDataString(uri.AbsolutePath).TrimStart('/');
+        var bucketPrefix = $"{PublicAssetsBucketName}/";
+        var bucketIndex = path.IndexOf(bucketPrefix, StringComparison.OrdinalIgnoreCase);
+        if (bucketIndex < 0)
+        {
+            throw new BadRequestException("Yorum gorselleri public-assets bucketindan yuklenmelidir.");
+        }
+
+        var objectKeyFromUrl = path[(bucketIndex + bucketPrefix.Length)..];
+        if (!objectKeyFromUrl.StartsWith("uploads/", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new BadRequestException("Yorum gorselleri public-assets bucketindan yuklenmelidir.");
+        }
+
+        return objectKeyFromUrl;
+    }
+
+    private ReviewResponseDto MapToResponse(Review review)
     {
         return new ReviewResponseDto(
             Id: review.Id,
@@ -222,7 +269,12 @@ public sealed class ReviewService : IReviewService
             UserFullName: review.User?.FullName,
             Rating: review.Rating,
             Comment: review.Comment,
-            Images: review.Images,
+            Images: review.Images
+                .Select(image => _storageService.GeneratePresignedDownloadUrl(
+                    PublicAssetsBucketName,
+                    image,
+                    PublicAssetUrlExpiryMinutes))
+                .ToList(),
             SellerReply: review.SellerReply,
             CreatedAt: review.CreatedAt,
             UpdatedAt: review.UpdatedAt);

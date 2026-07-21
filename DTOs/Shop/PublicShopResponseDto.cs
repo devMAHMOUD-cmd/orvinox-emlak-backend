@@ -15,4 +15,5 @@ public sealed record PublicShopResponseDto(
     int FollowerCount,
     int ProductCount,
     decimal? Rating,
-    bool IsVerified);
+    bool IsVerified,
+    bool IsFollowedByCurrentUser = false);
