@@ -5,6 +5,8 @@
 BEGIN;
 
 -- Retain each user's first watch reward for a reel and correct inflated wallet totals.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_user_points_user_id
+    ON public.user_points(user_id);
 WITH ranked AS (
     SELECT id,
            user_id,
