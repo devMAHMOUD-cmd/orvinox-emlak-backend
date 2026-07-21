@@ -19,7 +19,7 @@ BEGIN
         IF EXISTS (
             SELECT 1
             FROM pg_class
-            WHERE oid = 'unique_subscription'::regclass
+            WHERE oid = to_regclass('public.unique_subscription')
         ) THEN
             ALTER TABLE subscriptions
                 ADD CONSTRAINT subscriptions_shop_id_user_id_key
