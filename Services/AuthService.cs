@@ -396,15 +396,27 @@ public sealed class AuthService : IAuthService
         var tokens = _jwtProvider.GenerateTokens(user);
         var now = DateTime.UtcNow;
 
-        user.LastLoginAt = now;
-        _dbContext.UserSessions.Add(new UserSession
-        {
-            User = user,
-            RefreshToken = HashRefreshToken(tokens.RefreshToken),
-            ExpiresAt = now.AddDays(GetRefreshTokenExpireDays())
-        });
+        // Login is still anonymous at middleware level. Set the RLS identity
+        // before creating the session and updating the user's last-login time.
+        await _dbContext.Database.ExecuteSqlInterpolatedAsync(
+            $"SELECT set_config('app.current_user_id', {user.Id.ToString("D")}, false);");
 
-        await _dbContext.SaveChangesAsync();
+        try
+        {
+            user.LastLoginAt = now;
+            _dbContext.UserSessions.Add(new UserSession
+            {
+                User = user,
+                RefreshToken = HashRefreshToken(tokens.RefreshToken),
+                ExpiresAt = now.AddDays(GetRefreshTokenExpireDays())
+            });
+
+            await _dbContext.SaveChangesAsync();
+        }
+        finally
+        {
+            await _dbContext.Database.ExecuteSqlRawAsync("RESET app.current_user_id;");
+        }
 
         return tokens;
     }
