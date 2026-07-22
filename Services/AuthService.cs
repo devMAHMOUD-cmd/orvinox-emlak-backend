@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Data;
 using System.Net;
 using System.Text;
 using CraftoraApi.Data;
@@ -398,11 +399,18 @@ public sealed class AuthService : IAuthService
 
         // Login is still anonymous at middleware level. Set the RLS identity
         // before creating the session and updating the user's last-login time.
-        await _dbContext.Database.ExecuteSqlInterpolatedAsync(
-            $"SELECT set_config('app.current_user_id', {user.Id.ToString("D")}, false);");
+        var connection = _dbContext.Database.GetDbConnection();
+        var openedHere = connection.State != ConnectionState.Open;
+        if (openedHere)
+        {
+            await _dbContext.Database.OpenConnectionAsync();
+        }
 
         try
         {
+            await _dbContext.Database.ExecuteSqlInterpolatedAsync(
+                $"SELECT set_config('app.current_user_id', {user.Id.ToString("D")}, false);");
+
             user.LastLoginAt = now;
             _dbContext.UserSessions.Add(new UserSession
             {
@@ -415,7 +423,15 @@ public sealed class AuthService : IAuthService
         }
         finally
         {
-            await _dbContext.Database.ExecuteSqlRawAsync("RESET app.current_user_id;");
+            if (connection.State == ConnectionState.Open)
+            {
+                await _dbContext.Database.ExecuteSqlRawAsync("RESET app.current_user_id;");
+            }
+
+            if (openedHere)
+            {
+                await _dbContext.Database.CloseConnectionAsync();
+            }
         }
 
         return tokens;
