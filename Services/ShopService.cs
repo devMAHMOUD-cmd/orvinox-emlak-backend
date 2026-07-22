@@ -53,9 +53,10 @@ public sealed class ShopService : IShopService
 
         try
         {
-            // Keep the RLS identity on the exact transaction used by this write.
+            // Keep the identity on the same pooled connection for the whole request.
+            // The request middleware resets this setting after the request completes.
             await _dbContext.Database.ExecuteSqlInterpolatedAsync(
-                $"SELECT set_config('app.current_user_id', {userId.ToString("D")}, true);");
+                $"SELECT set_config('app.current_user_id', {userId.ToString("D")}, false);");
 
             var hasShop = await _dbContext.Shops.AnyAsync(shop => shop.UserId == userId);
             if (hasShop)
