@@ -53,6 +53,10 @@ public sealed class ShopService : IShopService
 
         try
         {
+            // Keep the RLS identity on the exact transaction used by this write.
+            await _dbContext.Database.ExecuteSqlInterpolatedAsync(
+                $"SELECT set_config('app.current_user_id', {userId.ToString("D")}, true);");
+
             var hasShop = await _dbContext.Shops.AnyAsync(shop => shop.UserId == userId);
             if (hasShop)
             {
