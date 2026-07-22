@@ -150,6 +150,7 @@ services:
       ConnectionStrings__Elasticsearch: "http://elasticsearch:9200"
       Jwt__Secret: "${JWT_SECRET}"
       OAuth__Google__ClientId: "${GOOGLE_CLIENT_ID}"
+      OAuth__Google__ClientIds: "${GOOGLE_CLIENT_IDS}"
       OAuth__Google__ClientSecret: "${GOOGLE_CLIENT_SECRET}"
       Email__Provider: "${EMAIL_PROVIDER:-resend}"
       Email__ApiKey: "${RESEND_API_KEY}"

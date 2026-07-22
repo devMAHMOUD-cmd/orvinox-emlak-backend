@@ -173,7 +173,16 @@ public sealed class AuthService : IAuthService
         }
 
         var clientId = _configuration["OAuth:Google:ClientId"];
-        if (string.IsNullOrWhiteSpace(clientId))
+        var configuredClientIds = _configuration["OAuth:Google:ClientIds"];
+        var clientIds = (string.IsNullOrWhiteSpace(configuredClientIds)
+                ? clientId
+                : configuredClientIds)
+            ?.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Distinct(StringComparer.Ordinal)
+            .ToArray() ?? Array.Empty<string>();
+
+        if (clientIds.Length == 0)
         {
             throw new InvalidOperationException("Google ClientId not found in appsettings.");
         }
@@ -185,7 +194,7 @@ public sealed class AuthService : IAuthService
                 idToken,
                 new GoogleJsonWebSignature.ValidationSettings
                 {
-                    Audience = new[] { clientId }
+                    Audience = clientIds
                 });
         }
         catch (Exception exception) when (exception is InvalidJwtException or ArgumentException)
