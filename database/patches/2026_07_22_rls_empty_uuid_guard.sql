@@ -25,13 +25,13 @@ BEGIN
     LOOP
         rewritten_using := replace(
             policy_row.using_expression,
-            'current_setting(''app.current_user_id''::text, true)::uuid',
-            'NULLIF(current_setting(''app.current_user_id'', true), '''')::uuid'
+            'current_setting(''app.current_user_id''::text, true)',
+            'NULLIF(current_setting(''app.current_user_id''::text, true), '''')'
         );
         rewritten_check := replace(
             policy_row.check_expression,
-            'current_setting(''app.current_user_id''::text, true)::uuid',
-            'NULLIF(current_setting(''app.current_user_id'', true), '''')::uuid'
+            'current_setting(''app.current_user_id''::text, true)',
+            'NULLIF(current_setting(''app.current_user_id''::text, true), '''')'
         );
 
         IF policy_row.using_expression IS NOT NULL
