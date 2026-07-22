@@ -142,8 +142,6 @@ class Program
                         Log.Information("✅ Veritabanı tabloları başarıyla oluşturuldu.");
                     }
 
-                    await DatabaseHardening.ApplyAsync(dbContext);
-                    Log.Information("✅ Veritabanı hardening kuralları uygulandı.");
                 }
                 catch (Exception ex)
                 {
