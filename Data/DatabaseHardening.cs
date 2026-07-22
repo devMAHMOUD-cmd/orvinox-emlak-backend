@@ -429,7 +429,7 @@ public static class DatabaseHardening
                 SELECT EXISTS (
                     SELECT 1
                     FROM users user_record
-                    WHERE user_record.id = current_setting('app.current_user_id', true)::uuid
+                    WHERE user_record.id = NULLIF(current_setting('app.current_user_id', true), '')::uuid
                       AND user_record.role = 'admin'::user_role
                       AND user_record.is_active = TRUE
                       AND user_record.deleted_at IS NULL
@@ -536,19 +536,19 @@ public static class DatabaseHardening
             CREATE POLICY "Aktif kullanıcıları herkes görebilir" ON users FOR SELECT USING (is_active = TRUE AND deleted_at IS NULL);
 
             DROP POLICY IF EXISTS users_update_own ON users;
-            CREATE POLICY users_update_own ON users FOR UPDATE USING (id = current_setting('app.current_user_id', true)::uuid);
+            CREATE POLICY users_update_own ON users FOR UPDATE USING (id = NULLIF(current_setting('app.current_user_id', true), '')::uuid);
 
             DROP POLICY IF EXISTS sessions_select_own ON user_sessions;
-            CREATE POLICY sessions_select_own ON user_sessions FOR SELECT USING (user_id = current_setting('app.current_user_id', true)::uuid);
+            CREATE POLICY sessions_select_own ON user_sessions FOR SELECT USING (user_id = NULLIF(current_setting('app.current_user_id', true), '')::uuid);
 
             DROP POLICY IF EXISTS sessions_delete_own ON user_sessions;
-            CREATE POLICY sessions_delete_own ON user_sessions FOR DELETE USING (user_id = current_setting('app.current_user_id', true)::uuid);
+            CREATE POLICY sessions_delete_own ON user_sessions FOR DELETE USING (user_id = NULLIF(current_setting('app.current_user_id', true), '')::uuid);
 
             DROP POLICY IF EXISTS shops_select_active ON shops;
             CREATE POLICY shops_select_active ON shops FOR SELECT USING (is_active = TRUE);
 
             DROP POLICY IF EXISTS shops_update_owner ON shops;
-            CREATE POLICY shops_update_owner ON shops FOR UPDATE USING (user_id = current_setting('app.current_user_id', true)::uuid);
+            CREATE POLICY shops_update_owner ON shops FOR UPDATE USING (user_id = NULLIF(current_setting('app.current_user_id', true), '')::uuid);
 
             DROP POLICY IF EXISTS media_select_active ON media;
             CREATE POLICY media_select_active ON media FOR SELECT USING (is_active = TRUE);
@@ -556,36 +556,36 @@ public static class DatabaseHardening
             DROP POLICY IF EXISTS cart_manage_own ON cart_items;
             DROP POLICY IF EXISTS "Kullanıcı kendi sepetini yönetebilir" ON cart_items;
             CREATE POLICY "Kullanıcı kendi sepetini yönetebilir" ON cart_items
-                USING (user_id = current_setting('app.current_user_id', true)::uuid)
-                WITH CHECK (user_id = current_setting('app.current_user_id', true)::uuid);
+                USING (user_id = NULLIF(current_setting('app.current_user_id', true), '')::uuid)
+                WITH CHECK (user_id = NULLIF(current_setting('app.current_user_id', true), '')::uuid);
 
             DROP POLICY IF EXISTS notifications_manage_own ON notifications;
             DROP POLICY IF EXISTS "Kullanıcı kendi bildirimlerini görebilir" ON notifications;
             CREATE POLICY "Kullanıcı kendi bildirimlerini görebilir" ON notifications FOR SELECT
-                USING (user_id = current_setting('app.current_user_id', true)::uuid);
+                USING (user_id = NULLIF(current_setting('app.current_user_id', true), '')::uuid);
 
             DROP POLICY IF EXISTS "Kullanıcı bildirimini okundu yapabilir" ON notifications;
             CREATE POLICY "Kullanıcı bildirimini okundu yapabilir" ON notifications FOR UPDATE
-                USING (user_id = current_setting('app.current_user_id', true)::uuid);
+                USING (user_id = NULLIF(current_setting('app.current_user_id', true), '')::uuid);
 
             DROP POLICY IF EXISTS device_tokens_manage_own ON user_device_tokens;
             DROP POLICY IF EXISTS "Kullanıcı kendi cihazlarını yönetebilir" ON user_device_tokens;
             CREATE POLICY "Kullanıcı kendi cihazlarını yönetebilir" ON user_device_tokens
-                USING (user_id = current_setting('app.current_user_id', true)::uuid)
-                WITH CHECK (user_id = current_setting('app.current_user_id', true)::uuid);
+                USING (user_id = NULLIF(current_setting('app.current_user_id', true), '')::uuid)
+                WITH CHECK (user_id = NULLIF(current_setting('app.current_user_id', true), '')::uuid);
 
             DROP POLICY IF EXISTS support_tickets_select_own ON support_tickets;
             CREATE POLICY support_tickets_select_own ON support_tickets FOR SELECT
-                USING (user_id = current_setting('app.current_user_id', true)::uuid);
+                USING (user_id = NULLIF(current_setting('app.current_user_id', true), '')::uuid);
 
             DROP POLICY IF EXISTS support_tickets_insert_own ON support_tickets;
             CREATE POLICY support_tickets_insert_own ON support_tickets FOR INSERT
-                WITH CHECK (user_id = current_setting('app.current_user_id', true)::uuid);
+                WITH CHECK (user_id = NULLIF(current_setting('app.current_user_id', true), '')::uuid);
 
             DROP POLICY IF EXISTS support_tickets_update_own ON support_tickets;
             CREATE POLICY support_tickets_update_own ON support_tickets FOR UPDATE
-                USING (user_id = current_setting('app.current_user_id', true)::uuid)
-                WITH CHECK (user_id = current_setting('app.current_user_id', true)::uuid);
+                USING (user_id = NULLIF(current_setting('app.current_user_id', true), '')::uuid)
+                WITH CHECK (user_id = NULLIF(current_setting('app.current_user_id', true), '')::uuid);
 
             DROP POLICY IF EXISTS support_tickets_admin_select ON support_tickets;
             CREATE POLICY support_tickets_admin_select ON support_tickets FOR SELECT
@@ -603,20 +603,20 @@ public static class DatabaseHardening
                         SELECT 1
                         FROM support_tickets ticket
                         WHERE ticket.id = support_ticket_messages.ticket_id
-                          AND ticket.user_id = current_setting('app.current_user_id', true)::uuid
+                          AND ticket.user_id = NULLIF(current_setting('app.current_user_id', true), '')::uuid
                     )
                 );
 
             DROP POLICY IF EXISTS support_ticket_messages_insert_own ON support_ticket_messages;
             CREATE POLICY support_ticket_messages_insert_own ON support_ticket_messages FOR INSERT
                 WITH CHECK (
-                    sender_id = current_setting('app.current_user_id', true)::uuid
+                    sender_id = NULLIF(current_setting('app.current_user_id', true), '')::uuid
                     AND sender_role = 'user'::support_message_sender_role
                     AND EXISTS (
                         SELECT 1
                         FROM support_tickets ticket
                         WHERE ticket.id = support_ticket_messages.ticket_id
-                          AND ticket.user_id = current_setting('app.current_user_id', true)::uuid
+                          AND ticket.user_id = NULLIF(current_setting('app.current_user_id', true), '')::uuid
                     )
                 );
 
@@ -628,7 +628,7 @@ public static class DatabaseHardening
             CREATE POLICY support_ticket_messages_admin_insert ON support_ticket_messages FOR INSERT
                 WITH CHECK (
                     is_current_app_admin()
-                    AND sender_id = current_setting('app.current_user_id', true)::uuid
+                    AND sender_id = NULLIF(current_setting('app.current_user_id', true), '')::uuid
                     AND sender_role = 'admin'::support_message_sender_role
                 );
             """);
