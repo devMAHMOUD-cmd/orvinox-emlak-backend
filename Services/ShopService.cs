@@ -89,6 +89,12 @@ public sealed class ShopService : IShopService
             };
 
             _dbContext.Shops.Add(shop);
+
+            // Re-assert the identity immediately before the INSERT. This guards
+            // against a connection reset/rebind between earlier reads and SaveChanges.
+            await _dbContext.Database.ExecuteSqlInterpolatedAsync(
+                $"SELECT set_config('app.current_user_id', {userId.ToString("D")}, true);");
+
             await _dbContext.SaveChangesAsync();
             var response = await MapToResponseAsync(shop);
             await transaction.CommitAsync();
