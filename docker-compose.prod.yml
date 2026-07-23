@@ -199,9 +199,29 @@ services:
     mem_limit: 1g
     logging: *default-logging
 
+  caddy:
+    image: caddy:2-alpine
+    container_name: craftora_caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - /var/www/craftora/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - craftora_network
+    depends_on:
+      craftora_api:
+        condition: service_started
+    logging: *default-logging
+
   nginx:
     image: nginx:alpine
     container_name: craftora_nginx
+    profiles: ["disabled"]
     restart: unless-stopped
     ports:
       - "80:80"
@@ -218,7 +238,8 @@ services:
 
 networks:
   craftora_network:
-    driver: bridge
+    external: true
+    name: craftora_craftora_network
 
 volumes:
   postgres_data:
@@ -226,3 +247,9 @@ volumes:
   redis_data:
   rabbitmq_data:
   elasticsearch_data:
+  caddy_data:
+    external: true
+    name: craftora_caddy_data
+  caddy_config:
+    external: true
+    name: craftora_caddy_config
