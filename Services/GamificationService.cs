@@ -152,40 +152,47 @@ public sealed class GamificationService : IGamificationService
         bool preventDuplicate = false,
         CancellationToken cancellationToken = default)
     {
-        await using var transaction = await _dbContext.Database.BeginTransactionAsync(cancellationToken);
-
-        var inserted = preventDuplicate && referenceId.HasValue
-            ? await _dbContext.Database.ExecuteSqlInterpolatedAsync(
-                $"""
-                INSERT INTO point_logs (user_id, action_type, points_earned, reference_id, created_at)
-                VALUES ({userId}, {actionType}, {points}, {referenceId.Value}, {DateTime.UtcNow})
-                ON CONFLICT DO NOTHING
-                """,
-                cancellationToken)
-            : await _dbContext.Database.ExecuteSqlInterpolatedAsync(
-                $"""
-                INSERT INTO point_logs (user_id, action_type, points_earned, reference_id, created_at)
-                VALUES ({userId}, {actionType}, {points}, {referenceId}, {DateTime.UtcNow})
-                """,
-                cancellationToken);
-
-        if (inserted == 0)
+        var transaction = _dbContext.Database.CurrentTransaction;
+        var ownsTransaction = transaction is null;
+        if (ownsTransaction)
         {
-            await transaction.CommitAsync(cancellationToken);
-            return;
+            transaction = await _dbContext.Database.BeginTransactionAsync(cancellationToken);
         }
 
-        await _dbContext.Database.ExecuteSqlInterpolatedAsync(
-            $"""
-            INSERT INTO user_points (user_id, total_points, current_rank, current_streak, updated_at)
-            VALUES ({userId}, {points}, 0, 0, {DateTime.UtcNow})
-            ON CONFLICT (user_id) DO UPDATE
-            SET total_points = user_points.total_points + EXCLUDED.total_points,
-                updated_at = EXCLUDED.updated_at
-            """,
-            cancellationToken);
+        try
+        {
+            await _dbContext.Database
+                .SqlQuery<int>($"""
+                    SELECT public.award_points_for_user(
+                        {userId},
+                        {actionType},
+                        {points},
+                        {referenceId},
+                        {preventDuplicate && referenceId.HasValue}) AS "Value"
+                    """)
+                .SingleAsync(cancellationToken);
 
-        await transaction.CommitAsync(cancellationToken);
+            if (ownsTransaction)
+            {
+                await transaction!.CommitAsync(cancellationToken);
+            }
+        }
+        catch
+        {
+            if (ownsTransaction)
+            {
+                await transaction!.RollbackAsync(cancellationToken);
+            }
+
+            throw;
+        }
+        finally
+        {
+            if (ownsTransaction)
+            {
+                await transaction!.DisposeAsync();
+            }
+        }
     }
 
     private static PointLogDto MapToPointLogDto(PointLog log)
