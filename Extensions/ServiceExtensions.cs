@@ -663,45 +663,81 @@ public static class ServiceExtensions
 
         services.AddRateLimiter(options =>
         {
-            options.AddFixedWindowLimiter("GlobalLimit", limiter =>
-            {
-                limiter.PermitLimit = 100;
-                limiter.Window = TimeSpan.FromMinutes(1);
-            });
+            options.AddPolicy("GlobalLimit", context =>
+                RateLimitPartition.GetFixedWindowLimiter(
+                    GetRateLimitPartitionKey(context),
+                    _ => new FixedWindowRateLimiterOptions
+                    {
+                        PermitLimit = 100,
+                        Window = TimeSpan.FromMinutes(1),
+                        QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
+                        QueueLimit = 0,
+                        AutoReplenishment = true
+                    }));
 
-            options.AddFixedWindowLimiter("AuthLimit", limiter =>
-            {
-                limiter.PermitLimit = 10;
-                limiter.Window = TimeSpan.FromMinutes(1);
-            });
+            options.AddPolicy("AuthLimit", context =>
+                RateLimitPartition.GetFixedWindowLimiter(
+                    GetRateLimitPartitionKey(context),
+                    _ => new FixedWindowRateLimiterOptions
+                    {
+                        PermitLimit = 10,
+                        Window = TimeSpan.FromMinutes(1),
+                        QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
+                        QueueLimit = 0,
+                        AutoReplenishment = true
+                    }));
 
             // Varsayılan - Genel API endpoint'leri için
-            options.AddFixedWindowLimiter("general", limiter =>
-            {
-                limiter.PermitLimit = generalLimit;
-                limiter.Window = TimeSpan.FromMinutes(1);
-            });
+            options.AddPolicy("general", context =>
+                RateLimitPartition.GetFixedWindowLimiter(
+                    GetRateLimitPartitionKey(context),
+                    _ => new FixedWindowRateLimiterOptions
+                    {
+                        PermitLimit = generalLimit,
+                        Window = TimeSpan.FromMinutes(1),
+                        QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
+                        QueueLimit = 0,
+                        AutoReplenishment = true
+                    }));
 
             // Authentication endpoint'leri - brute force koruması
-            options.AddFixedWindowLimiter("auth", limiter =>
-            {
-                limiter.PermitLimit = authLimit;
-                limiter.Window = TimeSpan.FromMinutes(1);
-            });
+            options.AddPolicy("auth", context =>
+                RateLimitPartition.GetFixedWindowLimiter(
+                    GetRateLimitPartitionKey(context),
+                    _ => new FixedWindowRateLimiterOptions
+                    {
+                        PermitLimit = authLimit,
+                        Window = TimeSpan.FromMinutes(1),
+                        QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
+                        QueueLimit = 0,
+                        AutoReplenishment = true
+                    }));
 
             // Dosya yükleme endpoint'leri
-            options.AddFixedWindowLimiter("upload", limiter =>
-            {
-                limiter.PermitLimit = uploadLimit;
-                limiter.Window = TimeSpan.FromMinutes(1);
-            });
+            options.AddPolicy("upload", context =>
+                RateLimitPartition.GetFixedWindowLimiter(
+                    GetRateLimitPartitionKey(context),
+                    _ => new FixedWindowRateLimiterOptions
+                    {
+                        PermitLimit = uploadLimit,
+                        Window = TimeSpan.FromMinutes(1),
+                        QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
+                        QueueLimit = 0,
+                        AutoReplenishment = true
+                    }));
 
             // Arama endpoint'leri
-            options.AddFixedWindowLimiter("search", limiter =>
-            {
-                limiter.PermitLimit = searchLimit;
-                limiter.Window = TimeSpan.FromMinutes(1);
-            });
+            options.AddPolicy("search", context =>
+                RateLimitPartition.GetFixedWindowLimiter(
+                    GetRateLimitPartitionKey(context),
+                    _ => new FixedWindowRateLimiterOptions
+                    {
+                        PermitLimit = searchLimit,
+                        Window = TimeSpan.FromMinutes(1),
+                        QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
+                        QueueLimit = 0,
+                        AutoReplenishment = true
+                    }));
 
             options.AddPolicy("support-ticket-create", context =>
                 RateLimitPartition.GetFixedWindowLimiter(
