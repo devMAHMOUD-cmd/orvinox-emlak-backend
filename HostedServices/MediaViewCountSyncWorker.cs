@@ -1,3 +1,5 @@
+using System.Data;
+using System.Data.Common;
 using CraftoraApi.Data;
 using CraftoraApi.Redis;
 using Microsoft.EntityFrameworkCore;
@@ -74,26 +76,13 @@ public sealed class MediaViewCountSyncWorker : BackgroundService
                 continue;
             }
 
-            var media = await dbContext.Media.FirstOrDefaultAsync(
-                item => item.Id == mediaId,
+            await IncrementViewCountAsync(
+                dbContext,
+                mediaId,
+                cachedViewCount,
                 cancellationToken);
-
-            if (media is null)
-            {
-                syncedMediaIds.Add(mediaIdValue);
-                continue;
-            }
-
-            var nextViewCount = (media.ViewCount ?? 0) + Math.Min(cachedViewCount, int.MaxValue);
-            media.ViewCount = nextViewCount > int.MaxValue
-                ? int.MaxValue
-                : (int)nextViewCount;
-            media.UpdatedAt = DateTime.UtcNow;
-
             syncedMediaIds.Add(mediaIdValue);
         }
-
-        await dbContext.SaveChangesAsync(cancellationToken);
 
         foreach (var mediaIdValue in syncedMediaIds)
         {
@@ -109,5 +98,50 @@ public sealed class MediaViewCountSyncWorker : BackgroundService
     private static string GetViewCountCacheKey(Guid mediaId)
     {
         return $"media:viewcount:{mediaId}";
+    }
+
+    private static async Task<bool> IncrementViewCountAsync(
+        AppDbContext dbContext,
+        Guid mediaId,
+        long increment,
+        CancellationToken cancellationToken)
+    {
+        var connection = dbContext.Database.GetDbConnection();
+        var openedHere = connection.State != ConnectionState.Open;
+        if (openedHere)
+        {
+            await dbContext.Database.OpenConnectionAsync(cancellationToken);
+        }
+
+        try
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText = """
+                SELECT public.increment_media_view_count(
+                    CAST(@media_id AS uuid),
+                    CAST(@increment AS bigint))
+                """;
+
+            AddParameter(command, "media_id", mediaId);
+            AddParameter(command, "increment", increment);
+
+            var result = await command.ExecuteScalarAsync(cancellationToken);
+            return result is true;
+        }
+        finally
+        {
+            if (openedHere)
+            {
+                await dbContext.Database.CloseConnectionAsync();
+            }
+        }
+    }
+
+    private static void AddParameter(DbCommand command, string name, object value)
+    {
+        var parameter = command.CreateParameter();
+        parameter.ParameterName = name;
+        parameter.Value = value;
+        command.Parameters.Add(parameter);
     }
 }
