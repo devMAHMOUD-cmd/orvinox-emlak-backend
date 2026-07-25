@@ -706,58 +706,63 @@ public sealed class AuthService : IAuthService
               <meta name="viewport" content="width=device-width, initial-scale=1">
               <title>Craftora e-posta doğrulama</title>
             </head>
-            <body style="margin:0;padding:0;background:#f4f6f8;color:#17202a;font-family:Arial,Helvetica,sans-serif;">
+            <body style="margin:0;padding:0;background:#eef2f4;color:#15252d;font-family:Arial,Helvetica,sans-serif;">
               <div style="display:none;max-height:0;overflow:hidden;opacity:0;">
                 Craftora doğrulama kodunuz: {otpCode}
               </div>
-              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background:#f4f6f8;">
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background:#eef2f4;">
                 <tr>
-                  <td align="center" style="padding:32px 16px;">
+                  <td align="center" style="padding:40px 16px;">
                     <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0"
-                           style="max-width:560px;background:#ffffff;border:1px solid #e3e8ee;border-radius:8px;">
+                           style="max-width:520px;background:#ffffff;border:1px solid #dce4e7;border-radius:8px;">
                       <tr>
-                        <td style="padding:28px 32px 20px;border-bottom:1px solid #e8edf2;">
+                        <td style="padding:22px 28px;background:#073b46;border-top:4px solid #4ec6b3;">
                           <table role="presentation" cellspacing="0" cellpadding="0" border="0">
                             <tr>
                               <td style="padding-right:12px;vertical-align:middle;">
-                                <img src="{EmailLogoUrl}" width="48" height="48" alt="Craftora"
-                                     style="display:block;width:48px;height:48px;border:0;">
+                                <div style="padding:5px;background:#ffffff;border-radius:6px;">
+                                  <img src="{EmailLogoUrl}" width="38" height="38" alt="Craftora"
+                                       style="display:block;width:38px;height:38px;border:0;">
+                                </div>
                               </td>
-                              <td style="vertical-align:middle;color:#0c6b78;font-size:24px;font-weight:700;line-height:28px;">
-                                CRAFTORA
+                              <td style="vertical-align:middle;">
+                                <div style="color:#ffffff;font-size:23px;font-weight:700;line-height:27px;">CRAFTORA</div>
+                                <div style="margin-top:2px;color:#b9d8dc;font-size:12px;line-height:18px;">Güvenli hesap doğrulama</div>
                               </td>
                             </tr>
                           </table>
-                          <div style="margin-top:7px;color:#66737f;font-size:13px;line-height:20px;">
-                            Güvenli hesap doğrulama
-                          </div>
                         </td>
                       </tr>
                       <tr>
-                        <td style="padding:28px 32px 32px;">
-                          <h1 style="margin:0 0 16px;font-size:22px;line-height:30px;color:#17202a;">
-                            Merhaba {displayName},
+                        <td style="padding:34px 36px 30px;">
+                          <div style="margin:0 0 8px;color:#0d7b78;font-size:12px;font-weight:700;line-height:18px;text-transform:uppercase;">
+                            E-posta doğrulama
+                          </div>
+                          <h1 style="margin:0 0 14px;font-size:25px;line-height:33px;color:#15252d;">
+                            E-posta adresini doğrula
                           </h1>
-                          <p style="margin:0 0 22px;color:#425466;font-size:16px;line-height:25px;">
-                            Craftora hesabını doğrulamak için aşağıdaki kodu kullan:
+                          <p style="margin:0 0 24px;color:#52636d;font-size:15px;line-height:24px;">
+                            Merhaba {displayName}, Craftora hesabını etkinleştirmek için bu tek kullanımlık kodu gir:
                           </p>
-                          <div style="margin:0 0 22px;padding:18px 20px;background:#eef7f8;border:1px solid #b9dfe3;border-radius:6px;text-align:center;">
-                            <span style="color:#084f59;font-size:34px;font-weight:700;letter-spacing:8px;line-height:42px;">
-                              {otpCode}
-                            </span>
+                          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="margin-bottom:22px;">
+                            <tr>
+                              <td align="center" style="padding:16px 8px;background:#edf8f7;border:1px solid #b9dfdc;border-radius:6px;color:#063f49;font-size:34px;font-weight:700;line-height:42px;letter-spacing:10px;">
+                                {otpCode}
+                              </td>
+                            </tr>
+                          </table>
+                          <p style="margin:0 0 20px;color:#52636d;font-size:14px;line-height:22px;">
+                            Kodun geçerlilik süresi: <strong style="color:#15252d;">5 dakika</strong>
+                          </p>
+                          <div style="padding:14px 16px;background:#f6f8f9;border-left:3px solid #91a5ae;color:#687983;font-size:13px;line-height:20px;">
+                            Bu isteği sen yapmadıysan mesajı yok say. Craftora ekibi doğrulama kodunu hiçbir zaman senden istemez.
                           </div>
-                          <p style="margin:0 0 18px;color:#425466;font-size:14px;line-height:22px;">
-                            Bu kod <strong>5 dakika</strong> boyunca geçerlidir.
-                          </p>
-                          <p style="margin:0;color:#697985;font-size:13px;line-height:20px;">
-                            Bu işlemi sen başlatmadıysan bu e-postayı yok sayabilirsin. Kodunu hiç kimseyle paylaşma.
-                          </p>
                         </td>
                       </tr>
                       <tr>
-                        <td style="padding:20px 32px;background:#f8fafb;border-top:1px solid #e8edf2;color:#7a8792;font-size:12px;line-height:18px;">
-                          Bu mesaj Craftora hesabınla ilgili otomatik olarak gönderildi.<br>
-                          &copy; {DateTime.UtcNow.Year} Craftora
+                        <td align="center" style="padding:18px 28px;background:#f7f9fa;border-top:1px solid #e4eaed;color:#7b8a92;font-size:12px;line-height:18px;">
+                          Otomatik güvenlik bildirimi &middot; &copy; {DateTime.UtcNow.Year} Craftora<br>
+                          craftoramedya.com
                         </td>
                       </tr>
                     </table>
@@ -783,74 +788,80 @@ public sealed class AuthService : IAuthService
               <meta name="viewport" content="width=device-width, initial-scale=1">
               <title>Craftora'ya hoş geldin</title>
             </head>
-            <body style="margin:0;padding:0;background:#f4f6f8;color:#17202a;font-family:Arial,Helvetica,sans-serif;">
+            <body style="margin:0;padding:0;background:#eef2f4;color:#15252d;font-family:Arial,Helvetica,sans-serif;">
               <div style="display:none;max-height:0;overflow:hidden;opacity:0;">
                 Üret, keşfet ve dijital vitrininle büyü.
               </div>
-              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background:#f4f6f8;">
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background:#eef2f4;">
                 <tr>
-                  <td align="center" style="padding:32px 16px;">
+                  <td align="center" style="padding:40px 16px;">
                     <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0"
-                           style="max-width:560px;background:#ffffff;border:1px solid #e3e8ee;border-radius:8px;">
+                           style="max-width:520px;background:#ffffff;border:1px solid #dce4e7;border-radius:8px;">
                       <tr>
-                        <td style="padding:28px 32px 20px;border-bottom:1px solid #e8edf2;">
+                        <td style="padding:22px 28px;background:#073b46;border-top:4px solid #4ec6b3;">
                           <table role="presentation" cellspacing="0" cellpadding="0" border="0">
                             <tr>
                               <td style="padding-right:12px;vertical-align:middle;">
-                                <img src="{EmailLogoUrl}" width="48" height="48" alt="Craftora"
-                                     style="display:block;width:48px;height:48px;border:0;">
+                                <div style="padding:5px;background:#ffffff;border-radius:6px;">
+                                  <img src="{EmailLogoUrl}" width="38" height="38" alt="Craftora"
+                                       style="display:block;width:38px;height:38px;border:0;">
+                                </div>
                               </td>
-                              <td style="vertical-align:middle;color:#0c6b78;font-size:24px;font-weight:700;line-height:28px;">
-                                CRAFTORA
+                              <td style="vertical-align:middle;">
+                                <div style="color:#ffffff;font-size:23px;font-weight:700;line-height:27px;">CRAFTORA</div>
+                                <div style="margin-top:2px;color:#b9d8dc;font-size:12px;line-height:18px;">Üret, keşfet ve büyü</div>
                               </td>
                             </tr>
                           </table>
-                          <div style="margin-top:7px;color:#66737f;font-size:13px;line-height:20px;">
-                            Üret, keşfet ve büyü
+                        </td>
+                      </tr>
+                      <tr>
+                        <td style="padding:34px 36px 18px;">
+                          <div style="margin:0 0 8px;color:#0d7b78;font-size:12px;font-weight:700;line-height:18px;text-transform:uppercase;">
+                            Aramıza katıldın
+                          </div>
+                          <h1 style="margin:0 0 14px;font-size:27px;line-height:35px;color:#15252d;">
+                            Hoş geldin, {displayName}
+                          </h1>
+                          <p style="margin:0;color:#52636d;font-size:15px;line-height:24px;">
+                            Craftora’da özgün ürünleri ve içerikleri keşfedebilir, sevdiğin üreticileri takip edebilir veya kendi dijital vitrinini kurabilirsin.
+                          </p>
+                        </td>
+                      </tr>
+                      <tr>
+                        <td style="padding:8px 36px 30px;">
+                          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
+                            <tr>
+                              <td width="42" style="padding:16px 0;border-bottom:1px solid #e4eaed;color:#0d7b78;font-size:13px;font-weight:700;vertical-align:top;">01</td>
+                              <td style="padding:16px 0;border-bottom:1px solid #e4eaed;">
+                                <strong style="display:block;margin-bottom:4px;color:#15252d;font-size:15px;">Sana göre olanı keşfet</strong>
+                                <span style="color:#60717a;font-size:14px;line-height:21px;">Ürünlere, mağazalara, kurslara ve kısa videolara tek akıştan ulaş.</span>
+                              </td>
+                            </tr>
+                            <tr>
+                              <td width="42" style="padding:16px 0;border-bottom:1px solid #e4eaed;color:#0d7b78;font-size:13px;font-weight:700;vertical-align:top;">02</td>
+                              <td style="padding:16px 0;border-bottom:1px solid #e4eaed;">
+                                <strong style="display:block;margin-bottom:4px;color:#15252d;font-size:15px;">Bağlantıda kal</strong>
+                                <span style="color:#60717a;font-size:14px;line-height:21px;">İçerikleri kaydet, üreticileri takip et ve yeni paylaşımları kaçırma.</span>
+                              </td>
+                            </tr>
+                            <tr>
+                              <td width="42" style="padding:16px 0;color:#0d7b78;font-size:13px;font-weight:700;vertical-align:top;">03</td>
+                              <td style="padding:16px 0;">
+                                <strong style="display:block;margin-bottom:4px;color:#15252d;font-size:15px;">Üretimini büyüt</strong>
+                                <span style="color:#60717a;font-size:14px;line-height:21px;">Mağazanı aç; ürünlerini, eğitimlerini ve içeriklerini topluluğa ulaştır.</span>
+                              </td>
+                            </tr>
+                          </table>
+                          <div style="margin-top:18px;padding:15px 17px;background:#edf8f7;border-left:3px solid #4ec6b3;color:#365861;font-size:14px;line-height:22px;">
+                            Hazırsan Craftora uygulamasını aç ve kendi yolculuğuna başla.
                           </div>
                         </td>
                       </tr>
                       <tr>
-                        <td style="padding:28px 32px 14px;">
-                          <h1 style="margin:0 0 14px;font-size:24px;line-height:32px;color:#17202a;">
-                            Hoş geldin, {displayName}
-                          </h1>
-                          <p style="margin:0;color:#425466;font-size:16px;line-height:25px;">
-                            Craftora; üreticiler, satıcılar ve yeni fikirler keşfetmek isteyenler için oluşturulmuş bir dijital üretim ve alışveriş platformudur.
-                          </p>
-                        </td>
-                      </tr>
-                      <tr>
-                        <td style="padding:10px 32px 28px;">
-                          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
-                            <tr>
-                              <td style="padding:14px 0;border-bottom:1px solid #e8edf2;">
-                                <strong style="display:block;margin-bottom:4px;color:#17202a;font-size:15px;">Keşfet</strong>
-                                <span style="color:#5d6b78;font-size:14px;line-height:21px;">Ürünleri, mağazaları, kursları ve kısa videoları tek akışta incele.</span>
-                              </td>
-                            </tr>
-                            <tr>
-                              <td style="padding:14px 0;border-bottom:1px solid #e8edf2;">
-                                <strong style="display:block;margin-bottom:4px;color:#17202a;font-size:15px;">Kaydet ve takip et</strong>
-                                <span style="color:#5d6b78;font-size:14px;line-height:21px;">Beğendiğin içerikleri kaydet, üreticileri takip et ve yenilikleri kaçırma.</span>
-                              </td>
-                            </tr>
-                            <tr>
-                              <td style="padding:14px 0;">
-                                <strong style="display:block;margin-bottom:4px;color:#17202a;font-size:15px;">Kendi vitrinini oluştur</strong>
-                                <span style="color:#5d6b78;font-size:14px;line-height:21px;">Mağazanı açarak ürünlerini, eğitimlerini ve içeriklerini topluluğa ulaştır.</span>
-                              </td>
-                            </tr>
-                          </table>
-                          <p style="margin:18px 0 0;color:#425466;font-size:14px;line-height:22px;">
-                            Hazırsan Craftora uygulamasını aç ve keşfetmeye başla.
-                          </p>
-                        </td>
-                      </tr>
-                      <tr>
-                        <td style="padding:20px 32px;background:#f8fafb;border-top:1px solid #e8edf2;color:#7a8792;font-size:12px;line-height:18px;">
-                          Bu mesaj Craftora hesabındaki ilk başarılı girişin ardından gönderildi.<br>
-                          &copy; {DateTime.UtcNow.Year} Craftora
+                        <td align="center" style="padding:18px 28px;background:#f7f9fa;border-top:1px solid #e4eaed;color:#7b8a92;font-size:12px;line-height:18px;">
+                          İlk başarılı giriş bildirimi &middot; &copy; {DateTime.UtcNow.Year} Craftora<br>
+                          craftoramedya.com
                         </td>
                       </tr>
                     </table>
