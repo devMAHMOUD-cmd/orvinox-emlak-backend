@@ -13,4 +13,6 @@ public sealed record StartSubscriptionRequestDto(
 
     [property: Required(ErrorMessage = "CVV zorunludur.")]
     [property: RegularExpression(@"^\d{3,4}$", ErrorMessage = "CVV 3 veya 4 haneli olmalıdır.")]
-    string Cvv);
+    string Cvv,
+
+    Guid? PlanId = null);

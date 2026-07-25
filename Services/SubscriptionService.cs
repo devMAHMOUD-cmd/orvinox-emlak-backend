@@ -14,8 +14,7 @@ public sealed class SubscriptionService : ISubscriptionService
 {
     private const string PublicAssetsBucketName = "public-assets";
     private const string PrivateProductsBucketName = "private-products";
-    private const decimal MonthlyAmount = 25.00m;
-    private const string Currency = "USD";
+    private const string DefaultPlanCode = "professional";
     private const string PaymentProvider = "stripe_mock";
 
     private readonly AppDbContext _dbContext;
@@ -35,11 +34,33 @@ public sealed class SubscriptionService : ISubscriptionService
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
 
+    public async Task<IReadOnlyList<SubscriptionPlanResponseDto>> GetPlansAsync()
+    {
+        return await _dbContext.SellerSubscriptionPlans
+            .AsNoTracking()
+            .Where(plan => plan.IsActive)
+            .OrderBy(plan => plan.SortOrder)
+            .ThenBy(plan => plan.MonthlyAmount)
+            .Select(plan => new SubscriptionPlanResponseDto(
+                plan.Id,
+                plan.Code,
+                plan.Name,
+                plan.Description,
+                plan.MonthlyAmount,
+                plan.Currency,
+                plan.CommissionRate,
+                plan.CommissionRate * 100m,
+                plan.Features,
+                plan.SortOrder))
+            .ToListAsync();
+    }
+
     public async Task<SubscriptionResponseDto?> GetMySubscriptionAsync(Guid userId)
     {
         var shop = await GetSellerShopAsync(userId);
         var subscription = await _dbContext.SellerSubscriptions
             .AsNoTracking()
+            .Include(item => item.Plan)
             .FirstOrDefaultAsync(item => item.ShopId == shop.Id);
 
         return subscription is null
@@ -53,18 +74,31 @@ public sealed class SubscriptionService : ISubscriptionService
     {
         ArgumentNullException.ThrowIfNull(request);
 
+        var plan = request.PlanId.HasValue
+            ? await _dbContext.SellerSubscriptionPlans
+                .SingleOrDefaultAsync(item => item.Id == request.PlanId.Value && item.IsActive)
+            : await _dbContext.SellerSubscriptionPlans
+                .SingleOrDefaultAsync(item => item.Code == DefaultPlanCode && item.IsActive);
+
+        if (plan is null)
+        {
+            throw new NotFoundException("Abonelik plani bulunamadi.");
+        }
+
         var shop = await GetSellerShopAsync(userId);
         var subscription = await _dbContext.SellerSubscriptions
+            .Include(item => item.Plan)
             .FirstOrDefaultAsync(item => item.ShopId == shop.Id);
 
-        if (subscription?.Status == SubStatus.Active)
+        if (subscription?.Status == SubStatus.Active &&
+            subscription.CurrentPeriodEnd > DateTime.UtcNow)
         {
             throw new ConflictException("Zaten aktif aboneliginiz var.");
         }
 
         var paymentResult = await _paymentService.ProcessPaymentAsync(
-            MonthlyAmount,
-            Currency,
+            plan.MonthlyAmount,
+            plan.Currency,
             request.CardNumber);
 
         if (!paymentResult.IsSuccess)
@@ -87,11 +121,13 @@ public sealed class SubscriptionService : ISubscriptionService
         }
 
         subscription.ProviderSubscriptionId = $"sub_mock_{Guid.NewGuid():N}";
+        subscription.PlanId = plan.Id;
+        subscription.Plan = plan;
         subscription.Status = SubStatus.Active;
         subscription.CurrentPeriodEnd = now.AddDays(30);
         subscription.GracePeriodEnd = null;
-        subscription.Amount = MonthlyAmount;
-        subscription.Currency = Currency;
+        subscription.Amount = plan.MonthlyAmount;
+        subscription.Currency = plan.Currency;
         subscription.PaymentProvider = PaymentProvider;
         subscription.UpdatedAt = DateTime.UtcNow;
 
@@ -118,11 +154,13 @@ public sealed class SubscriptionService : ISubscriptionService
         _dbContext.SellerSubscriptionPayments.Add(new SellerSubscriptionPayment
         {
             SubscriptionId = subscription.Id,
+            PlanId = plan.Id,
             ShopId = shop.Id,
             PaymentProvider = PaymentProvider,
             ProviderTransactionId = paymentResult.TransactionId,
-            Amount = MonthlyAmount,
-            Currency = Currency,
+            Amount = plan.MonthlyAmount,
+            CommissionRate = plan.CommissionRate,
+            Currency = plan.Currency,
             Status = "succeeded",
             BillingPeriodStart = now,
             BillingPeriodEnd = subscription.CurrentPeriodEnd,
@@ -140,6 +178,7 @@ public sealed class SubscriptionService : ISubscriptionService
     {
         var shop = await GetSellerShopAsync(userId);
         var subscription = await _dbContext.SellerSubscriptions
+            .Include(item => item.Plan)
             .FirstOrDefaultAsync(item =>
                 item.ShopId == shop.Id &&
                 item.Status == SubStatus.Active);
@@ -339,6 +378,11 @@ public sealed class SubscriptionService : ISubscriptionService
         return new SubscriptionResponseDto(
             Id: subscription.Id,
             ShopId: subscription.ShopId,
+            PlanId: subscription.PlanId,
+            PlanCode: subscription.Plan.Code,
+            PlanName: subscription.Plan.Name,
+            CommissionRate: subscription.Plan.CommissionRate,
+            CommissionPercent: subscription.Plan.CommissionRate * 100m,
             ProviderSubscriptionId: subscription.ProviderSubscriptionId,
             Status: subscription.Status.ToString(),
             CurrentPeriodEnd: subscription.CurrentPeriodEnd,

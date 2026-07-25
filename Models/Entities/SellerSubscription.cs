@@ -10,6 +10,8 @@ public partial class SellerSubscription
 
     public Guid ShopId { get; set; }
 
+    public Guid PlanId { get; set; }
+
     public string? ProviderSubscriptionId { get; set; }
 
     public SubStatus Status { get; set; }
@@ -29,6 +31,8 @@ public partial class SellerSubscription
     public DateTime? UpdatedAt { get; set; }
 
     public string? PaymentProvider { get; set; }
+
+    public virtual SellerSubscriptionPlan Plan { get; set; } = null!;
 
     public virtual Shop Shop { get; set; } = null!;
 }

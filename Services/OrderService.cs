@@ -9,13 +9,13 @@ using CraftoraApi.Models.Enums;
 using CraftoraApi.Redis;
 using CraftoraApi.Services.Interfaces;
 using Microsoft.EntityFrameworkCore;
+using System.Data;
 
 namespace CraftoraApi.Services;
 
 public sealed class OrderService : IOrderService
 {
     private const string DefaultCurrency = "USD";
-    private const decimal PlatformFeeRate = 0.01m;
     private static readonly TimeSpan CheckoutLockTtl = TimeSpan.FromMinutes(3);
 
     private readonly AppDbContext _dbContext;
@@ -92,6 +92,12 @@ public sealed class OrderService : IOrderService
             throw new BadRequestException("Kendi urununuzu satin alamazsiniz.");
         }
 
+        var commissionSnapshots = new Dictionary<Guid, CommissionSnapshot>();
+        foreach (var shopId in cartItems.Select(item => item.Product.ShopId).Distinct())
+        {
+            commissionSnapshots[shopId] = await GetCommissionSnapshotAsync(shopId);
+        }
+
         var createdOrders = new List<Order>();
         var successfulOrders = new List<(Order Order, Product Product)>();
 
@@ -102,7 +108,8 @@ public sealed class OrderService : IOrderService
 
             var quantity = Math.Max(cartItem.Quantity ?? 1, 1);
             var amount = Math.Round(cartItem.Product.Price * quantity, 2, MidpointRounding.AwayFromZero);
-            var platformFee = Math.Round(amount * PlatformFeeRate, 2, MidpointRounding.AwayFromZero);
+            var commissionSnapshot = commissionSnapshots[cartItem.Product.ShopId];
+            var platformFee = Math.Round(amount * commissionSnapshot.CommissionRate, 2, MidpointRounding.AwayFromZero);
             var sellerEarnings = amount - platformFee;
             var currency = string.IsNullOrWhiteSpace(cartItem.Product.Currency)
                 ? DefaultCurrency
@@ -118,6 +125,8 @@ public sealed class OrderService : IOrderService
                 Amount = amount,
                 Currency = currency,
                 PlatformFee = platformFee,
+                SubscriptionPlanId = commissionSnapshot.PlanId,
+                CommissionRate = commissionSnapshot.CommissionRate,
                 SellerEarnings = sellerEarnings,
                 Status = OrderStatus.Pending,
                 CreatedAt = DateTime.UtcNow,
@@ -147,6 +156,8 @@ public sealed class OrderService : IOrderService
                 ProviderTransactionId = paymentResult.IsSuccess ? paymentResult.TransactionId : null,
                 GrossAmount = amount,
                 PlatformFeeAmount = platformFee,
+                SubscriptionPlanId = commissionSnapshot.PlanId,
+                CommissionRate = commissionSnapshot.CommissionRate,
                 NetEarnings = sellerEarnings,
                 Status = paymentStatus,
                 ErrorMessage = paymentResult.IsSuccess ? null : paymentResult.ErrorMessage,
@@ -248,14 +259,15 @@ public sealed class OrderService : IOrderService
                 throw new BadRequestException("Bu urun zaten kutuphanenizde mevcut.");
             }
 
-            await using var transaction = await _dbContext.Database.BeginTransactionAsync();
-
             var amount = Math.Round(product.Price, 2, MidpointRounding.AwayFromZero);
-            var platformFee = Math.Round(amount * PlatformFeeRate, 2, MidpointRounding.AwayFromZero);
+            var commissionSnapshot = await GetCommissionSnapshotAsync(product.ShopId);
+            var platformFee = Math.Round(amount * commissionSnapshot.CommissionRate, 2, MidpointRounding.AwayFromZero);
             var sellerEarnings = amount - platformFee;
             var currency = string.IsNullOrWhiteSpace(product.Currency)
                 ? DefaultCurrency
                 : product.Currency;
+
+            await using var transaction = await _dbContext.Database.BeginTransactionAsync();
 
             var order = new Order
             {
@@ -267,6 +279,8 @@ public sealed class OrderService : IOrderService
                 Amount = amount,
                 Currency = currency,
                 PlatformFee = platformFee,
+                SubscriptionPlanId = commissionSnapshot.PlanId,
+                CommissionRate = commissionSnapshot.CommissionRate,
                 SellerEarnings = sellerEarnings,
                 Status = OrderStatus.Pending,
                 CreatedAt = DateTime.UtcNow,
@@ -292,6 +306,8 @@ public sealed class OrderService : IOrderService
                 ProviderTransactionId = paymentResult.IsSuccess ? paymentResult.TransactionId : null,
                 GrossAmount = amount,
                 PlatformFeeAmount = platformFee,
+                SubscriptionPlanId = commissionSnapshot.PlanId,
+                CommissionRate = commissionSnapshot.CommissionRate,
                 NetEarnings = sellerEarnings,
                 Status = paymentStatus,
                 ErrorMessage = paymentResult.IsSuccess ? null : paymentResult.ErrorMessage,
@@ -364,6 +380,34 @@ public sealed class OrderService : IOrderService
     private static string GetCheckoutLockKey(Guid buyerId)
     {
         return $"checkout:lock:user:{buyerId:D}";
+    }
+
+    private async Task<CommissionSnapshot> GetCommissionSnapshotAsync(Guid shopId)
+    {
+        var connection = _dbContext.Database.GetDbConnection();
+        if (connection.State != ConnectionState.Open)
+        {
+            await connection.OpenAsync();
+        }
+
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT plan_id, commission_rate
+            FROM public.get_shop_commission_snapshot(@shop_id)
+            """;
+
+        var parameter = command.CreateParameter();
+        parameter.ParameterName = "shop_id";
+        parameter.Value = shopId;
+        command.Parameters.Add(parameter);
+
+        await using var reader = await command.ExecuteReaderAsync();
+        if (!await reader.ReadAsync())
+        {
+            throw new ConflictException("Magazanin aktif abonelik plani bulunamadi.");
+        }
+
+        return new CommissionSnapshot(reader.GetGuid(0), reader.GetDecimal(1));
     }
 
     private async Task SendOrderNotificationsAsync(Order order, Product product, User buyer)
@@ -452,4 +496,6 @@ public sealed class OrderService : IOrderService
             CreatedAt: order.CreatedAt,
             InvoicePdfUrl: order.InvoicePdfUrl);
     }
+
+    private sealed record CommissionSnapshot(Guid PlanId, decimal CommissionRate);
 }

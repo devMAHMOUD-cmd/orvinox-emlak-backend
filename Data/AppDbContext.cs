@@ -77,6 +77,8 @@ public partial class AppDbContext : DbContext
 
     public virtual DbSet<SellerSubscription> SellerSubscriptions { get; set; }
 
+    public virtual DbSet<SellerSubscriptionPlan> SellerSubscriptionPlans { get; set; }
+
     public virtual DbSet<SellerSubscriptionPayment> SellerSubscriptionPayments { get; set; }
 
     public virtual DbSet<SellerNotificationPreference> SellerNotificationPreferences { get; set; }
@@ -1025,12 +1027,16 @@ public partial class AppDbContext : DbContext
                 .HasPrecision(10, 2)
                 .HasDefaultValueSql("0.00")
                 .HasColumnName("platform_fee");
+            entity.Property(e => e.CommissionRate)
+                .HasPrecision(6, 5)
+                .HasColumnName("commission_rate");
             entity.Property(e => e.ProductId).HasColumnName("product_id");
             entity.Property(e => e.SellerEarnings)
                 .HasPrecision(10, 2)
                 .HasDefaultValueSql("0.00")
                 .HasColumnName("seller_earnings");
             entity.Property(e => e.ShopId).HasColumnName("shop_id");
+            entity.Property(e => e.SubscriptionPlanId).HasColumnName("subscription_plan_id");
             entity.Property(e => e.Status)
                 .HasColumnType("order_status")
                 .HasDefaultValue(OrderStatus.Pending)
@@ -1092,6 +1098,9 @@ public partial class AppDbContext : DbContext
             entity.Property(e => e.PlatformFeeAmount)
                 .HasPrecision(10, 2)
                 .HasColumnName("platform_fee_amount");
+            entity.Property(e => e.CommissionRate)
+                .HasPrecision(6, 5)
+                .HasColumnName("commission_rate");
             entity.Property(e => e.ProviderTransactionId)
                 .HasMaxLength(255)
                 .HasColumnName("provider_transaction_id");
@@ -1099,6 +1108,7 @@ public partial class AppDbContext : DbContext
                 .HasColumnType("payment_status_type")
                 .HasDefaultValue(PaymentStatusType.Processing)
                 .HasColumnName("status");
+            entity.Property(e => e.SubscriptionPlanId).HasColumnName("subscription_plan_id");
             entity.Property(e => e.UpdatedAt)
                 .HasDefaultValueSql("CURRENT_TIMESTAMP")
                 .HasColumnName("updated_at");
@@ -1316,6 +1326,47 @@ public partial class AppDbContext : DbContext
                 .HasConstraintName("reviews_user_id_fkey");
         });
 
+        modelBuilder.Entity<SellerSubscriptionPlan>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("seller_subscription_plans_pkey");
+
+            entity.ToTable("seller_subscription_plans");
+
+            entity.HasIndex(e => e.Code, "seller_subscription_plans_code_key").IsUnique();
+            entity.HasIndex(e => new { e.IsActive, e.SortOrder }, "idx_seller_subscription_plans_active_sort");
+
+            entity.Property(e => e.Id)
+                .HasDefaultValueSql("uuid_generate_v4()")
+                .HasColumnName("id");
+            entity.Property(e => e.Code)
+                .HasMaxLength(50)
+                .HasColumnName("code");
+            entity.Property(e => e.Name)
+                .HasMaxLength(100)
+                .HasColumnName("name");
+            entity.Property(e => e.Description).HasColumnName("description");
+            entity.Property(e => e.MonthlyAmount)
+                .HasPrecision(12, 2)
+                .HasColumnName("monthly_amount");
+            entity.Property(e => e.Currency)
+                .HasMaxLength(3)
+                .HasColumnName("currency");
+            entity.Property(e => e.CommissionRate)
+                .HasPrecision(6, 5)
+                .HasColumnName("commission_rate");
+            entity.Property(e => e.Features)
+                .HasColumnType("text[]")
+                .HasColumnName("features");
+            entity.Property(e => e.SortOrder).HasColumnName("sort_order");
+            entity.Property(e => e.IsActive).HasColumnName("is_active");
+            entity.Property(e => e.CreatedAt)
+                .HasDefaultValueSql("CURRENT_TIMESTAMP")
+                .HasColumnName("created_at");
+            entity.Property(e => e.UpdatedAt)
+                .HasDefaultValueSql("CURRENT_TIMESTAMP")
+                .HasColumnName("updated_at");
+        });
+
         modelBuilder.Entity<SellerSubscription>(entity =>
         {
             entity.HasKey(e => e.Id).HasName("seller_subscriptions_pkey");
@@ -1350,6 +1401,7 @@ public partial class AppDbContext : DbContext
             entity.Property(e => e.ProviderSubscriptionId)
                 .HasMaxLength(255)
                 .HasColumnName("provider_subscription_id");
+            entity.Property(e => e.PlanId).HasColumnName("plan_id");
             entity.Property(e => e.ShopId).HasColumnName("shop_id");
             entity.Property(e => e.Status)
                 .HasColumnType("sub_status")
@@ -1362,6 +1414,11 @@ public partial class AppDbContext : DbContext
             entity.HasOne(d => d.Shop).WithOne(p => p.SellerSubscription)
                 .HasForeignKey<SellerSubscription>(d => d.ShopId)
                 .HasConstraintName("seller_subscriptions_shop_id_fkey");
+
+            entity.HasOne(d => d.Plan).WithMany(p => p.Subscriptions)
+                .HasForeignKey(d => d.PlanId)
+                .OnDelete(DeleteBehavior.Restrict)
+                .HasConstraintName("seller_subscriptions_plan_id_fkey");
         });
 
         modelBuilder.Entity<SellerSubscriptionPayment>(entity =>
@@ -1387,6 +1444,9 @@ public partial class AppDbContext : DbContext
             entity.Property(e => e.Amount)
                 .HasPrecision(12, 2)
                 .HasColumnName("amount");
+            entity.Property(e => e.CommissionRate)
+                .HasPrecision(6, 5)
+                .HasColumnName("commission_rate");
             entity.Property(e => e.BillingPeriodEnd).HasColumnName("billing_period_end");
             entity.Property(e => e.BillingPeriodStart).HasColumnName("billing_period_start");
             entity.Property(e => e.CreatedAt)
@@ -1401,11 +1461,17 @@ public partial class AppDbContext : DbContext
             entity.Property(e => e.ProviderTransactionId)
                 .HasMaxLength(255)
                 .HasColumnName("provider_transaction_id");
+            entity.Property(e => e.PlanId).HasColumnName("plan_id");
             entity.Property(e => e.ShopId).HasColumnName("shop_id");
             entity.Property(e => e.Status)
                 .HasMaxLength(30)
                 .HasColumnName("status");
             entity.Property(e => e.SubscriptionId).HasColumnName("subscription_id");
+
+            entity.HasOne(d => d.Plan).WithMany()
+                .HasForeignKey(d => d.PlanId)
+                .OnDelete(DeleteBehavior.Restrict)
+                .HasConstraintName("seller_subscription_payments_plan_id_fkey");
         });
 
         modelBuilder.Entity<SellerNotificationPreference>(entity =>

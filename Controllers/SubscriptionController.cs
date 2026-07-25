@@ -19,6 +19,13 @@ public sealed class SubscriptionController : ControllerBase
         _subscriptionService = subscriptionService ?? throw new ArgumentNullException(nameof(subscriptionService));
     }
 
+    [AllowAnonymous]
+    [HttpGet("plans")]
+    public async Task<IActionResult> GetPlansAsync()
+    {
+        return Ok(await _subscriptionService.GetPlansAsync());
+    }
+
     [Authorize]
     [HttpGet("me")]
     public async Task<IActionResult> GetMySubscriptionAsync()

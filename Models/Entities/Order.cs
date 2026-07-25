@@ -22,6 +22,10 @@ public partial class Order
 
     public decimal? PlatformFee { get; set; }
 
+    public Guid? SubscriptionPlanId { get; set; }
+
+    public decimal? CommissionRate { get; set; }
+
     public decimal? SellerEarnings { get; set; }
 
     public OrderStatus Status { get; set; }

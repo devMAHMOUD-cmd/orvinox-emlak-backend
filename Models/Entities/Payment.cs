@@ -18,6 +18,10 @@ public partial class Payment
 
     public decimal PlatformFeeAmount { get; set; }
 
+    public Guid? SubscriptionPlanId { get; set; }
+
+    public decimal? CommissionRate { get; set; }
+
     public decimal NetEarnings { get; set; }
 
     public PaymentStatusType Status { get; set; }

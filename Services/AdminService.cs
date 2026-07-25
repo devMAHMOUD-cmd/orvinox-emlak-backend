@@ -26,7 +26,6 @@ public sealed class AdminService : IAdminService
     private const string MediaReindexLockKey = "search:reindex:media";
     private const string CompetitionCertificateBucketName = "private-products";
     private const int CompetitionCertificateUrlExpiryMinutes = 60 * 24 * 7;
-    private const decimal PlatformCommissionRate = 0.01m;
     private const int ExpiringSubscriptionWindowDays = 7;
     private static readonly TimeSpan ProductReindexLockTtl = TimeSpan.FromMinutes(10);
 
@@ -97,8 +96,11 @@ public sealed class AdminService : IAdminService
             .Select(order => (decimal?)order.Amount)
             .SumAsync(cancellationToken) ?? 0m;
         var commissionRevenue = await orderQuery
-            .Select(order => (decimal?)(order.PlatformFee ?? (order.Amount * PlatformCommissionRate)))
+            .Select(order => order.PlatformFee)
             .SumAsync(cancellationToken) ?? 0m;
+        var effectiveCommissionRate = grossSales > 0m
+            ? commissionRevenue / grossSales
+            : 0m;
         var subscriptionRevenue = await subscriptionPaymentQuery
             .Select(payment => (decimal?)payment.Amount)
             .SumAsync(cancellationToken) ?? 0m;
@@ -110,7 +112,7 @@ public sealed class AdminService : IAdminService
 
         return new AdminFinanceOverviewDto(
             GrossSales: grossSales,
-            PlatformCommissionRate: PlatformCommissionRate,
+            PlatformCommissionRate: effectiveCommissionRate,
             CommissionRevenue: commissionRevenue,
             SubscriptionRevenue: subscriptionRevenue,
             HistoricalRevenueAvailable: historicalRevenueAvailable,
@@ -164,7 +166,9 @@ public sealed class AdminService : IAdminService
 
         var items = records.Select(order =>
         {
-            var platformFee = order.PlatformFee ?? Math.Round(order.Amount * PlatformCommissionRate, 2, MidpointRounding.AwayFromZero);
+            var platformFee = order.PlatformFee ?? 0m;
+            var commissionRate = order.CommissionRate ??
+                (order.Amount > 0m ? platformFee / order.Amount : 0m);
             return new AdminCommissionListItemDto(
                 OrderId: order.Id,
                 OrderNumber: order.OrderNumber,
@@ -174,7 +178,7 @@ public sealed class AdminService : IAdminService
                 ProductId: order.ProductId,
                 ProductTitle: order.Product.Title,
                 GrossAmount: order.Amount,
-                CommissionRate: PlatformCommissionRate,
+                CommissionRate: commissionRate,
                 PlatformFee: platformFee,
                 SellerEarnings: order.SellerEarnings ?? order.Amount - platformFee,
                 Currency: order.Currency ?? "TRY",
@@ -202,6 +206,7 @@ public sealed class AdminService : IAdminService
         var now = DateTime.UtcNow;
         var subscriptions = _dbContext.SellerSubscriptions
             .AsNoTracking()
+            .Include(subscription => subscription.Plan)
             .Include(subscription => subscription.Shop)
             .ThenInclude(shop => shop.User)
             .AsQueryable();
@@ -247,7 +252,7 @@ public sealed class AdminService : IAdminService
                 ShopName: subscription.Shop.ShopName,
                 OwnerName: subscription.Shop.User.FullName,
                 OwnerEmail: subscription.Shop.User.Email,
-                PlanName: "Premium",
+                PlanName: subscription.Plan.Name,
                 Amount: lastPayment?.Amount ?? 0m,
                 Currency: lastPayment?.Currency ?? subscription.Currency ?? "TRY",
                 Status: financeStatus,
@@ -1605,12 +1610,16 @@ public sealed class AdminService : IAdminService
         var shop = user.Shop ?? throw new BadRequestException("Premium odulu mevcut abonelik modeli nedeniyle magazasi olan kullanicilara verilebilir.");
         var subscription = shop.SellerSubscription;
         var now = DateTime.UtcNow;
+        var professionalPlan = await _dbContext.SellerSubscriptionPlans
+            .SingleOrDefaultAsync(plan => plan.Code == "professional" && plan.IsActive, cancellationToken)
+            ?? throw new InvalidOperationException("Professional abonelik plani bulunamadi.");
 
         if (subscription is null)
         {
             subscription = new SellerSubscription
             {
                 ShopId = shop.Id,
+                PlanId = professionalPlan.Id,
                 ProviderSubscriptionId = $"competition_reward_{Guid.NewGuid():N}",
                 Status = SubStatus.Active,
                 CurrentPeriodEnd = now.AddMonths(1),
@@ -1624,6 +1633,7 @@ public sealed class AdminService : IAdminService
         }
         else
         {
+            subscription.PlanId = professionalPlan.Id;
             subscription.Status = SubStatus.Active;
             subscription.CurrentPeriodEnd = (subscription.CurrentPeriodEnd > now ? subscription.CurrentPeriodEnd : now).AddMonths(1);
             subscription.GracePeriodEnd = null;
