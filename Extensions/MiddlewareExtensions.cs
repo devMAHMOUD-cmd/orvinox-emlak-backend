@@ -77,6 +77,7 @@ public static class MiddlewareExtensions
             await next();
         });
 
+        app.UseStaticFiles();
         app.UseRouting();
         app.UseMiddleware<SecurityHeadersMiddleware>();
         app.UseCors("CraftoraCorsPolicy");

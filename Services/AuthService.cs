@@ -20,6 +20,8 @@ namespace CraftoraApi.Services;
 
 public sealed class AuthService : IAuthService
 {
+    private const string EmailLogoUrl =
+        "https://api.craftoramedya.com/email-assets/craftora-email-logo.png";
     private const int OtpExpirationMinutes = 5;
     private const int DefaultRefreshTokenExpireDays = 30;
     private const int MaxFailedLoginAttempts = 5;
@@ -715,12 +717,17 @@ public sealed class AuthService : IAuthService
                            style="max-width:560px;background:#ffffff;border:1px solid #e3e8ee;border-radius:8px;">
                       <tr>
                         <td style="padding:28px 32px 20px;border-bottom:1px solid #e8edf2;">
-                          <span style="display:inline-block;margin-right:10px;padding:8px 11px;background:#0c6b78;border-radius:6px;color:#ffffff;font-size:18px;font-weight:700;line-height:1;">
-                            C
-                          </span>
-                          <span style="display:inline-block;color:#0c6b78;font-size:24px;font-weight:700;line-height:1;vertical-align:middle;">
-                            CRAFTORA
-                          </span>
+                          <table role="presentation" cellspacing="0" cellpadding="0" border="0">
+                            <tr>
+                              <td style="padding-right:12px;vertical-align:middle;">
+                                <img src="{EmailLogoUrl}" width="48" height="48" alt="Craftora"
+                                     style="display:block;width:48px;height:48px;border:0;">
+                              </td>
+                              <td style="vertical-align:middle;color:#0c6b78;font-size:24px;font-weight:700;line-height:28px;">
+                                CRAFTORA
+                              </td>
+                            </tr>
+                          </table>
                           <div style="margin-top:7px;color:#66737f;font-size:13px;line-height:20px;">
                             Güvenli hesap doğrulama
                           </div>
@@ -787,12 +794,17 @@ public sealed class AuthService : IAuthService
                            style="max-width:560px;background:#ffffff;border:1px solid #e3e8ee;border-radius:8px;">
                       <tr>
                         <td style="padding:28px 32px 20px;border-bottom:1px solid #e8edf2;">
-                          <span style="display:inline-block;margin-right:10px;padding:8px 11px;background:#0c6b78;border-radius:6px;color:#ffffff;font-size:18px;font-weight:700;line-height:1;">
-                            C
-                          </span>
-                          <span style="display:inline-block;color:#0c6b78;font-size:24px;font-weight:700;line-height:1;vertical-align:middle;">
-                            CRAFTORA
-                          </span>
+                          <table role="presentation" cellspacing="0" cellpadding="0" border="0">
+                            <tr>
+                              <td style="padding-right:12px;vertical-align:middle;">
+                                <img src="{EmailLogoUrl}" width="48" height="48" alt="Craftora"
+                                     style="display:block;width:48px;height:48px;border:0;">
+                              </td>
+                              <td style="vertical-align:middle;color:#0c6b78;font-size:24px;font-weight:700;line-height:28px;">
+                                CRAFTORA
+                              </td>
+                            </tr>
+                          </table>
                           <div style="margin-top:7px;color:#66737f;font-size:13px;line-height:20px;">
                             Üret, keşfet ve büyü
                           </div>
