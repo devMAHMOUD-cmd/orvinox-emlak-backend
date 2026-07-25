@@ -185,6 +185,18 @@ HEAD: `800a63f` (`DEPLOY: guncellemeler`)
   port is closed/firewalled and xpack credentials are enabled in production.
 - RLS runtime-role rollout is prepared but not yet activated.
 
+### Email branding follow-up
+
+- Authentication emails currently use the temporary logo at
+  `wwwroot/email-assets/craftora-email-logo.png`. Replace this file in place when
+  the final Craftora logo is delivered so existing email templates keep working.
+- The Gmail sender avatar cannot be changed by email HTML. After the final logo is
+  approved, prepare a square BIMI-compatible SVG, verify SPF/DKIM alignment, move
+  DMARC from monitoring to `p=quarantine` or `p=reject` with `pct=100`, obtain a
+  VMC or CMC, and publish the `default._bimi` TXT record.
+- Do not start the BIMI certificate/DNS rollout with the temporary logo because
+  the certificate is tied to the approved mark.
+
 ## Useful Git References
 
 - Database hardening: `81aa931`
