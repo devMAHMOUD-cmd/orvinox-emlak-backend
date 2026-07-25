@@ -632,14 +632,69 @@ public sealed class AuthService : IAuthService
     private static string BuildOtpEmailBody(string? fullName, string otpCode)
     {
         var displayName = string.IsNullOrWhiteSpace(fullName)
-            ? "Craftora kullanicisi"
+            ? "Craftora kullanıcısı"
             : WebUtility.HtmlEncode(fullName.Trim());
 
         return $"""
-            <h2>Merhaba {displayName},</h2>
-            <p>Craftora e-posta dogrulama kodunuz:</p>
-            <h1 style="letter-spacing:4px;">{otpCode}</h1>
-            <p>Bu kod 5 dakika boyunca gecerlidir.</p>
+            <!doctype html>
+            <html lang="tr">
+            <head>
+              <meta charset="utf-8">
+              <meta name="viewport" content="width=device-width, initial-scale=1">
+              <title>Craftora e-posta doğrulama</title>
+            </head>
+            <body style="margin:0;padding:0;background:#f4f6f8;color:#17202a;font-family:Arial,Helvetica,sans-serif;">
+              <div style="display:none;max-height:0;overflow:hidden;opacity:0;">
+                Craftora doğrulama kodunuz: {otpCode}
+              </div>
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background:#f4f6f8;">
+                <tr>
+                  <td align="center" style="padding:32px 16px;">
+                    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0"
+                           style="max-width:560px;background:#ffffff;border:1px solid #e3e8ee;border-radius:8px;">
+                      <tr>
+                        <td style="padding:28px 32px 20px;border-bottom:1px solid #e8edf2;">
+                          <span style="display:inline-block;color:#0c6b78;font-size:24px;font-weight:700;line-height:1;">
+                            CRAFTORA
+                          </span>
+                          <div style="margin-top:7px;color:#66737f;font-size:13px;line-height:20px;">
+                            Güvenli hesap doğrulama
+                          </div>
+                        </td>
+                      </tr>
+                      <tr>
+                        <td style="padding:28px 32px 32px;">
+                          <h1 style="margin:0 0 16px;font-size:22px;line-height:30px;color:#17202a;">
+                            Merhaba {displayName},
+                          </h1>
+                          <p style="margin:0 0 22px;color:#425466;font-size:16px;line-height:25px;">
+                            Craftora hesabını doğrulamak için aşağıdaki kodu kullan:
+                          </p>
+                          <div style="margin:0 0 22px;padding:18px 20px;background:#eef7f8;border:1px solid #b9dfe3;border-radius:6px;text-align:center;">
+                            <span style="color:#084f59;font-size:34px;font-weight:700;letter-spacing:8px;line-height:42px;">
+                              {otpCode}
+                            </span>
+                          </div>
+                          <p style="margin:0 0 18px;color:#425466;font-size:14px;line-height:22px;">
+                            Bu kod <strong>5 dakika</strong> boyunca geçerlidir.
+                          </p>
+                          <p style="margin:0;color:#697985;font-size:13px;line-height:20px;">
+                            Bu işlemi sen başlatmadıysan bu e-postayı yok sayabilirsin. Kodunu hiç kimseyle paylaşma.
+                          </p>
+                        </td>
+                      </tr>
+                      <tr>
+                        <td style="padding:20px 32px;background:#f8fafb;border-top:1px solid #e8edf2;color:#7a8792;font-size:12px;line-height:18px;">
+                          Bu mesaj Craftora hesabınla ilgili otomatik olarak gönderildi.<br>
+                          &copy; {DateTime.UtcNow.Year} Craftora
+                        </td>
+                      </tr>
+                    </table>
+                  </td>
+                </tr>
+              </table>
+            </body>
+            </html>
             """;
     }
 
