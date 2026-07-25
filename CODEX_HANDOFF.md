@@ -196,6 +196,11 @@ HEAD: `800a63f` (`DEPLOY: guncellemeler`)
   VMC or CMC, and publish the `default._bimi` TXT record.
 - Do not start the BIMI certificate/DNS rollout with the temporary logo because
   the certificate is tied to the approved mark.
+- Create the corporate `support@craftoramedya.com` mailbox in Hostinger and
+  complete the root-domain inbound mail/MX setup before advertising the address.
+- After the mailbox is verified, add an `Email__ReplyTo` production environment
+  variable and include it as the Resend `Reply-To` header. Until both steps are
+  complete, replies to `noreply@craftoramedya.com` are not a supported channel.
 
 ## Useful Git References
 
