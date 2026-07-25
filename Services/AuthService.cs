@@ -119,8 +119,40 @@ public sealed class AuthService : IAuthService
             throw new NotFoundException("Kullanıcı bulunamadı.");
         }
 
-        user.IsEmailVerified = true;
-        await _dbContext.SaveChangesAsync();
+        var connection = _dbContext.Database.GetDbConnection();
+        var openedHere = connection.State != ConnectionState.Open;
+        if (openedHere)
+        {
+            await _dbContext.Database.OpenConnectionAsync();
+        }
+
+        try
+        {
+            await using var transaction = await _dbContext.Database.BeginTransactionAsync();
+            await _dbContext.Database.ExecuteSqlInterpolatedAsync(
+                $"SELECT set_config('app.current_user_id', {user.Id.ToString("D")}, true);");
+
+            var updatedRows = await _dbContext.Users
+                .Where(candidate => candidate.Id == user.Id)
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(candidate => candidate.IsEmailVerified, true));
+
+            if (updatedRows != 1)
+            {
+                await transaction.RollbackAsync();
+                throw new InvalidOperationException("E-posta doğrulama durumu güncellenemedi.");
+            }
+
+            await transaction.CommitAsync();
+        }
+        finally
+        {
+            if (openedHere)
+            {
+                await _dbContext.Database.CloseConnectionAsync();
+            }
+        }
+
         await _cache.RemoveAsync(cacheKey);
 
         return "E-posta adresiniz başarıyla doğrulandı.";
