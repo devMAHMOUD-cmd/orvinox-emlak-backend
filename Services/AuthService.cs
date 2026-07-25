@@ -91,7 +91,7 @@ public sealed class AuthService : IAuthService
 
         await _publishEndpoint.Publish(new SendEmailCommand(
             To: email,
-            Subject: "Craftora e-posta dogrulama kodu",
+            Subject: "Craftora e-posta doğrulama kodu",
             Body: BuildOtpEmailBody(user.FullName, otpCode),
             IsHtml: true));
 
@@ -404,6 +404,7 @@ public sealed class AuthService : IAuthService
         var tokens = _jwtProvider.GenerateTokens(user);
         var now = DateTime.UtcNow;
         var metadata = GetSessionMetadata();
+        var isFirstLogin = false;
 
         // Login is still anonymous at middleware level. Set the RLS identity
         // before creating the session and updating the user's last-login time.
@@ -422,6 +423,9 @@ public sealed class AuthService : IAuthService
                 $"SELECT set_config('app.current_user_id', {user.Id.ToString("D")}, true);");
             await _dbContext.Database.ExecuteSqlInterpolatedAsync(
                 $"SELECT pg_advisory_xact_lock(hashtextextended({user.Id.ToString("D")}, 0));");
+
+            var databaseValues = await _dbContext.Entry(user).GetDatabaseValuesAsync();
+            isFirstLogin = databaseValues?.GetValue<DateTime?>(nameof(User.LastLoginAt)) is null;
 
             await _dbContext.UserSessions
                 .Where(session =>
@@ -488,6 +492,31 @@ public sealed class AuthService : IAuthService
             if (openedHere)
             {
                 await _dbContext.Database.CloseConnectionAsync();
+            }
+        }
+
+        if (isFirstLogin)
+        {
+            try
+            {
+                await _publishEndpoint.Publish(new SendEmailCommand(
+                    To: user.Email,
+                    Subject: "Craftora'ya hoş geldin",
+                    Body: BuildWelcomeEmailBody(user.FullName),
+                    IsHtml: true));
+
+                _logger.LogInformation(
+                    "Welcome email command published. UserId: {UserId}, Email: {Email}",
+                    user.Id,
+                    user.Email);
+            }
+            catch (Exception exception)
+            {
+                _logger.LogError(
+                    exception,
+                    "Welcome email command could not be published. UserId: {UserId}, Email: {Email}",
+                    user.Id,
+                    user.Email);
             }
         }
 
@@ -654,7 +683,10 @@ public sealed class AuthService : IAuthService
                            style="max-width:560px;background:#ffffff;border:1px solid #e3e8ee;border-radius:8px;">
                       <tr>
                         <td style="padding:28px 32px 20px;border-bottom:1px solid #e8edf2;">
-                          <span style="display:inline-block;color:#0c6b78;font-size:24px;font-weight:700;line-height:1;">
+                          <span style="display:inline-block;margin-right:10px;padding:8px 11px;background:#0c6b78;border-radius:6px;color:#ffffff;font-size:18px;font-weight:700;line-height:1;">
+                            C
+                          </span>
+                          <span style="display:inline-block;color:#0c6b78;font-size:24px;font-weight:700;line-height:1;vertical-align:middle;">
                             CRAFTORA
                           </span>
                           <div style="margin-top:7px;color:#66737f;font-size:13px;line-height:20px;">
@@ -686,6 +718,94 @@ public sealed class AuthService : IAuthService
                       <tr>
                         <td style="padding:20px 32px;background:#f8fafb;border-top:1px solid #e8edf2;color:#7a8792;font-size:12px;line-height:18px;">
                           Bu mesaj Craftora hesabınla ilgili otomatik olarak gönderildi.<br>
+                          &copy; {DateTime.UtcNow.Year} Craftora
+                        </td>
+                      </tr>
+                    </table>
+                  </td>
+                </tr>
+              </table>
+            </body>
+            </html>
+            """;
+    }
+
+    private static string BuildWelcomeEmailBody(string? fullName)
+    {
+        var displayName = string.IsNullOrWhiteSpace(fullName)
+            ? "Craftora kullanıcısı"
+            : WebUtility.HtmlEncode(fullName.Trim());
+
+        return $"""
+            <!doctype html>
+            <html lang="tr">
+            <head>
+              <meta charset="utf-8">
+              <meta name="viewport" content="width=device-width, initial-scale=1">
+              <title>Craftora'ya hoş geldin</title>
+            </head>
+            <body style="margin:0;padding:0;background:#f4f6f8;color:#17202a;font-family:Arial,Helvetica,sans-serif;">
+              <div style="display:none;max-height:0;overflow:hidden;opacity:0;">
+                Üret, keşfet ve dijital vitrininle büyü.
+              </div>
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background:#f4f6f8;">
+                <tr>
+                  <td align="center" style="padding:32px 16px;">
+                    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0"
+                           style="max-width:560px;background:#ffffff;border:1px solid #e3e8ee;border-radius:8px;">
+                      <tr>
+                        <td style="padding:28px 32px 20px;border-bottom:1px solid #e8edf2;">
+                          <span style="display:inline-block;margin-right:10px;padding:8px 11px;background:#0c6b78;border-radius:6px;color:#ffffff;font-size:18px;font-weight:700;line-height:1;">
+                            C
+                          </span>
+                          <span style="display:inline-block;color:#0c6b78;font-size:24px;font-weight:700;line-height:1;vertical-align:middle;">
+                            CRAFTORA
+                          </span>
+                          <div style="margin-top:7px;color:#66737f;font-size:13px;line-height:20px;">
+                            Üret, keşfet ve büyü
+                          </div>
+                        </td>
+                      </tr>
+                      <tr>
+                        <td style="padding:28px 32px 14px;">
+                          <h1 style="margin:0 0 14px;font-size:24px;line-height:32px;color:#17202a;">
+                            Hoş geldin, {displayName}
+                          </h1>
+                          <p style="margin:0;color:#425466;font-size:16px;line-height:25px;">
+                            Craftora; üreticiler, satıcılar ve yeni fikirler keşfetmek isteyenler için oluşturulmuş bir dijital üretim ve alışveriş platformudur.
+                          </p>
+                        </td>
+                      </tr>
+                      <tr>
+                        <td style="padding:10px 32px 28px;">
+                          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
+                            <tr>
+                              <td style="padding:14px 0;border-bottom:1px solid #e8edf2;">
+                                <strong style="display:block;margin-bottom:4px;color:#17202a;font-size:15px;">Keşfet</strong>
+                                <span style="color:#5d6b78;font-size:14px;line-height:21px;">Ürünleri, mağazaları, kursları ve kısa videoları tek akışta incele.</span>
+                              </td>
+                            </tr>
+                            <tr>
+                              <td style="padding:14px 0;border-bottom:1px solid #e8edf2;">
+                                <strong style="display:block;margin-bottom:4px;color:#17202a;font-size:15px;">Kaydet ve takip et</strong>
+                                <span style="color:#5d6b78;font-size:14px;line-height:21px;">Beğendiğin içerikleri kaydet, üreticileri takip et ve yenilikleri kaçırma.</span>
+                              </td>
+                            </tr>
+                            <tr>
+                              <td style="padding:14px 0;">
+                                <strong style="display:block;margin-bottom:4px;color:#17202a;font-size:15px;">Kendi vitrinini oluştur</strong>
+                                <span style="color:#5d6b78;font-size:14px;line-height:21px;">Mağazanı açarak ürünlerini, eğitimlerini ve içeriklerini topluluğa ulaştır.</span>
+                              </td>
+                            </tr>
+                          </table>
+                          <p style="margin:18px 0 0;color:#425466;font-size:14px;line-height:22px;">
+                            Hazırsan Craftora uygulamasını aç ve keşfetmeye başla.
+                          </p>
+                        </td>
+                      </tr>
+                      <tr>
+                        <td style="padding:20px 32px;background:#f8fafb;border-top:1px solid #e8edf2;color:#7a8792;font-size:12px;line-height:18px;">
+                          Bu mesaj Craftora hesabındaki ilk başarılı girişin ardından gönderildi.<br>
                           &copy; {DateTime.UtcNow.Year} Craftora
                         </td>
                       </tr>
