@@ -6,6 +6,7 @@ public sealed record ProductResponseDto(
     Guid Id,
     Guid ShopId,
     Guid CategoryId,
+    ProductType Type,
     string Title,
     string Description,
     decimal Price,

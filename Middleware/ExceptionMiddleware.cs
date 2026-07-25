@@ -1,5 +1,7 @@
 using System.Net;
 using System.Text.Json;
+using Microsoft.EntityFrameworkCore;
+using Npgsql;
 using Serilog;
 
 namespace CraftoraApi.Middleware;
@@ -130,6 +132,14 @@ public class ExceptionMiddleware
             CraftoraException craftoraEx =>
                 (craftoraEx.StatusCode, craftoraEx.ErrorCode, craftoraEx.Message),
 
+            DbUpdateException { InnerException: PostgresException postgresException }
+                when IsInvalidInputError(postgresException.SqlState) =>
+                (400, "INVALID_INPUT", "Gönderilen alanlardan biri izin verilen sınırların dışında."),
+
+            PostgresException postgresException
+                when IsInvalidInputError(postgresException.SqlState) =>
+                (400, "INVALID_INPUT", "Gönderilen alanlardan biri izin verilen sınırların dışında."),
+
             // İptal edilen istek - loglama yapılmayacak
             OperationCanceledException =>
                 (499, "CLIENT_CLOSED_REQUEST", "İstek iptal edildi"),
@@ -137,6 +147,11 @@ public class ExceptionMiddleware
             // Varsayılan - 500 Internal Server Error
             _ => (500, "INTERNAL_SERVER_ERROR", "Sunucu hatası oluştu")
         };
+    }
+
+    private static bool IsInvalidInputError(string sqlState)
+    {
+        return sqlState is "22001" or "22003" or "23514";
     }
 
     private string GetSafeMessage(string message, Exception exception, int statusCode)

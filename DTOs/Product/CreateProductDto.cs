@@ -14,10 +14,10 @@ public sealed record CreateProductDto(
     [property: Required(ErrorMessage = "Ürün açıklaması zorunludur.")]
     string Description,
 
-    [property: Range(0, double.MaxValue, ErrorMessage = "Fiyat negatif olamaz.")]
+    [property: Range(typeof(decimal), "0", "99999999.99", ErrorMessage = "Fiyat 0 ile 99999999.99 arasinda olmalidir.")]
     decimal Price,
 
-    [property: Range(0, double.MaxValue, ErrorMessage = "Orijinal fiyat negatif olamaz.")]
+    [property: Range(typeof(decimal), "0", "99999999.99", ErrorMessage = "Orijinal fiyat 0 ile 99999999.99 arasinda olmalidir.")]
     decimal? OriginalPrice,
 
     ProductStatus Status,
@@ -30,4 +30,6 @@ public sealed record CreateProductDto(
 
     string? FileUrl,
 
-    string? Metadata);
+    string? Metadata,
+
+    ProductType? Type = null);

@@ -31,6 +31,7 @@ using CraftoraApi.Models.Enums;
 using CraftoraApi.Redis;
 using CraftoraApi.Services;
 using CraftoraApi.Services.Interfaces;
+using CraftoraApi.Validators;
 using FluentValidation;
 using CraftoraApi.Data.Interceptors;
 
@@ -126,6 +127,7 @@ public static class ServiceExtensions
         // FluentValidation - yeni syntax'ı kullan
         services.AddFluentValidationAutoValidation()
             .AddFluentValidationClientsideAdapters();
+        services.AddValidatorsFromAssemblyContaining<CreateProductDtoValidator>();
 
         services.AddSignalR();
 

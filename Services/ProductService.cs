@@ -423,6 +423,7 @@ public sealed class ProductService : IProductService
             Id: product.Id,
             ShopId: product.ShopId,
             CategoryId: product.CategoryId,
+            Type: product.Type,
             Title: product.Title,
             Description: product.Description ?? string.Empty,
             Price: product.Price,

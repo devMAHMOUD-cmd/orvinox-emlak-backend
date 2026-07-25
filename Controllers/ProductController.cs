@@ -141,11 +141,17 @@ public sealed class ProductController : ControllerBase
 
     private async Task<Shop> GetCurrentUserShopAsync(Guid userId)
     {
-        var shop = await _dbContext.Shops.FirstOrDefaultAsync(shop => shop.UserId == userId && shop.IsActive == true);
+        var shop = await _dbContext.Shops.FirstOrDefaultAsync(shop => shop.UserId == userId);
 
         if (shop is null)
         {
             throw new BadRequestException("Ürün işlemi için önce bir mağaza oluşturmalısınız.");
+        }
+
+        if (shop.IsActive != true)
+        {
+            throw new BadRequestException(
+                "Mağazanız şu anda pasif. Ürün işlemleri için aktif bir satıcı aboneliği gereklidir.");
         }
 
         return shop;
