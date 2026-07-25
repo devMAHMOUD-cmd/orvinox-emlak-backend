@@ -20,7 +20,7 @@ public sealed class JwtProvider : IJwtProvider
         _configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
     }
 
-    public TokenDto GenerateTokens(User user)
+    public TokenDto GenerateTokens(User user, string? refreshToken = null)
     {
         ArgumentNullException.ThrowIfNull(user);
 
@@ -59,7 +59,7 @@ public sealed class JwtProvider : IJwtProvider
             signingCredentials: credentials);
 
         var accessToken = new JwtSecurityTokenHandler().WriteToken(token);
-        var refreshToken = GenerateRefreshToken();
+        refreshToken ??= GenerateRefreshToken();
 
         return new TokenDto(
             AccessToken: accessToken,
@@ -67,7 +67,7 @@ public sealed class JwtProvider : IJwtProvider
             ExpiresIn: accessTokenExpireMinutes * 60);
     }
 
-    private static string GenerateRefreshToken()
+    public string GenerateRefreshToken()
     {
         var randomBytes = RandomNumberGenerator.GetBytes(RefreshTokenByteSize);
         return Convert.ToBase64String(randomBytes);

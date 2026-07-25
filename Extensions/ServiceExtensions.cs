@@ -19,7 +19,6 @@ using Minio;
 using Elastic.Clients.Elasticsearch;
 using Npgsql;
 using RabbitMQ.Client;
-using SendGrid.Extensions.DependencyInjection;
 using Serilog;
 using StackExchange.Redis;
 using CraftoraApi.Configuration;
@@ -251,11 +250,6 @@ public static class ServiceExtensions
             client.BaseAddress = new Uri("https://api.resend.com/");
             client.Timeout = TimeSpan.FromSeconds(30);
         });
-        services.AddSendGrid(options =>
-        {
-            options.ApiKey = GetSendGridApiKey(configuration);
-        });
-
         services.AddScoped<IAuthService, AuthService>();
         services.AddScoped<IShopService, ShopService>();
         services.AddScoped<IProductService, ProductService>();
@@ -924,24 +918,20 @@ public static class ServiceExtensions
 
     private static void ApplyEmailEnvironmentFallbacks(EmailSettings settings)
     {
-        settings.Provider = GetValueOrFallback(
-            settings.Provider,
-            Environment.GetEnvironmentVariable("EMAIL_PROVIDER"),
-            "resend");
+        settings.Provider = "resend";
 
         settings.ApiKey = GetValueOrFallback(
             settings.ApiKey,
             Environment.GetEnvironmentVariable("RESEND_API_KEY"),
-            Environment.GetEnvironmentVariable("SENDGRID_API_KEY"));
+            Environment.GetEnvironmentVariable("Email__Resend__ApiKey"),
+            Environment.GetEnvironmentVariable("Resend__ApiKey"));
 
         settings.Resend.ApiKey = GetValueOrFallback(
             settings.Resend.ApiKey,
             settings.ApiKey,
-            Environment.GetEnvironmentVariable("RESEND_API_KEY"));
-
-        settings.SendGrid.ApiKey = GetValueOrFallback(
-            settings.SendGrid.ApiKey,
-            Environment.GetEnvironmentVariable("SENDGRID_API_KEY"));
+            Environment.GetEnvironmentVariable("RESEND_API_KEY"),
+            Environment.GetEnvironmentVariable("Email__Resend__ApiKey"),
+            Environment.GetEnvironmentVariable("Resend__ApiKey"));
 
         settings.FromEmail = GetValueOrFallback(
             settings.FromEmail,
@@ -953,42 +943,6 @@ public static class ServiceExtensions
             Environment.GetEnvironmentVariable("EMAIL_FROM_NAME"),
             "Craftora");
 
-        settings.Smtp.Host = GetValueOrFallback(
-            settings.Smtp.Host,
-            Environment.GetEnvironmentVariable("SMTP_HOST"));
-
-        settings.Smtp.Username = GetValueOrFallback(
-            settings.Smtp.Username,
-            Environment.GetEnvironmentVariable("SMTP_USER"));
-
-        settings.Smtp.Password = GetValueOrFallback(
-            settings.Smtp.Password,
-            Environment.GetEnvironmentVariable("SMTP_PASS"));
-
-        var smtpPortValue = Environment.GetEnvironmentVariable("SMTP_PORT");
-        if (settings.Smtp.Port <= 0)
-        {
-            settings.Smtp.Port = 587;
-        }
-
-        if (int.TryParse(smtpPortValue, out var smtpPort))
-        {
-            settings.Smtp.Port = smtpPort;
-        }
-
-        var smtpUseSslValue = Environment.GetEnvironmentVariable("SMTP_USE_SSL");
-        if (bool.TryParse(smtpUseSslValue, out var smtpUseSsl))
-        {
-            settings.Smtp.UseSsl = smtpUseSsl;
-        }
-    }
-
-    private static string GetSendGridApiKey(IConfiguration configuration)
-    {
-        return configuration["Email:SendGrid:ApiKey"]
-            ?? configuration["Email:ApiKey"]
-            ?? Environment.GetEnvironmentVariable("SENDGRID_API_KEY")
-            ?? string.Empty;
     }
 
     private static string GetValueOrFallback(params string?[] values)

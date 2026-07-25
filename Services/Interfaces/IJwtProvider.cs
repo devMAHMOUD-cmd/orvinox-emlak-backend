@@ -5,5 +5,7 @@ namespace CraftoraApi.Services.Interfaces;
 
 public interface IJwtProvider
 {
-    TokenDto GenerateTokens(User user);
+    TokenDto GenerateTokens(User user, string? refreshToken = null);
+
+    string GenerateRefreshToken();
 }

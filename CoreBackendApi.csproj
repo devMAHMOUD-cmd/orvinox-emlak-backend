@@ -19,7 +19,6 @@
     <PackageReference Include="FirebaseAdmin" Version="3.5.0" />
     <PackageReference Include="FluentValidation.AspNetCore" Version="11.3.1" />
     <PackageReference Include="Google.Apis.Auth" Version="1.74.0" />
-    <PackageReference Include="MailKit" Version="4.16.0" />
     <PackageReference Include="MassTransit.RabbitMQ" Version="8.3.6" />
     <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="9.0.0" />
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="9.0.9" />
@@ -39,7 +38,6 @@
     <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="9.0.0" />
     <PackageReference Include="QuestPDF" Version="2026.5.0" />
     <PackageReference Include="RabbitMQ.Client" Version="7.2.1" />
-    <PackageReference Include="SendGrid.Extensions.DependencyInjection" Version="1.0.1" />
     <PackageReference Include="Sentry.AspNetCore" Version="6.5.0" />
     <PackageReference Include="Serilog.AspNetCore" Version="10.0.0" />
     <PackageReference Include="Serilog.Formatting.Compact" Version="3.0.0" />

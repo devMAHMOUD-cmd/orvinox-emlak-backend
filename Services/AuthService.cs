@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Data;
+using System.Data.Common;
 using System.Net;
 using System.Text;
 using CraftoraApi.Data;
@@ -12,6 +13,7 @@ using CraftoraApi.Services.Interfaces;
 using Google.Apis.Auth;
 using MassTransit;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Caching.Distributed;
 
 namespace CraftoraApi.Services;
@@ -23,12 +25,15 @@ public sealed class AuthService : IAuthService
     private const int MaxFailedLoginAttempts = 5;
     private const int BruteForceWindowMinutes = 30;
     private const int AccessTokenBlacklistMinutes = 15;
+    private const int MaxActiveSessionsPerUser = 5;
+    private const int MaxDeviceIdLength = 255;
 
     private readonly AppDbContext _dbContext;
     private readonly IDistributedCache _cache;
     private readonly IPublishEndpoint _publishEndpoint;
     private readonly IJwtProvider _jwtProvider;
     private readonly IConfiguration _configuration;
+    private readonly IHttpContextAccessor _httpContextAccessor;
     private readonly ILogger<AuthService> _logger;
 
     public AuthService(
@@ -37,6 +42,7 @@ public sealed class AuthService : IAuthService
         IPublishEndpoint publishEndpoint,
         IJwtProvider jwtProvider,
         IConfiguration configuration,
+        IHttpContextAccessor httpContextAccessor,
         ILogger<AuthService> logger)
     {
         _dbContext = dbContext ?? throw new ArgumentNullException(nameof(dbContext));
@@ -44,6 +50,7 @@ public sealed class AuthService : IAuthService
         _publishEndpoint = publishEndpoint ?? throw new ArgumentNullException(nameof(publishEndpoint));
         _jwtProvider = jwtProvider ?? throw new ArgumentNullException(nameof(jwtProvider));
         _configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
+        _httpContextAccessor = httpContextAccessor ?? throw new ArgumentNullException(nameof(httpContextAccessor));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
 
@@ -246,52 +253,52 @@ public sealed class AuthService : IAuthService
             throw new UnauthorizedException("Geçersiz refresh token.");
         }
 
-        var refreshTokenHash = HashRefreshToken(refreshToken);
-        var session = await _dbContext.UserSessions
-            .Include(userSession => userSession.User)
-            .FirstOrDefaultAsync(userSession => userSession.RefreshToken == refreshTokenHash);
+        var metadata = GetSessionMetadata();
+        var nextRefreshToken = _jwtProvider.GenerateRefreshToken();
+        var nextRefreshTokenHash = HashRefreshToken(nextRefreshToken);
+        var nextExpiresAt = DateTime.UtcNow.AddDays(GetRefreshTokenExpireDays());
 
-        if (session?.User is null)
+        await using var transaction = await _dbContext.Database.BeginTransactionAsync();
+        var userId = await RotateSessionAsync(
+            HashRefreshToken(refreshToken),
+            nextRefreshTokenHash,
+            nextExpiresAt,
+            metadata,
+            transaction.GetDbTransaction());
+
+        if (!userId.HasValue)
         {
+            await transaction.RollbackAsync();
+            throw new UnauthorizedException("Geçersiz veya süresi dolmuş refresh token.");
+        }
+
+        await _dbContext.Database.ExecuteSqlInterpolatedAsync(
+            $"SELECT set_config('app.current_user_id', {userId.Value.ToString("D")}, true);");
+
+        var user = await _dbContext.Users.FirstOrDefaultAsync(candidate => candidate.Id == userId.Value);
+        if (user is null)
+        {
+            await transaction.RollbackAsync();
             throw new UnauthorizedException("Geçersiz refresh token.");
         }
 
-        if (session.ExpiresAt <= DateTime.UtcNow)
-        {
-            _dbContext.UserSessions.Remove(session);
-            await _dbContext.SaveChangesAsync();
+        await EnsureUserCanAuthenticateAsync(user);
+        await PromoteShopOwnerToSellerAsync(user);
 
-            throw new UnauthorizedException("Süresi dolmuş refresh token.");
-        }
-
-        await EnsureUserCanAuthenticateAsync(session.User);
-        await PromoteShopOwnerToSellerAsync(session.User);
-
-        var tokens = _jwtProvider.GenerateTokens(session.User);
-
-        session.RefreshToken = HashRefreshToken(tokens.RefreshToken);
-        session.ExpiresAt = DateTime.UtcNow.AddDays(GetRefreshTokenExpireDays());
+        var tokens = _jwtProvider.GenerateTokens(user, nextRefreshToken);
         await _dbContext.SaveChangesAsync();
+        await transaction.CommitAsync();
 
         return tokens;
     }
 
     public async Task<bool> LogoutAsync(string refreshToken, string accessToken)
     {
-        var isSessionRemoved = false;
+        var isSessionRevoked = false;
 
         if (!string.IsNullOrWhiteSpace(refreshToken))
         {
-            var refreshTokenHash = HashRefreshToken(refreshToken);
-            var session = await _dbContext.UserSessions
-                .FirstOrDefaultAsync(userSession => userSession.RefreshToken == refreshTokenHash);
-
-            if (session is not null)
-            {
-                _dbContext.UserSessions.Remove(session);
-                await _dbContext.SaveChangesAsync();
-                isSessionRemoved = true;
-            }
+            isSessionRevoked = await RevokeSessionAsync(HashRefreshToken(refreshToken));
         }
 
         if (!string.IsNullOrWhiteSpace(accessToken))
@@ -305,7 +312,7 @@ public sealed class AuthService : IAuthService
                 });
         }
 
-        return isSessionRemoved || !string.IsNullOrWhiteSpace(accessToken);
+        return isSessionRevoked || !string.IsNullOrWhiteSpace(accessToken);
     }
 
     public async Task<UserMeResponseDto> GetCurrentUserAsync(Guid userId)
@@ -396,6 +403,7 @@ public sealed class AuthService : IAuthService
 
         var tokens = _jwtProvider.GenerateTokens(user);
         var now = DateTime.UtcNow;
+        var metadata = GetSessionMetadata();
 
         // Login is still anonymous at middleware level. Set the RLS identity
         // before creating the session and updating the user's last-login time.
@@ -408,18 +416,67 @@ public sealed class AuthService : IAuthService
 
         try
         {
+            await using var transaction = await _dbContext.Database.BeginTransactionAsync();
+
             await _dbContext.Database.ExecuteSqlInterpolatedAsync(
-                $"SELECT set_config('app.current_user_id', {user.Id.ToString("D")}, false);");
+                $"SELECT set_config('app.current_user_id', {user.Id.ToString("D")}, true);");
+            await _dbContext.Database.ExecuteSqlInterpolatedAsync(
+                $"SELECT pg_advisory_xact_lock(hashtextextended({user.Id.ToString("D")}, 0));");
+
+            await _dbContext.UserSessions
+                .Where(session =>
+                    session.UserId == user.Id &&
+                    session.IsRevoked != true &&
+                    session.ExpiresAt <= now)
+                .ExecuteUpdateAsync(setters => setters
+                    .SetProperty(session => session.IsRevoked, true));
+
+            if (!string.IsNullOrWhiteSpace(metadata.DeviceId))
+            {
+                await _dbContext.UserSessions
+                    .Where(session =>
+                        session.UserId == user.Id &&
+                        session.DeviceId == metadata.DeviceId &&
+                        session.IsRevoked != true &&
+                        session.ExpiresAt > now)
+                    .ExecuteUpdateAsync(setters => setters
+                        .SetProperty(session => session.IsRevoked, true));
+            }
+
+            var sessionIdsToRevoke = await _dbContext.UserSessions
+                .Where(session =>
+                    session.UserId == user.Id &&
+                    session.IsRevoked != true &&
+                    session.ExpiresAt > now)
+                .OrderByDescending(session => session.CreatedAt.HasValue)
+                .ThenByDescending(session => session.CreatedAt)
+                .ThenByDescending(session => session.Id)
+                .Skip(MaxActiveSessionsPerUser - 1)
+                .Select(session => session.Id)
+                .ToListAsync();
+
+            if (sessionIdsToRevoke.Count > 0)
+            {
+                await _dbContext.UserSessions
+                    .Where(session => sessionIdsToRevoke.Contains(session.Id))
+                    .ExecuteUpdateAsync(setters => setters
+                        .SetProperty(session => session.IsRevoked, true));
+            }
 
             user.LastLoginAt = now;
             _dbContext.UserSessions.Add(new UserSession
             {
                 User = user,
                 RefreshToken = HashRefreshToken(tokens.RefreshToken),
-                ExpiresAt = now.AddDays(GetRefreshTokenExpireDays())
+                ExpiresAt = now.AddDays(GetRefreshTokenExpireDays()),
+                DeviceId = metadata.DeviceId,
+                IpAddress = metadata.IpAddress,
+                UserAgent = metadata.UserAgent,
+                IsRevoked = false
             });
 
             await _dbContext.SaveChangesAsync();
+            await transaction.CommitAsync();
         }
         finally
         {
@@ -479,6 +536,94 @@ public sealed class AuthService : IAuthService
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(refreshToken)));
     }
 
+    private SessionMetadata GetSessionMetadata()
+    {
+        var context = _httpContextAccessor.HttpContext;
+        if (context is null)
+        {
+            return new SessionMetadata(null, null, null);
+        }
+
+        var deviceId = context.Request.Headers["X-Device-Id"].ToString().Trim();
+        if (deviceId.Length > MaxDeviceIdLength)
+        {
+            deviceId = deviceId[..MaxDeviceIdLength];
+        }
+
+        var userAgent = context.Request.Headers.UserAgent.ToString().Trim();
+
+        return new SessionMetadata(
+            string.IsNullOrWhiteSpace(deviceId) ? null : deviceId,
+            context.Connection.RemoteIpAddress,
+            string.IsNullOrWhiteSpace(userAgent) ? null : userAgent);
+    }
+
+    private async Task<Guid?> RotateSessionAsync(
+        string currentRefreshTokenHash,
+        string nextRefreshTokenHash,
+        DateTime nextExpiresAt,
+        SessionMetadata metadata,
+        DbTransaction transaction)
+    {
+        var connection = _dbContext.Database.GetDbConnection();
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = """
+            SELECT public.rotate_user_session(
+                CAST(@current_hash AS text),
+                CAST(@next_hash AS text),
+                CAST(@next_expires_at AS timestamp with time zone),
+                CAST(@device_id AS text),
+                CAST(@ip_address AS inet),
+                CAST(@user_agent AS text))
+            """;
+
+        AddParameter(command, "current_hash", currentRefreshTokenHash);
+        AddParameter(command, "next_hash", nextRefreshTokenHash);
+        AddParameter(command, "next_expires_at", nextExpiresAt);
+        AddParameter(command, "device_id", metadata.DeviceId);
+        AddParameter(command, "ip_address", metadata.IpAddress);
+        AddParameter(command, "user_agent", metadata.UserAgent);
+
+        var result = await command.ExecuteScalarAsync();
+        return result is Guid userId ? userId : null;
+    }
+
+    private async Task<bool> RevokeSessionAsync(string refreshTokenHash)
+    {
+        var connection = _dbContext.Database.GetDbConnection();
+        var openedHere = connection.State != ConnectionState.Open;
+        if (openedHere)
+        {
+            await _dbContext.Database.OpenConnectionAsync();
+        }
+
+        try
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText = "SELECT public.revoke_user_session(@refresh_token_hash);";
+            AddParameter(command, "refresh_token_hash", refreshTokenHash);
+
+            var result = await command.ExecuteScalarAsync();
+            return result is true;
+        }
+        finally
+        {
+            if (openedHere)
+            {
+                await _dbContext.Database.CloseConnectionAsync();
+            }
+        }
+    }
+
+    private static void AddParameter(DbCommand command, string name, object? value)
+    {
+        var parameter = command.CreateParameter();
+        parameter.ParameterName = name;
+        parameter.Value = value ?? DBNull.Value;
+        command.Parameters.Add(parameter);
+    }
+
     private static string GenerateOtpCode()
     {
         return RandomNumberGenerator.GetInt32(1000, 10_000).ToString();
@@ -503,4 +648,9 @@ public sealed class AuthService : IAuthService
         return _configuration.GetSection("Jwt")
             .GetValue("RefreshTokenExpireDays", DefaultRefreshTokenExpireDays);
     }
+
+    private sealed record SessionMetadata(
+        string? DeviceId,
+        IPAddress? IpAddress,
+        string? UserAgent);
 }
