@@ -1,3 +1,5 @@
+using System.Data;
+using System.Data.Common;
 using CraftoraApi.Data;
 using CraftoraApi.DTOs.Notification;
 using CraftoraApi.Hubs;
@@ -22,17 +24,20 @@ public sealed class NotificationService : INotificationService
     private readonly IRabbitMqPublisher _rabbitMqPublisher;
     private readonly IHubContext<NotificationHub> _hubContext;
     private readonly IStorageService _storageService;
+    private readonly ILogger<NotificationService> _logger;
 
     public NotificationService(
         AppDbContext dbContext,
         IRabbitMqPublisher rabbitMqPublisher,
         IHubContext<NotificationHub> hubContext,
-        IStorageService storageService)
+        IStorageService storageService,
+        ILogger<NotificationService> logger)
     {
         _dbContext = dbContext ?? throw new ArgumentNullException(nameof(dbContext));
         _rabbitMqPublisher = rabbitMqPublisher ?? throw new ArgumentNullException(nameof(rabbitMqPublisher));
         _hubContext = hubContext ?? throw new ArgumentNullException(nameof(hubContext));
         _storageService = storageService ?? throw new ArgumentNullException(nameof(storageService));
+        _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
 
     public async Task<List<NotificationDto>> GetUserNotificationsAsync(
@@ -172,13 +177,12 @@ public sealed class NotificationService : INotificationService
             CreatedAt = DateTime.UtcNow
         };
 
-        _dbContext.Notifications.Add(notification);
-        await _dbContext.SaveChangesAsync();
+        await CreateNotificationAsync(notification);
 
         var notificationDto = MapToDto(notification);
-        await PublishRealtimeNotificationAsync(userId, notificationDto);
+        await TryPublishRealtimeNotificationAsync(userId, notificationDto);
 
-        await _rabbitMqPublisher.PublishPushNotificationCommand(new SendPushNotificationCommand(
+        await TryPublishPushNotificationAsync(new SendPushNotificationCommand(
             UserId: userId,
             Title: notification.Title,
             Body: notification.Body,
@@ -226,13 +230,12 @@ public sealed class NotificationService : INotificationService
             CreatedAt = DateTime.UtcNow
         };
 
-        _dbContext.Notifications.Add(notification);
-        await _dbContext.SaveChangesAsync();
+        await CreateNotificationAsync(notification);
 
         var notificationDto = MapToDto(notification);
-        await PublishRealtimeNotificationAsync(userId, notificationDto);
+        await TryPublishRealtimeNotificationAsync(userId, notificationDto);
 
-        await _rabbitMqPublisher.PublishPushNotificationCommand(new SendPushNotificationCommand(
+        await TryPublishPushNotificationAsync(new SendPushNotificationCommand(
             UserId: userId,
             Title: notification.Title,
             Body: notification.Body,
@@ -287,13 +290,12 @@ public sealed class NotificationService : INotificationService
             CreatedAt = DateTime.UtcNow
         };
 
-        _dbContext.Notifications.Add(notification);
-        await _dbContext.SaveChangesAsync();
+        await CreateNotificationAsync(notification);
 
         var notificationDto = MapToDto(notification);
-        await PublishRealtimeNotificationAsync(userId, notificationDto);
+        await TryPublishRealtimeNotificationAsync(userId, notificationDto);
 
-        await _rabbitMqPublisher.PublishPushNotificationCommand(new SendPushNotificationCommand(
+        await TryPublishPushNotificationAsync(new SendPushNotificationCommand(
             UserId: userId,
             Title: notification.Title,
             Body: notification.Body,
@@ -404,12 +406,90 @@ public sealed class NotificationService : INotificationService
         };
     }
 
-    private async Task PublishRealtimeNotificationAsync(Guid userId, NotificationDto notification)
+    private async Task CreateNotificationAsync(Notification notification)
     {
-        await _hubContext
-            .Clients
-            .Group(NotificationHub.UserGroup(userId))
-            .SendAsync("ReceiveNotification", notification);
+        var connection = _dbContext.Database.GetDbConnection();
+        var openedHere = connection.State != ConnectionState.Open;
+        if (openedHere)
+        {
+            await _dbContext.Database.OpenConnectionAsync();
+        }
+
+        try
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText = """
+                SELECT public.create_notification(
+                    CAST(@user_id AS uuid),
+                    CAST(@type AS varchar),
+                    CAST(@title AS varchar),
+                    CAST(@body AS text),
+                    CAST(@reference_type AS varchar),
+                    CAST(@reference_id AS uuid),
+                    CAST(@data AS jsonb))
+                """;
+            AddParameter(command, "user_id", notification.UserId);
+            AddParameter(command, "type", notification.Type);
+            AddParameter(command, "title", notification.Title);
+            AddParameter(command, "body", notification.Body);
+            AddParameter(command, "reference_type", notification.ReferenceType);
+            AddParameter(command, "reference_id", notification.ReferenceId);
+            AddParameter(command, "data", notification.Data);
+
+            var result = await command.ExecuteScalarAsync();
+            notification.Id = result is Guid id
+                ? id
+                : throw new InvalidOperationException("Bildirim kaydi olusturulamadi.");
+        }
+        finally
+        {
+            if (openedHere)
+            {
+                await _dbContext.Database.CloseConnectionAsync();
+            }
+        }
+    }
+
+    private async Task TryPublishRealtimeNotificationAsync(Guid userId, NotificationDto notification)
+    {
+        try
+        {
+            await _hubContext
+                .Clients
+                .Group(NotificationHub.UserGroup(userId))
+                .SendAsync("ReceiveNotification", notification);
+        }
+        catch (Exception exception)
+        {
+            _logger.LogWarning(
+                exception,
+                "Realtime notification delivery failed. NotificationId: {NotificationId}, UserId: {UserId}",
+                notification.Id,
+                userId);
+        }
+    }
+
+    private async Task TryPublishPushNotificationAsync(SendPushNotificationCommand command)
+    {
+        try
+        {
+            await _rabbitMqPublisher.PublishPushNotificationCommand(command);
+        }
+        catch (Exception exception)
+        {
+            _logger.LogWarning(
+                exception,
+                "Push notification command publish failed. UserId: {UserId}",
+                command.UserId);
+        }
+    }
+
+    private static void AddParameter(DbCommand command, string name, object? value)
+    {
+        var parameter = command.CreateParameter();
+        parameter.ParameterName = name;
+        parameter.Value = value ?? DBNull.Value;
+        command.Parameters.Add(parameter);
     }
 
     private NotificationActorDto? MapActor(NotificationActorData? actor)
