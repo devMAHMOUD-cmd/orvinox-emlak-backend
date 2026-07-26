@@ -258,6 +258,23 @@ public static class DatabaseHardening
             END;
             $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
 
+            CREATE OR REPLACE FUNCTION set_order_invoice_url(
+                p_order_id UUID,
+                p_invoice_pdf_url TEXT)
+            RETURNS BOOLEAN AS $$
+            BEGIN
+                UPDATE orders
+                SET invoice_pdf_url = p_invoice_pdf_url,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = p_order_id;
+
+                RETURN FOUND;
+            END;
+            $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp;
+
+            REVOKE ALL ON FUNCTION set_order_invoice_url(UUID, TEXT) FROM PUBLIC;
+            GRANT EXECUTE ON FUNCTION set_order_invoice_url(UUID, TEXT) TO craftora_app;
+
             CREATE OR REPLACE FUNCTION prevent_duplicate_purchase()
             RETURNS TRIGGER AS $$
             BEGIN
@@ -552,6 +569,33 @@ public static class DatabaseHardening
 
             DROP POLICY IF EXISTS media_select_active ON media;
             CREATE POLICY media_select_active ON media FOR SELECT USING (is_active = TRUE);
+
+            DROP POLICY IF EXISTS orders_insert_buyer ON orders;
+            CREATE POLICY orders_insert_buyer ON orders FOR INSERT TO craftora_app
+                WITH CHECK (
+                    buyer_id = NULLIF(current_setting('app.current_user_id', true), '')::uuid
+                );
+
+            DROP POLICY IF EXISTS orders_update_buyer ON orders;
+            CREATE POLICY orders_update_buyer ON orders FOR UPDATE TO craftora_app
+                USING (
+                    buyer_id = NULLIF(current_setting('app.current_user_id', true), '')::uuid
+                )
+                WITH CHECK (
+                    buyer_id = NULLIF(current_setting('app.current_user_id', true), '')::uuid
+                );
+
+            DROP POLICY IF EXISTS payments_insert_buyer_order ON payments;
+            CREATE POLICY payments_insert_buyer_order ON payments FOR INSERT TO craftora_app
+                WITH CHECK (
+                    EXISTS (
+                        SELECT 1
+                        FROM orders
+                        WHERE orders.id = payments.order_id
+                          AND orders.buyer_id =
+                              NULLIF(current_setting('app.current_user_id', true), '')::uuid
+                    )
+                );
 
             DROP POLICY IF EXISTS cart_manage_own ON cart_items;
             DROP POLICY IF EXISTS "Kullanıcı kendi sepetini yönetebilir" ON cart_items;

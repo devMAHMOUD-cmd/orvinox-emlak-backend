@@ -44,16 +44,13 @@ public sealed class InvoiceConsumer : IConsumer<GenerateInvoiceCommand>
             objectKey,
             60 * 24 * 7);
 
-        var order = await _dbContext.Orders.FirstOrDefaultAsync(
-            order => order.Id == message.OrderId,
+        await _dbContext.Database.ExecuteSqlInterpolatedAsync(
+            $"""
+             SELECT public.set_order_invoice_url(
+                 {message.OrderId},
+                 {invoiceUrl})
+             """,
             context.CancellationToken);
-
-        if (order is not null)
-        {
-            order.InvoicePdfUrl = invoiceUrl;
-            order.UpdatedAt = DateTime.UtcNow;
-            await _dbContext.SaveChangesAsync(context.CancellationToken);
-        }
 
         await context.Publish(new SendEmailCommand(
             To: message.CustomerEmail,
