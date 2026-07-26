@@ -201,11 +201,7 @@ public sealed class CouponService : ICouponService
         var coupon = await _dbContext.Coupons
             .FromSqlInterpolated($"""
                 SELECT *
-                FROM coupons
-                WHERE product_id = {productId}
-                  AND code = {normalizedCode}
-                  AND is_active = true
-                FOR UPDATE
+                FROM public.lock_checkout_coupon({productId}, {normalizedCode})
                 """)
             .FirstOrDefaultAsync();
 
