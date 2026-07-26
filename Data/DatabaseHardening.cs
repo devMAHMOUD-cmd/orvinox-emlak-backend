@@ -539,6 +539,7 @@ public static class DatabaseHardening
             ALTER TABLE orders ENABLE ROW LEVEL SECURITY;
             ALTER TABLE payments ENABLE ROW LEVEL SECURITY;
             ALTER TABLE user_library ENABLE ROW LEVEL SECURITY;
+            ALTER TABLE user_lesson_progress ENABLE ROW LEVEL SECURITY;
             ALTER TABLE cart_items ENABLE ROW LEVEL SECURITY;
             ALTER TABLE coupons ENABLE ROW LEVEL SECURITY;
             ALTER TABLE coupon_uses ENABLE ROW LEVEL SECURITY;
@@ -595,6 +596,39 @@ public static class DatabaseHardening
                           AND orders.buyer_id =
                               NULLIF(current_setting('app.current_user_id', true), '')::uuid
                     )
+                );
+
+            DROP POLICY IF EXISTS user_library_update_own ON user_library;
+            CREATE POLICY user_library_update_own ON user_library FOR UPDATE TO craftora_app
+                USING (
+                    user_id = NULLIF(current_setting('app.current_user_id', true), '')::uuid
+                )
+                WITH CHECK (
+                    user_id = NULLIF(current_setting('app.current_user_id', true), '')::uuid
+                );
+
+            DROP POLICY IF EXISTS user_lesson_progress_select_own ON user_lesson_progress;
+            CREATE POLICY user_lesson_progress_select_own ON user_lesson_progress
+                FOR SELECT TO craftora_app
+                USING (
+                    user_id = NULLIF(current_setting('app.current_user_id', true), '')::uuid
+                );
+
+            DROP POLICY IF EXISTS user_lesson_progress_insert_own ON user_lesson_progress;
+            CREATE POLICY user_lesson_progress_insert_own ON user_lesson_progress
+                FOR INSERT TO craftora_app
+                WITH CHECK (
+                    user_id = NULLIF(current_setting('app.current_user_id', true), '')::uuid
+                );
+
+            DROP POLICY IF EXISTS user_lesson_progress_update_own ON user_lesson_progress;
+            CREATE POLICY user_lesson_progress_update_own ON user_lesson_progress
+                FOR UPDATE TO craftora_app
+                USING (
+                    user_id = NULLIF(current_setting('app.current_user_id', true), '')::uuid
+                )
+                WITH CHECK (
+                    user_id = NULLIF(current_setting('app.current_user_id', true), '')::uuid
                 );
 
             DROP POLICY IF EXISTS cart_manage_own ON cart_items;

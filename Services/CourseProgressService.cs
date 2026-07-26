@@ -3,7 +3,6 @@ using CraftoraApi.DTOs.Course;
 using CraftoraApi.Middleware;
 using CraftoraApi.Models.Entities;
 using CraftoraApi.Models.Enums;
-using CraftoraApi.Redis;
 using CraftoraApi.Services.Interfaces;
 using Microsoft.EntityFrameworkCore;
 
@@ -11,17 +10,11 @@ namespace CraftoraApi.Services;
 
 public sealed class CourseProgressService : ICourseProgressService
 {
-    private static readonly TimeSpan ProgressCacheTtl = TimeSpan.FromHours(1);
-
     private readonly AppDbContext _dbContext;
-    private readonly ICacheService _cacheService;
 
-    public CourseProgressService(
-        AppDbContext dbContext,
-        ICacheService cacheService)
+    public CourseProgressService(AppDbContext dbContext)
     {
         _dbContext = dbContext ?? throw new ArgumentNullException(nameof(dbContext));
-        _cacheService = cacheService ?? throw new ArgumentNullException(nameof(cacheService));
     }
 
     public async Task UpdateProgressAsync(Guid userId, UpdateLessonProgressDto dto)
@@ -35,7 +28,8 @@ public sealed class CourseProgressService : ICourseProgressService
                 lesson.IsActive)
             .Select(lesson => new
             {
-                CourseId = lesson.CourseSection.CourseId
+                CourseId = lesson.CourseSection.CourseId,
+                lesson.DurationInSeconds
             })
             .FirstOrDefaultAsync();
 
@@ -46,28 +40,21 @@ public sealed class CourseProgressService : ICourseProgressService
 
         await EnsureCourseAccessAsync(userId, lesson.CourseId);
 
-        var progressCacheKey = GetProgressCacheKey(userId, dto.CourseLessonId);
-        await _cacheService.SetAsync(progressCacheKey, dto, ProgressCacheTtl);
-
-        if (!dto.IsCompleted)
-        {
-            return;
-        }
-
-        var cachedProgress = await _cacheService.GetAsync<UpdateLessonProgressDto>(progressCacheKey) ?? dto;
-
         var progress = await _dbContext.UserLessonProgresses.FirstOrDefaultAsync(progress =>
             progress.UserId == userId &&
-            progress.CourseLessonId == cachedProgress.CourseLessonId);
+            progress.CourseLessonId == dto.CourseLessonId);
+        var watchedSeconds = Math.Min(
+            dto.WatchedSeconds,
+            Math.Max(lesson.DurationInSeconds, 0));
 
         if (progress is null)
         {
             progress = new UserLessonProgress
             {
                 UserId = userId,
-                CourseLessonId = cachedProgress.CourseLessonId,
-                IsCompleted = cachedProgress.IsCompleted,
-                WatchedSeconds = cachedProgress.WatchedSeconds,
+                CourseLessonId = dto.CourseLessonId,
+                IsCompleted = dto.IsCompleted,
+                WatchedSeconds = watchedSeconds,
                 CreatedAt = DateTime.UtcNow,
                 UpdatedAt = DateTime.UtcNow
             };
@@ -76,13 +63,12 @@ public sealed class CourseProgressService : ICourseProgressService
         }
         else
         {
-            progress.IsCompleted = cachedProgress.IsCompleted;
-            progress.WatchedSeconds = cachedProgress.WatchedSeconds;
+            progress.IsCompleted = progress.IsCompleted || dto.IsCompleted;
+            progress.WatchedSeconds = Math.Max(progress.WatchedSeconds, watchedSeconds);
             progress.UpdatedAt = DateTime.UtcNow;
         }
 
         await _dbContext.SaveChangesAsync();
-        await _cacheService.RemoveAsync(progressCacheKey);
     }
 
     public async Task<CourseProgressResponseDto> GetCourseProgressAsync(Guid userId, Guid courseId)
@@ -153,10 +139,5 @@ public sealed class CourseProgressService : ICourseProgressService
         {
             throw new ForbiddenException("Bu derse erisim icin kursu satin almalisiniz.");
         }
-    }
-
-    private static string GetProgressCacheKey(Guid userId, Guid lessonId)
-    {
-        return $"progress:user:{userId}:lesson:{lessonId}";
     }
 }
