@@ -3,6 +3,7 @@ using CraftoraApi.DTOs.Interaction;
 using CraftoraApi.Infrastructure.Security;
 using CraftoraApi.Middleware;
 using CraftoraApi.Models.Entities;
+using CraftoraApi.Models.Enums;
 using CraftoraApi.Services.Interfaces;
 using Microsoft.EntityFrameworkCore;
 
@@ -12,13 +13,16 @@ public sealed class ProductQaService : IProductQaService
 {
     private readonly AppDbContext _dbContext;
     private readonly INotificationService _notificationService;
+    private readonly ILogger<ProductQaService> _logger;
 
     public ProductQaService(
         AppDbContext dbContext,
-        INotificationService notificationService)
+        INotificationService notificationService,
+        ILogger<ProductQaService> logger)
     {
         _dbContext = dbContext ?? throw new ArgumentNullException(nameof(dbContext));
         _notificationService = notificationService ?? throw new ArgumentNullException(nameof(notificationService));
+        _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
 
     public async Task<QaResponseDto> AskQuestionAsync(Guid userId, CreateQuestionDto dto)
@@ -27,7 +31,9 @@ public sealed class ProductQaService : IProductQaService
 
         var productExists = await _dbContext.Products.AnyAsync(product =>
             product.Id == dto.ProductId &&
-            product.IsActive == true);
+            product.IsActive == true &&
+            product.Status == ProductStatus.Published &&
+            product.Shop.IsActive == true);
         if (!productExists)
         {
             throw new NotFoundException("Urun bulunamadi.");
@@ -82,14 +88,25 @@ public sealed class ProductQaService : IProductQaService
 
         if (question.UserId != sellerUserId)
         {
-            await _notificationService.SendProductQuestionAnswerNotificationAsync(
-                question.UserId,
-                question.ProductId,
-                question.Id,
-                question.Product.ShopId,
-                question.Product.Shop.ShopName,
-                question.Product.Shop.LogoUrl,
-                answer.Message);
+            try
+            {
+                await _notificationService.SendProductQuestionAnswerNotificationAsync(
+                    question.UserId,
+                    question.ProductId,
+                    question.Id,
+                    question.Product.ShopId,
+                    question.Product.Shop.ShopName,
+                    question.Product.Shop.LogoUrl,
+                    answer.Message);
+            }
+            catch (Exception exception)
+            {
+                _logger.LogWarning(
+                    exception,
+                    "Question answer notification failed after answer was saved. QuestionId: {QuestionId}, AnswerId: {AnswerId}",
+                    question.Id,
+                    answer.Id);
+            }
         }
 
         return await GetQaResponseAsync(answer.Id);

@@ -43,6 +43,17 @@ internal static class ReviewImageValidation
                 uri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase);
         }
 
-        return image.TrimStart('/').StartsWith("uploads/", StringComparison.OrdinalIgnoreCase);
+        var objectKey = image.TrimStart('/');
+        if (objectKey.StartsWith("uploads/", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        var segments = objectKey.Split('/', 4, StringSplitOptions.RemoveEmptyEntries);
+        return segments.Length == 4 &&
+            segments[0].Equals("users", StringComparison.OrdinalIgnoreCase) &&
+            Guid.TryParse(segments[1], out _) &&
+            segments[2].Equals("public", StringComparison.OrdinalIgnoreCase) &&
+            !string.IsNullOrWhiteSpace(segments[3]);
     }
 }

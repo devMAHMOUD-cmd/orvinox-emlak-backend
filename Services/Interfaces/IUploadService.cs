@@ -25,6 +25,11 @@ public interface IUploadService
         string objectKey,
         CancellationToken cancellationToken = default);
 
+    Task ValidatePublicImageAsync(
+        Guid userId,
+        string objectKey,
+        CancellationToken cancellationToken = default);
+
     Task CompleteUploadAsync(
         Guid userId,
         UploadCompleteDto dto,

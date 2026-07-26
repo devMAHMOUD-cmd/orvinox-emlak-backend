@@ -16,11 +16,16 @@ public sealed class ReviewService : IReviewService
 
     private readonly AppDbContext _dbContext;
     private readonly IStorageService _storageService;
+    private readonly IUploadService _uploadService;
 
-    public ReviewService(AppDbContext dbContext, IStorageService storageService)
+    public ReviewService(
+        AppDbContext dbContext,
+        IStorageService storageService,
+        IUploadService uploadService)
     {
         _dbContext = dbContext ?? throw new ArgumentNullException(nameof(dbContext));
         _storageService = storageService ?? throw new ArgumentNullException(nameof(storageService));
+        _uploadService = uploadService ?? throw new ArgumentNullException(nameof(uploadService));
     }
 
     public async Task<ReviewResponseDto> AddReviewAsync(Guid userId, CreateReviewDto dto)
@@ -46,7 +51,7 @@ public sealed class ReviewService : IReviewService
         }
 
         var comment = PlainTextInputValidator.Optional(dto.Comment, "Yorum metni", 2000);
-        var images = NormalizeReviewImages(dto.Images);
+        var images = await NormalizeReviewImagesAsync(userId, dto.Images);
         await using var transaction = await _dbContext.Database.BeginTransactionAsync();
 
         try
@@ -101,15 +106,17 @@ public sealed class ReviewService : IReviewService
             throw new NotFoundException("Yorum bulunamadi.");
         }
 
+        await using var transaction = await _dbContext.Database.BeginTransactionAsync();
         review.Rating = dto.Rating;
         review.Comment = PlainTextInputValidator.Optional(dto.Comment, "Yorum metni", 2000);
-        review.Images = NormalizeReviewImages(dto.Images);
+        review.Images = await NormalizeReviewImagesAsync(userId, dto.Images);
         review.UpdatedAt = DateTime.UtcNow;
 
         await _dbContext.SaveChangesAsync();
 
         await RefreshProductReviewStatsAsync(review.ProductId);
         await _dbContext.SaveChangesAsync();
+        await transaction.CommitAsync();
 
         return await GetReviewResponseAsync(review.Id);
     }
@@ -124,12 +131,14 @@ public sealed class ReviewService : IReviewService
             throw new NotFoundException("Yorum bulunamadi.");
         }
 
+        await using var transaction = await _dbContext.Database.BeginTransactionAsync();
         var productId = review.ProductId;
         _dbContext.Reviews.Remove(review);
         await _dbContext.SaveChangesAsync();
 
         await RefreshProductReviewStatsAsync(productId);
         await _dbContext.SaveChangesAsync();
+        await transaction.CommitAsync();
     }
 
     public async Task<ReviewResponseDto> ReplyToReviewAsync(Guid reviewId, Guid sellerUserId, ReplyReviewDto dto)
@@ -151,10 +160,14 @@ public sealed class ReviewService : IReviewService
             throw new ForbiddenException("Bu yoruma cevap verme yetkiniz yok.");
         }
 
-        review.SellerReply = PlainTextInputValidator.Require(dto.SellerReply, "Satici cevabi", 2000);
-        review.UpdatedAt = DateTime.UtcNow;
-
-        await _dbContext.SaveChangesAsync();
+        var sellerReply = PlainTextInputValidator.Require(dto.SellerReply, "Satici cevabi", 2000);
+        await _dbContext.Database.ExecuteSqlInterpolatedAsync(
+            $"""
+             SELECT public.set_review_seller_reply(
+                 {review.Id},
+                 {sellerUserId},
+                 {sellerReply})
+             """);
 
         return await GetReviewResponseAsync(review.Id);
     }
@@ -181,26 +194,8 @@ public sealed class ReviewService : IReviewService
 
     private async Task RefreshProductReviewStatsAsync(Guid productId)
     {
-        var product = await _dbContext.Products.FirstOrDefaultAsync(product => product.Id == productId);
-        if (product is null)
-        {
-            return;
-        }
-
-        var stats = await _dbContext.Reviews
-            .Where(review => review.ProductId == productId)
-            .GroupBy(review => review.ProductId)
-            .Select(group => new
-            {
-                Count = group.Count(),
-                Average = group.Average(review => review.Rating)
-            })
-            .FirstOrDefaultAsync();
-
-        product.ReviewCount = stats?.Count ?? 0;
-        product.RatingAverage = stats is null
-            ? 0
-            : Math.Round((decimal)stats.Average, 2);
+        await _dbContext.Database.ExecuteSqlInterpolatedAsync(
+            $"SELECT public.refresh_product_review_stats({productId})");
     }
 
     private async Task<ReviewResponseDto> GetReviewResponseAsync(Guid reviewId)
@@ -218,14 +213,24 @@ public sealed class ReviewService : IReviewService
         return MapToResponse(review);
     }
 
-    private List<string> NormalizeReviewImages(IEnumerable<string>? images)
+    private async Task<List<string>> NormalizeReviewImagesAsync(
+        Guid userId,
+        IEnumerable<string>? images)
     {
-        return images?
-            .Select(ExtractPublicAssetObjectKey)
+        var normalizedImages = images?
+            .Select(image => ExtractPublicAssetObjectKey(userId, image))
+            .Distinct(StringComparer.Ordinal)
             .ToList() ?? new List<string>();
+
+        foreach (var objectKey in normalizedImages)
+        {
+            await _uploadService.ValidatePublicImageAsync(userId, objectKey);
+        }
+
+        return normalizedImages;
     }
 
-    private string ExtractPublicAssetObjectKey(string imageReference)
+    private static string ExtractPublicAssetObjectKey(Guid userId, string imageReference)
     {
         if (string.IsNullOrWhiteSpace(imageReference))
         {
@@ -235,9 +240,9 @@ public sealed class ReviewService : IReviewService
         if (!Uri.TryCreate(imageReference, UriKind.Absolute, out var uri))
         {
             var objectKey = imageReference.TrimStart('/');
-            if (!objectKey.StartsWith("uploads/", StringComparison.OrdinalIgnoreCase))
+            if (!IsOwnedPublicObjectKey(userId, objectKey))
             {
-                throw new BadRequestException("Yorum gorselleri public-assets bucketindan yuklenmelidir.");
+                throw new ForbiddenException("Baska bir kullaniciya ait gorsel yoruma eklenemez.");
             }
 
             return objectKey;
@@ -252,12 +257,19 @@ public sealed class ReviewService : IReviewService
         }
 
         var objectKeyFromUrl = path[(bucketIndex + bucketPrefix.Length)..];
-        if (!objectKeyFromUrl.StartsWith("uploads/", StringComparison.OrdinalIgnoreCase))
+        if (!IsOwnedPublicObjectKey(userId, objectKeyFromUrl))
         {
-            throw new BadRequestException("Yorum gorselleri public-assets bucketindan yuklenmelidir.");
+            throw new ForbiddenException("Baska bir kullaniciya ait gorsel yoruma eklenemez.");
         }
 
         return objectKeyFromUrl;
+    }
+
+    private static bool IsOwnedPublicObjectKey(Guid userId, string objectKey)
+    {
+        return objectKey.StartsWith(
+            $"users/{userId:D}/public/",
+            StringComparison.OrdinalIgnoreCase);
     }
 
     private ReviewResponseDto MapToResponse(Review review)

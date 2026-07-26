@@ -131,6 +131,14 @@ public sealed partial class UploadService : IUploadService
         string objectKey,
         CancellationToken cancellationToken = default)
     {
+        await ValidatePublicImageAsync(userId, objectKey, cancellationToken);
+    }
+
+    public async Task ValidatePublicImageAsync(
+        Guid userId,
+        string objectKey,
+        CancellationToken cancellationToken = default)
+    {
         var objectInfo = await GetOwnedObjectInfoAsync(
             userId,
             objectKey,
@@ -140,12 +148,12 @@ public sealed partial class UploadService : IUploadService
 
         if (!PublicImageContentTypes.Contains(contentType))
         {
-            throw new BadRequestException("Reels thumbnail dosyasi desteklenen bir gorsel turunde olmalidir.");
+            throw new BadRequestException("Dosya desteklenen bir gorsel turunde olmalidir.");
         }
 
         if (objectInfo.ContentLength <= 0 || objectInfo.ContentLength > MaximumPublicImageBytes)
         {
-            throw new BadRequestException("Reels thumbnail boyutu izin verilen sinirlar disinda.");
+            throw new BadRequestException("Gorsel boyutu izin verilen sinirlar disinda.");
         }
     }
 
