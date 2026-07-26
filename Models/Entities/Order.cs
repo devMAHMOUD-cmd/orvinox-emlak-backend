@@ -18,6 +18,10 @@ public partial class Order
 
     public decimal Amount { get; set; }
 
+    public decimal SubtotalAmount { get; set; }
+
+    public decimal DiscountAmount { get; set; }
+
     public string? Currency { get; set; }
 
     public decimal? PlatformFee { get; set; }

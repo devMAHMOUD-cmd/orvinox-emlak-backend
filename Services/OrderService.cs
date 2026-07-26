@@ -26,6 +26,7 @@ public sealed class OrderService : IOrderService
     private readonly IAnalyticsEventService _analyticsEventService;
     private readonly ISellerNotificationPreferenceService _sellerNotificationPreferenceService;
     private readonly IGamificationService _gamificationService;
+    private readonly ICouponService _couponService;
     private readonly ILogger<OrderService> _logger;
 
     public OrderService(
@@ -37,6 +38,7 @@ public sealed class OrderService : IOrderService
         IAnalyticsEventService analyticsEventService,
         ISellerNotificationPreferenceService sellerNotificationPreferenceService,
         IGamificationService gamificationService,
+        ICouponService couponService,
         ILogger<OrderService> logger)
     {
         _dbContext = dbContext ?? throw new ArgumentNullException(nameof(dbContext));
@@ -47,6 +49,7 @@ public sealed class OrderService : IOrderService
         _analyticsEventService = analyticsEventService ?? throw new ArgumentNullException(nameof(analyticsEventService));
         _sellerNotificationPreferenceService = sellerNotificationPreferenceService ?? throw new ArgumentNullException(nameof(sellerNotificationPreferenceService));
         _gamificationService = gamificationService ?? throw new ArgumentNullException(nameof(gamificationService));
+        _couponService = couponService ?? throw new ArgumentNullException(nameof(couponService));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
 
@@ -113,6 +116,15 @@ public sealed class OrderService : IOrderService
                 "Sepetinizde zaten kutuphanenizde bulunan bir urun var. Sepeti yenileyip tekrar deneyin.");
         }
 
+        var couponCodes = (request.Coupons ?? [])
+            .ToDictionary(coupon => coupon.ProductId, coupon => coupon.Code);
+        var unknownCouponProductId = couponCodes.Keys
+            .FirstOrDefault(productId => !cartProductIds.Contains(productId));
+        if (unknownCouponProductId != Guid.Empty)
+        {
+            throw new BadRequestException("Kupon yalnizca sepetinizdeki urunlere uygulanabilir.");
+        }
+
         var commissionSnapshots = new Dictionary<Guid, CommissionSnapshot>();
         foreach (var shopId in cartItems.Select(item => item.Product.ShopId).Distinct())
         {
@@ -128,7 +140,22 @@ public sealed class OrderService : IOrderService
             await using var transaction = await _dbContext.Database.BeginTransactionAsync();
 
             var quantity = Math.Max(cartItem.Quantity ?? 1, 1);
-            var amount = Math.Round(cartItem.Product.Price * quantity, 2, MidpointRounding.AwayFromZero);
+            var subtotalAmount = Math.Round(
+                cartItem.Product.Price * quantity,
+                2,
+                MidpointRounding.AwayFromZero);
+            CheckoutCouponResult? couponResult = null;
+            if (couponCodes.TryGetValue(cartItem.ProductId, out var couponCode))
+            {
+                couponResult = await _couponService.ResolveForCheckoutAsync(
+                    buyerId,
+                    cartItem.ProductId,
+                    couponCode,
+                    subtotalAmount);
+            }
+
+            var discountAmount = couponResult?.DiscountAmount ?? 0;
+            var amount = couponResult?.FinalTotal ?? subtotalAmount;
             var commissionSnapshot = commissionSnapshots[cartItem.Product.ShopId];
             var platformFee = Math.Round(amount * commissionSnapshot.CommissionRate, 2, MidpointRounding.AwayFromZero);
             var sellerEarnings = amount - platformFee;
@@ -143,6 +170,8 @@ public sealed class OrderService : IOrderService
                 ProductId = cartItem.ProductId,
                 ShopId = cartItem.Product.ShopId,
                 OrderNumber = await GenerateOrderNumberAsync(),
+                SubtotalAmount = subtotalAmount,
+                DiscountAmount = discountAmount,
                 Amount = amount,
                 Currency = currency,
                 PlatformFee = platformFee,
@@ -195,6 +224,10 @@ public sealed class OrderService : IOrderService
             {
                 order.Status = OrderStatus.Completed;
                 order.UpdatedAt = DateTime.UtcNow;
+                if (couponResult is not null)
+                {
+                    _couponService.AddUsage(buyerId, couponResult.CouponId, order.Id);
+                }
                 _dbContext.CartItems.Remove(cartItem);
                 successfulOrders.Add((order, cartItem.Product));
             }
@@ -269,15 +302,28 @@ public sealed class OrderService : IOrderService
                 throw new BadRequestException("Bu urun zaten kutuphanenizde mevcut.");
             }
 
-            var amount = Math.Round(product.Price, 2, MidpointRounding.AwayFromZero);
+            var subtotalAmount = Math.Round(product.Price, 2, MidpointRounding.AwayFromZero);
             var commissionSnapshot = await GetCommissionSnapshotAsync(product.ShopId);
-            var platformFee = Math.Round(amount * commissionSnapshot.CommissionRate, 2, MidpointRounding.AwayFromZero);
-            var sellerEarnings = amount - platformFee;
             var currency = string.IsNullOrWhiteSpace(product.Currency)
                 ? DefaultCurrency
                 : product.Currency;
 
             await using var transaction = await _dbContext.Database.BeginTransactionAsync();
+
+            CheckoutCouponResult? couponResult = null;
+            if (!string.IsNullOrWhiteSpace(request.CouponCode))
+            {
+                couponResult = await _couponService.ResolveForCheckoutAsync(
+                    buyerId,
+                    product.Id,
+                    request.CouponCode,
+                    subtotalAmount);
+            }
+
+            var discountAmount = couponResult?.DiscountAmount ?? 0;
+            var amount = couponResult?.FinalTotal ?? subtotalAmount;
+            var platformFee = Math.Round(amount * commissionSnapshot.CommissionRate, 2, MidpointRounding.AwayFromZero);
+            var sellerEarnings = amount - platformFee;
 
             var order = new Order
             {
@@ -286,6 +332,8 @@ public sealed class OrderService : IOrderService
                 ProductId = product.Id,
                 ShopId = product.ShopId,
                 OrderNumber = await GenerateOrderNumberAsync(),
+                SubtotalAmount = subtotalAmount,
+                DiscountAmount = discountAmount,
                 Amount = amount,
                 Currency = currency,
                 PlatformFee = platformFee,
@@ -327,6 +375,10 @@ public sealed class OrderService : IOrderService
 
             order.Status = paymentResult.IsSuccess ? OrderStatus.Completed : OrderStatus.Failed;
             order.UpdatedAt = DateTime.UtcNow;
+            if (paymentResult.IsSuccess && couponResult is not null)
+            {
+                _couponService.AddUsage(buyerId, couponResult.CouponId, order.Id);
+            }
 
             await _dbContext.SaveChangesAsync();
             await transaction.CommitAsync();
@@ -540,6 +592,8 @@ public sealed class OrderService : IOrderService
         return new OrderResponseDto(
             Id: order.Id,
             OrderNumber: order.OrderNumber,
+            SubtotalAmount: order.SubtotalAmount,
+            DiscountAmount: order.DiscountAmount,
             Amount: order.Amount,
             Status: order.Status.ToString(),
             CreatedAt: order.CreatedAt,

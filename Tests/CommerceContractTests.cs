@@ -36,10 +36,47 @@ public sealed class CommerceContractTests
             ProductId: Guid.NewGuid(),
             CardNumber: "4111111111111111",
             Expiry: "12/99",
-            Cvv: "123"));
+            Cvv: "123",
+            CouponCode: "SAVE20"));
 
         Assert.Contains(invalid.Errors, error => error.PropertyName == nameof(DirectCheckoutRequestDto.ProductId));
         Assert.True(valid.IsValid);
+    }
+
+    [Fact]
+    public void Cart_checkout_rejects_duplicate_coupon_assignments()
+    {
+        var productId = Guid.NewGuid();
+        var validator = new CheckoutRequestDtoValidator();
+        var result = validator.Validate(new CheckoutRequestDto(
+            CardNumber: "4111111111111111",
+            Expiry: "12/99",
+            Cvv: "123",
+            Coupons:
+            [
+                new CheckoutCouponDto(productId, "SAVE20"),
+                new CheckoutCouponDto(productId, "OTHER20")
+            ]));
+
+        Assert.Contains(
+            result.Errors,
+            error => error.PropertyName == nameof(CheckoutRequestDto.Coupons));
+    }
+
+    [Fact]
+    public void Direct_checkout_rejects_malformed_coupon_code()
+    {
+        var validator = new DirectCheckoutRequestDtoValidator();
+        var result = validator.Validate(new DirectCheckoutRequestDto(
+            ProductId: Guid.NewGuid(),
+            CardNumber: "4111111111111111",
+            Expiry: "12/99",
+            Cvv: "123",
+            CouponCode: "X"));
+
+        Assert.Contains(
+            result.Errors,
+            error => error.PropertyName == nameof(DirectCheckoutRequestDto.CouponCode));
     }
 
     [Fact]

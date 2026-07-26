@@ -10,4 +10,6 @@ public sealed record CheckoutRequestDto(
     string Expiry,
 
     [property: Required(ErrorMessage = "CVV zorunludur.")]
-    string Cvv);
+    string Cvv,
+
+    List<CheckoutCouponDto>? Coupons = null);

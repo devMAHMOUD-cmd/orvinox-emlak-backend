@@ -14,6 +14,14 @@ public sealed class CheckoutRequestDtoValidator : AbstractValidator<CheckoutRequ
             request => request.CardNumber,
             request => request.Expiry,
             request => request.Cvv);
+
+        RuleForEach(request => request.Coupons)
+            .SetValidator(new CheckoutCouponDtoValidator());
+
+        RuleFor(request => request.Coupons)
+            .Must(coupons => coupons is null ||
+                coupons.Select(coupon => coupon.ProductId).Distinct().Count() == coupons.Count)
+            .WithMessage("Ayni urun icin birden fazla kupon gonderilemez.");
     }
 }
 
@@ -30,6 +38,26 @@ public sealed class DirectCheckoutRequestDtoValidator : AbstractValidator<Direct
             request => request.CardNumber,
             request => request.Expiry,
             request => request.Cvv);
+
+        RuleFor(request => request.CouponCode)
+            .Must(code => string.IsNullOrWhiteSpace(code) ||
+                code.Trim().Length is >= 2 and <= 50)
+            .WithMessage("Kupon kodu 2 ile 50 karakter arasinda olmalidir.");
+    }
+}
+
+public sealed class CheckoutCouponDtoValidator : AbstractValidator<CheckoutCouponDto>
+{
+    public CheckoutCouponDtoValidator()
+    {
+        RuleFor(coupon => coupon.ProductId)
+            .NotEmpty()
+            .WithMessage("Kupon urunu zorunludur.");
+
+        RuleFor(coupon => coupon.Code)
+            .NotEmpty()
+            .Length(2, 50)
+            .WithMessage("Kupon kodu 2 ile 50 karakter arasinda olmalidir.");
     }
 }
 

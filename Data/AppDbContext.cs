@@ -1011,6 +1011,13 @@ public partial class AppDbContext : DbContext
             entity.Property(e => e.Amount)
                 .HasPrecision(10, 2)
                 .HasColumnName("amount");
+            entity.Property(e => e.SubtotalAmount)
+                .HasPrecision(10, 2)
+                .HasColumnName("subtotal_amount");
+            entity.Property(e => e.DiscountAmount)
+                .HasPrecision(10, 2)
+                .HasDefaultValueSql("0.00")
+                .HasColumnName("discount_amount");
             entity.Property(e => e.BuyerId).HasColumnName("buyer_id");
             entity.Property(e => e.CreatedAt)
                 .HasDefaultValueSql("CURRENT_TIMESTAMP")

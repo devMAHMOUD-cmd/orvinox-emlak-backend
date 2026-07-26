@@ -191,6 +191,77 @@ public sealed class CouponService : ICouponService
         }
     }
 
+    public async Task<CheckoutCouponResult> ResolveForCheckoutAsync(
+        Guid userId,
+        Guid productId,
+        string code,
+        decimal subtotalAmount)
+    {
+        var normalizedCode = NormalizeCode(code);
+        var coupon = await _dbContext.Coupons
+            .FromSqlInterpolated($"""
+                SELECT *
+                FROM coupons
+                WHERE product_id = {productId}
+                  AND code = {normalizedCode}
+                  AND is_active = true
+                FOR UPDATE
+                """)
+            .FirstOrDefaultAsync();
+
+        if (coupon is null)
+        {
+            throw new BadRequestException("Kupon bulunamadi veya aktif degil.");
+        }
+
+        var now = DateTime.UtcNow;
+        if (coupon.StartsAt.HasValue && coupon.StartsAt.Value > now)
+        {
+            throw new BadRequestException("Kupon henuz kullanima acik degil.");
+        }
+
+        if (coupon.ExpiresAt.HasValue && coupon.ExpiresAt.Value < now)
+        {
+            throw new BadRequestException("Kuponun suresi dolmus.");
+        }
+
+        if (coupon.MaxUses.HasValue && (coupon.UsedCount ?? 0) >= coupon.MaxUses.Value)
+        {
+            throw new BadRequestException("Kupon kullanim limiti dolmus.");
+        }
+
+        var alreadyUsed = await _dbContext.CouponUses.AnyAsync(couponUse =>
+            couponUse.CouponId == coupon.Id &&
+            couponUse.UserId == userId);
+        if (alreadyUsed)
+        {
+            throw new BadRequestException("Bu kuponu daha once kullandiniz.");
+        }
+
+        if (subtotalAmount < (coupon.MinimumCartAmount ?? 0))
+        {
+            throw new BadRequestException(
+                $"Bu kupon icin minimum sepet tutari {coupon.MinimumCartAmount ?? 0:0.##} olmalidir.");
+        }
+
+        var discountAmount = CalculateDiscountAmount(coupon, subtotalAmount);
+        return new CheckoutCouponResult(
+            coupon.Id,
+            discountAmount,
+            Math.Max(subtotalAmount - discountAmount, 0));
+    }
+
+    public void AddUsage(Guid userId, Guid couponId, Guid orderId)
+    {
+        _dbContext.CouponUses.Add(new CouponUse
+        {
+            CouponId = couponId,
+            UserId = userId,
+            OrderId = orderId,
+            UsedAt = DateTime.UtcNow
+        });
+    }
+
     private async Task EnsureCanCreateCouponAsync(Guid userId, Guid shopOwnerId)
     {
         var user = await _dbContext.Users

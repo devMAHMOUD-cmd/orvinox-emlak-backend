@@ -6,4 +6,5 @@ public sealed record DirectCheckoutRequestDto(
     [Required] Guid ProductId,
     [Required] string CardNumber,
     [Required] string Expiry,
-    [Required] string Cvv);
+    [Required] string Cvv,
+    string? CouponCode = null);
