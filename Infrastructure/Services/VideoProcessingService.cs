@@ -31,6 +31,16 @@ public sealed class VideoProcessingService : IVideoProcessingService
             var existingObjectKey = ExtractObjectKey(
                 command.OriginalFileUrl,
                 PrivateProductsBucketName);
+            var objectInfo = await _storageService.GetObjectInfoAsync(
+                PrivateProductsBucketName,
+                existingObjectKey,
+                cancellationToken);
+            if (objectInfo is null)
+            {
+                throw new FileNotFoundException(
+                    "Video source object was not found in storage.",
+                    existingObjectKey);
+            }
 
             _logger.LogInformation(
                 "Video source is already in object storage; original object key retained. VideoId: {VideoId}, ObjectKey: {ObjectKey}",

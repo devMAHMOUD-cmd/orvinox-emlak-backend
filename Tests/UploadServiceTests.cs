@@ -85,6 +85,85 @@ public sealed class UploadServiceTests
                 isPublic: true));
     }
 
+    [Fact]
+    public async Task Media_video_requires_owned_private_video_object()
+    {
+        var userId = Guid.NewGuid();
+        var storage = new FakeStorageService
+        {
+            NextObjectInfo = new StorageObjectInfo(
+                ContentLength: 1024,
+                ContentType: "video/mp4",
+                ETag: "etag",
+                LastModified: DateTime.UtcNow)
+        };
+        using var dbContext = CreateDbContext();
+        var service = new UploadService(
+            dbContext,
+            storage,
+            NullLogger<UploadService>.Instance);
+
+        await service.ValidateMediaVideoAsync(
+            userId,
+            $"users/{userId:D}/private/reel.mp4");
+
+        Assert.Equal("private-products", storage.LastBucketName);
+
+        await Assert.ThrowsAsync<BadRequestException>(() =>
+            service.ValidateMediaVideoAsync(
+                userId,
+                $"users/{userId:D}/public/reel.mp4"));
+    }
+
+    [Fact]
+    public async Task Media_video_rejects_non_video_private_object()
+    {
+        var userId = Guid.NewGuid();
+        var storage = new FakeStorageService
+        {
+            NextObjectInfo = new StorageObjectInfo(
+                ContentLength: 1024,
+                ContentType: "application/pdf",
+                ETag: "etag",
+                LastModified: DateTime.UtcNow)
+        };
+        using var dbContext = CreateDbContext();
+        var service = new UploadService(
+            dbContext,
+            storage,
+            NullLogger<UploadService>.Instance);
+
+        await Assert.ThrowsAsync<BadRequestException>(() =>
+            service.ValidateMediaVideoAsync(
+                userId,
+                $"users/{userId:D}/private/not-video.pdf"));
+    }
+
+    [Fact]
+    public async Task Media_thumbnail_requires_owned_public_image_object()
+    {
+        var userId = Guid.NewGuid();
+        var storage = new FakeStorageService
+        {
+            NextObjectInfo = new StorageObjectInfo(
+                ContentLength: 1024,
+                ContentType: "image/webp",
+                ETag: "etag",
+                LastModified: DateTime.UtcNow)
+        };
+        using var dbContext = CreateDbContext();
+        var service = new UploadService(
+            dbContext,
+            storage,
+            NullLogger<UploadService>.Instance);
+
+        await service.ValidateMediaThumbnailAsync(
+            userId,
+            $"users/{userId:D}/public/reel.webp");
+
+        Assert.Equal("public-assets", storage.LastBucketName);
+    }
+
     private static AppDbContext CreateDbContext()
     {
         return new AppDbContext(new DbContextOptionsBuilder<AppDbContext>().Options);

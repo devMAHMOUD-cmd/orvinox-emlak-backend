@@ -15,6 +15,16 @@ public interface IUploadService
         bool isPublic,
         CancellationToken cancellationToken = default);
 
+    Task ValidateMediaVideoAsync(
+        Guid userId,
+        string objectKey,
+        CancellationToken cancellationToken = default);
+
+    Task ValidateMediaThumbnailAsync(
+        Guid userId,
+        string objectKey,
+        CancellationToken cancellationToken = default);
+
     Task CompleteUploadAsync(
         Guid userId,
         UploadCompleteDto dto,

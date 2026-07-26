@@ -1,7 +1,9 @@
+using System.Data;
+using System.Data.Common;
 using CraftoraApi.Data;
 using CraftoraApi.Infrastructure.Messaging.Contracts;
 using CraftoraApi.Infrastructure.Services;
-using CraftoraApi.Models.Enums;
+using CraftoraApi.Redis;
 using MassTransit;
 using Microsoft.EntityFrameworkCore;
 
@@ -11,15 +13,18 @@ public sealed class VideoProcessConsumer : IConsumer<ProcessVideoCommand>
 {
     private readonly IVideoProcessingService _videoProcessingService;
     private readonly AppDbContext _dbContext;
+    private readonly ICacheService _cacheService;
     private readonly ILogger<VideoProcessConsumer> _logger;
 
     public VideoProcessConsumer(
         IVideoProcessingService videoProcessingService,
         AppDbContext dbContext,
+        ICacheService cacheService,
         ILogger<VideoProcessConsumer> logger)
     {
         _videoProcessingService = videoProcessingService ?? throw new ArgumentNullException(nameof(videoProcessingService));
         _dbContext = dbContext ?? throw new ArgumentNullException(nameof(dbContext));
+        _cacheService = cacheService ?? throw new ArgumentNullException(nameof(cacheService));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
 
@@ -42,28 +47,66 @@ public sealed class VideoProcessConsumer : IConsumer<ProcessVideoCommand>
         VideoProcessingResult result,
         CancellationToken cancellationToken)
     {
-        var media = await _dbContext.Media.FirstOrDefaultAsync(
-            media => media.Id == mediaId,
+        var updated = await CompleteMediaProcessingAsync(
+            mediaId,
+            result.VideoUrl,
+            result.ThumbnailUrl,
             cancellationToken);
-
-        if (media is null)
+        if (!updated)
         {
             _logger.LogWarning("Processed video has no matching media row. MediaId: {MediaId}", mediaId);
             return;
         }
 
-        media.VideoUrl = result.VideoUrl;
-        if (!string.IsNullOrWhiteSpace(result.ThumbnailUrl))
-        {
-            media.ThumbnailUrl = result.ThumbnailUrl;
-        }
-        media.Status = MediaStatus.Ready;
-        media.IsActive = true;
-        media.UpdatedAt = DateTime.UtcNow;
-
-        await _dbContext.SaveChangesAsync(cancellationToken);
+        await _cacheService.IncrementAsync("media:feed:contract:v2:version", cancellationToken: cancellationToken);
+        await _cacheService.IncrementAsync("media:liked:contract:v1:version", cancellationToken: cancellationToken);
 
         _logger.LogInformation("Media video processed. MediaId: {MediaId}", mediaId);
+    }
+
+    private async Task<bool> CompleteMediaProcessingAsync(
+        Guid mediaId,
+        string videoUrl,
+        string? thumbnailUrl,
+        CancellationToken cancellationToken)
+    {
+        var connection = _dbContext.Database.GetDbConnection();
+        var openedHere = connection.State != ConnectionState.Open;
+        if (openedHere)
+        {
+            await _dbContext.Database.OpenConnectionAsync(cancellationToken);
+        }
+
+        try
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText = """
+                SELECT public.complete_media_processing(
+                    CAST(@media_id AS uuid),
+                    CAST(@video_url AS text),
+                    CAST(@thumbnail_url AS text))
+                """;
+            AddParameter(command, "media_id", mediaId);
+            AddParameter(command, "video_url", videoUrl);
+            AddParameter(command, "thumbnail_url", thumbnailUrl);
+
+            return await command.ExecuteScalarAsync(cancellationToken) is true;
+        }
+        finally
+        {
+            if (openedHere)
+            {
+                await _dbContext.Database.CloseConnectionAsync();
+            }
+        }
+    }
+
+    private static void AddParameter(DbCommand command, string name, object? value)
+    {
+        var parameter = command.CreateParameter();
+        parameter.ParameterName = name;
+        parameter.Value = value ?? DBNull.Value;
+        command.Parameters.Add(parameter);
     }
 
     private async Task UpdateCourseLessonAsync(

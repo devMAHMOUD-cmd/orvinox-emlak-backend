@@ -30,6 +30,7 @@ public sealed class MediaService : IMediaService
     private readonly IRabbitMqPublisher _rabbitMqPublisher;
     private readonly ICacheService _cacheService;
     private readonly IStorageService _storageService;
+    private readonly IUploadService _uploadService;
     private readonly INotificationService _notificationService;
     private readonly IAnalyticsEventService _analyticsEventService;
 
@@ -38,6 +39,7 @@ public sealed class MediaService : IMediaService
         IRabbitMqPublisher rabbitMqPublisher,
         ICacheService cacheService,
         IStorageService storageService,
+        IUploadService uploadService,
         INotificationService notificationService,
         IAnalyticsEventService analyticsEventService)
     {
@@ -45,6 +47,7 @@ public sealed class MediaService : IMediaService
         _rabbitMqPublisher = rabbitMqPublisher ?? throw new ArgumentNullException(nameof(rabbitMqPublisher));
         _cacheService = cacheService ?? throw new ArgumentNullException(nameof(cacheService));
         _storageService = storageService ?? throw new ArgumentNullException(nameof(storageService));
+        _uploadService = uploadService ?? throw new ArgumentNullException(nameof(uploadService));
         _notificationService = notificationService ?? throw new ArgumentNullException(nameof(notificationService));
         _analyticsEventService = analyticsEventService ?? throw new ArgumentNullException(nameof(analyticsEventService));
     }
@@ -73,6 +76,7 @@ public sealed class MediaService : IMediaService
             .Include(item => item.Product)
             .Where(item =>
                 item.IsActive == true &&
+                item.Status == MediaStatus.Ready &&
                 item.Shop.IsActive == true)
             .OrderByDescending(item => item.CreatedAt)
             .Skip((normalizedPage - 1) * normalizedPageSize)
@@ -94,6 +98,7 @@ public sealed class MediaService : IMediaService
             .FirstOrDefaultAsync(item =>
                 item.Id == mediaId &&
                 item.IsActive == true &&
+                item.Status == MediaStatus.Ready &&
                 item.Shop.IsActive == true);
 
         if (media is null)
@@ -186,6 +191,7 @@ public sealed class MediaService : IMediaService
             .Where(item =>
                 mediaIds.Contains(item.Id) &&
                 item.IsActive == true &&
+                item.Status == MediaStatus.Ready &&
                 item.Shop.IsActive == true)
             .ToListAsync();
 
@@ -236,6 +242,7 @@ public sealed class MediaService : IMediaService
             .Where(item =>
                 mediaIds.Contains(item.Id) &&
                 item.IsActive == true &&
+                item.Status == MediaStatus.Ready &&
                 item.Shop.IsActive == true)
             .ToListAsync();
 
@@ -270,6 +277,7 @@ public sealed class MediaService : IMediaService
             .Where(item =>
                 item.ShopId == shopId &&
                 item.IsActive == true &&
+                item.Status == MediaStatus.Ready &&
                 item.Shop.IsActive == true)
             .OrderByDescending(item => item.CreatedAt)
             .Skip((normalizedPage - 1) * normalizedPageSize)
@@ -328,6 +336,12 @@ public sealed class MediaService : IMediaService
         if (product is null)
         {
             throw new NotFoundException("Ürün bulunamadı veya bu mağazaya ait değil.");
+        }
+
+        await _uploadService.ValidateMediaVideoAsync(userId, dto.OriginalFileUrl);
+        if (!string.IsNullOrWhiteSpace(dto.ThumbnailUrl))
+        {
+            await _uploadService.ValidateMediaThumbnailAsync(userId, dto.ThumbnailUrl);
         }
 
         var media = new Medium
@@ -648,7 +662,8 @@ public sealed class MediaService : IMediaService
             .Include(item => item.Shop)
             .FirstOrDefaultAsync(item =>
                 item.Id == mediaId &&
-                item.IsActive == true);
+                item.IsActive == true &&
+                item.Status == MediaStatus.Ready);
 
         if (media is null)
         {

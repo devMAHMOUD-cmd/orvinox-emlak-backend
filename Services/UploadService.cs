@@ -103,6 +103,52 @@ public sealed partial class UploadService : IUploadService
         ValidateCompletedObject(actualBucket, objectInfo);
     }
 
+    public async Task ValidateMediaVideoAsync(
+        Guid userId,
+        string objectKey,
+        CancellationToken cancellationToken = default)
+    {
+        var objectInfo = await GetOwnedObjectInfoAsync(
+            userId,
+            objectKey,
+            PrivateBucket,
+            cancellationToken);
+        var contentType = NormalizeContentType(objectInfo.ContentType);
+
+        if (!PublicVideoContentTypes.Contains(contentType))
+        {
+            throw new BadRequestException("Reels dosyasi desteklenen bir video turunde olmalidir.");
+        }
+
+        if (objectInfo.ContentLength <= 0 || objectInfo.ContentLength > MaximumPublicVideoBytes)
+        {
+            throw new BadRequestException("Reels video boyutu izin verilen sinirlar disinda.");
+        }
+    }
+
+    public async Task ValidateMediaThumbnailAsync(
+        Guid userId,
+        string objectKey,
+        CancellationToken cancellationToken = default)
+    {
+        var objectInfo = await GetOwnedObjectInfoAsync(
+            userId,
+            objectKey,
+            PublicBucket,
+            cancellationToken);
+        var contentType = NormalizeContentType(objectInfo.ContentType);
+
+        if (!PublicImageContentTypes.Contains(contentType))
+        {
+            throw new BadRequestException("Reels thumbnail dosyasi desteklenen bir gorsel turunde olmalidir.");
+        }
+
+        if (objectInfo.ContentLength <= 0 || objectInfo.ContentLength > MaximumPublicImageBytes)
+        {
+            throw new BadRequestException("Reels thumbnail boyutu izin verilen sinirlar disinda.");
+        }
+    }
+
     public async Task CompleteUploadAsync(
         Guid userId,
         UploadCompleteDto dto,
@@ -225,6 +271,7 @@ public sealed partial class UploadService : IUploadService
                     entityId,
                     bucketName,
                     objectKey,
+                    contentType,
                     cancellationToken);
                 return;
             default:
@@ -401,6 +448,7 @@ public sealed partial class UploadService : IUploadService
         Guid mediaId,
         string bucketName,
         string objectKey,
+        string? contentType,
         CancellationToken cancellationToken)
     {
         var media = await _dbContext.Media
@@ -422,6 +470,38 @@ public sealed partial class UploadService : IUploadService
         {
             throw new BadRequestException("Dosya bu medya kaydina bagli degil.");
         }
+
+        var normalizedContentType = NormalizeContentType(contentType);
+        if (bucketName == PrivateBucket && !PublicVideoContentTypes.Contains(normalizedContentType))
+        {
+            throw new BadRequestException("Reels dosyasi desteklenen bir video turunde olmalidir.");
+        }
+
+        if (bucketName == PublicBucket && !PublicImageContentTypes.Contains(normalizedContentType))
+        {
+            throw new BadRequestException("Reels thumbnail dosyasi desteklenen bir gorsel turunde olmalidir.");
+        }
+    }
+
+    private async Task<StorageObjectInfo> GetOwnedObjectInfoAsync(
+        Guid userId,
+        string objectKey,
+        string expectedBucket,
+        CancellationToken cancellationToken)
+    {
+        var normalizedObjectKey = NormalizeOwnedObjectKey(userId, objectKey);
+        var actualBucket = GetBucketForOwnedObjectKey(userId, normalizedObjectKey);
+        if (!string.Equals(expectedBucket, actualBucket, StringComparison.Ordinal))
+        {
+            throw new BadRequestException("Dosya visibility ve bucket bilgileri uyusmuyor.");
+        }
+
+        var objectInfo = await _storageService.GetObjectInfoAsync(
+            actualBucket,
+            normalizedObjectKey,
+            cancellationToken);
+        return objectInfo
+            ?? throw new NotFoundException("Yuklenen dosya storage uzerinde bulunamadi.");
     }
 
     private async Task<bool> IsObjectReferencedAsync(
