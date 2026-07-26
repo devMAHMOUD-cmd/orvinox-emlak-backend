@@ -19,7 +19,6 @@ public static class MiddlewareExtensions
         forwardedHeadersOptions.KnownProxies.Clear();
 
         app.UseForwardedHeaders(forwardedHeadersOptions);
-        app.UseExceptionMiddleware();
 
         app.UseSerilogRequestLogging(options =>
         {
@@ -53,6 +52,8 @@ public static class MiddlewareExtensions
                     httpContext.Request.Path.ToString());
             };
         });
+
+        app.UseExceptionMiddleware();
 
         app.Use(async (context, next) =>
         {
