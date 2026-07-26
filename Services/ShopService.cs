@@ -442,8 +442,9 @@ public sealed class ShopService : IShopService
         try
         {
             var shop = await _dbContext.Shops
-                .FromSqlInterpolated($"SELECT * FROM shops WHERE id = {shopId} AND is_active = true FOR UPDATE")
-                .FirstOrDefaultAsync();
+                .FirstOrDefaultAsync(item =>
+                    item.Id == shopId &&
+                    item.IsActive == true);
 
             if (shop is null)
             {

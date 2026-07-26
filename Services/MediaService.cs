@@ -1,3 +1,5 @@
+using System.Data;
+using System.Data.Common;
 using CraftoraApi.Data;
 using CraftoraApi.DTOs.Media;
 using CraftoraApi.DTOs.Notification;
@@ -409,7 +411,6 @@ public sealed class MediaService : IMediaService
             _dbContext.MediaLikes.Remove(like);
         }
 
-        media.UpdatedAt = DateTime.UtcNow;
         await _dbContext.SaveChangesAsync();
         await InvalidateFeedCacheAsync();
 
@@ -458,7 +459,6 @@ public sealed class MediaService : IMediaService
             _dbContext.MediaSaves.Remove(save);
         }
 
-        media.UpdatedAt = DateTime.UtcNow;
         await _dbContext.SaveChangesAsync();
         await InvalidateFeedCacheAsync();
 
@@ -469,18 +469,9 @@ public sealed class MediaService : IMediaService
 
     public async Task<MediaResponseDto> RecordShareAsync(Guid mediaId, Guid userId)
     {
-        var affectedRows = await _dbContext.Media
-            .Where(item =>
-                item.Id == mediaId &&
-                item.IsActive == true &&
-                item.Shop.IsActive == true)
-            .ExecuteUpdateAsync(setters => setters
-                .SetProperty(
-                    item => item.ShareCount,
-                    item => (item.ShareCount ?? 0) + 1)
-                .SetProperty(item => item.UpdatedAt, DateTime.UtcNow));
-
-        if (affectedRows == 0)
+        _ = await GetActiveMediaAsync(mediaId);
+        var shareCount = await IncrementMediaShareCountAsync(mediaId);
+        if (shareCount < 0)
         {
             throw new NotFoundException("Medya bulunamadi.");
         }
@@ -548,7 +539,6 @@ public sealed class MediaService : IMediaService
         };
 
         _dbContext.MediaComments.Add(comment);
-        media.UpdatedAt = DateTime.UtcNow;
 
         await _dbContext.SaveChangesAsync();
         await InvalidateFeedCacheAsync();
@@ -646,7 +636,6 @@ public sealed class MediaService : IMediaService
         }
 
         var mediaId = comment.MediaId;
-        comment.Media.UpdatedAt = DateTime.UtcNow;
 
         _dbContext.MediaComments.Remove(comment);
         await _dbContext.SaveChangesAsync();
@@ -891,6 +880,45 @@ public sealed class MediaService : IMediaService
             .Where(item => item.Id == mediaId)
             .Select(item => item.CommentCount ?? 0)
             .FirstAsync();
+    }
+
+    private async Task<int> IncrementMediaShareCountAsync(Guid mediaId)
+    {
+        var connection = _dbContext.Database.GetDbConnection();
+        var openedHere = connection.State != ConnectionState.Open;
+        if (openedHere)
+        {
+            await _dbContext.Database.OpenConnectionAsync();
+        }
+
+        try
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText = """
+                SELECT public.increment_media_share_count(CAST(@media_id AS uuid))
+                """;
+            AddParameter(command, "media_id", mediaId);
+
+            var result = await command.ExecuteScalarAsync();
+            return result is null or DBNull
+                ? -1
+                : Convert.ToInt32(result);
+        }
+        finally
+        {
+            if (openedHere)
+            {
+                await _dbContext.Database.CloseConnectionAsync();
+            }
+        }
+    }
+
+    private static void AddParameter(DbCommand command, string name, object value)
+    {
+        var parameter = command.CreateParameter();
+        parameter.ParameterName = name;
+        parameter.Value = value;
+        command.Parameters.Add(parameter);
     }
 
     private async Task PublishMediaIndexMessageAsync(Guid mediaId)
