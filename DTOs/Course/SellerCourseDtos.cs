@@ -113,12 +113,13 @@ public sealed record CreateSellerCourseDto
     public string Title { get; init; } = null!;
 
     [Required]
+    [StringLength(20000)]
     public string Description { get; init; } = null!;
 
-    [Range(0, double.MaxValue)]
+    [Range(0d, 99999999.99d)]
     public decimal Price { get; init; }
 
-    [Range(0, double.MaxValue)]
+    [Range(0d, 99999999.99d)]
     public decimal? OriginalPrice { get; init; }
 
     public ProductStatus Status { get; init; } = ProductStatus.Draft;
@@ -129,6 +130,7 @@ public sealed record CreateSellerCourseDto
 
     public string? PreviewVideoUrl { get; init; }
 
+    [StringLength(20000)]
     public string? Metadata { get; init; }
 
     [Required]
@@ -153,12 +155,13 @@ public sealed record UpdateSellerCourseDto
     public string Title { get; init; } = null!;
 
     [Required]
+    [StringLength(20000)]
     public string Description { get; init; } = null!;
 
-    [Range(0, double.MaxValue)]
+    [Range(0d, 99999999.99d)]
     public decimal Price { get; init; }
 
-    [Range(0, double.MaxValue)]
+    [Range(0d, 99999999.99d)]
     public decimal? OriginalPrice { get; init; }
 
     public ProductStatus Status { get; init; } = ProductStatus.Draft;
@@ -169,6 +172,7 @@ public sealed record UpdateSellerCourseDto
 
     public string? PreviewVideoUrl { get; init; }
 
+    [StringLength(20000)]
     public string? Metadata { get; init; }
 
     [Required]

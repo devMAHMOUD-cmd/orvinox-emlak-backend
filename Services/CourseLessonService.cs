@@ -17,10 +17,14 @@ public sealed class CourseLessonService : ICourseLessonService
     };
 
     private readonly AppDbContext _dbContext;
+    private readonly IUploadService _uploadService;
 
-    public CourseLessonService(AppDbContext dbContext)
+    public CourseLessonService(
+        AppDbContext dbContext,
+        IUploadService uploadService)
     {
         _dbContext = dbContext ?? throw new ArgumentNullException(nameof(dbContext));
+        _uploadService = uploadService ?? throw new ArgumentNullException(nameof(uploadService));
     }
 
     public async Task<CourseLessonResponseDto> CreateLessonAsync(Guid userId, CreateCourseLessonDto dto)
@@ -33,6 +37,15 @@ public sealed class CourseLessonService : ICourseLessonService
         }
 
         ValidateResources(dto.Resources);
+        await ValidateAssetsAsync(
+            userId,
+            dto.VideoUrl,
+            dto.Resources
+                .Where(resource => !string.Equals(
+                    resource.ResourceType,
+                    "ExternalLink",
+                    StringComparison.OrdinalIgnoreCase))
+                .Select(resource => resource.FileUrl));
 
         var section = await GetOwnedSectionAsync(userId, dto.CourseSectionId);
 
@@ -67,6 +80,15 @@ public sealed class CourseLessonService : ICourseLessonService
     {
         ArgumentNullException.ThrowIfNull(dto);
         ValidateResources(dto.Resources);
+        await ValidateAssetsAsync(
+            userId,
+            dto.VideoUrl,
+            dto.Resources
+                .Where(resource => !string.Equals(
+                    resource.ResourceType,
+                    "ExternalLink",
+                    StringComparison.OrdinalIgnoreCase))
+                .Select(resource => resource.FileUrl));
 
         var lesson = await _dbContext.CourseLessons
             .Include(lesson => lesson.CourseSection)
@@ -202,6 +224,78 @@ public sealed class CourseLessonService : ICourseLessonService
         if (!AllowedResourceTypes.Contains(resourceType))
         {
             throw new ValidationException("ResourceType degeri Document, SourceCode veya ExternalLink olmalidir.");
+        }
+    }
+
+    private async Task ValidateAssetsAsync(
+        Guid userId,
+        string? videoUrl,
+        IEnumerable<string> resourceUrls)
+    {
+        ValidateUserScopedAsset(userId, videoUrl);
+        await ValidatePrivateAssetExistsAsync(userId, videoUrl);
+        foreach (var resourceUrl in resourceUrls)
+        {
+            ValidateUserScopedAsset(userId, resourceUrl);
+            await ValidatePrivateAssetExistsAsync(userId, resourceUrl);
+        }
+    }
+
+    private async Task ValidatePrivateAssetExistsAsync(Guid userId, string? urlOrObjectKey)
+    {
+        var objectKey = GetUserScopedObjectKey(userId, urlOrObjectKey);
+        if (!string.IsNullOrWhiteSpace(objectKey))
+        {
+            await _uploadService.ValidateOwnedObjectAsync(userId, objectKey, isPublic: false);
+        }
+    }
+
+    private static string? GetUserScopedObjectKey(Guid userId, string? urlOrObjectKey)
+    {
+        if (string.IsNullOrWhiteSpace(urlOrObjectKey))
+        {
+            return null;
+        }
+
+        var normalizedValue = Uri.TryCreate(urlOrObjectKey, UriKind.Absolute, out var uri)
+            ? Uri.UnescapeDataString(uri.AbsolutePath).TrimStart('/')
+            : urlOrObjectKey.Trim().TrimStart('/');
+        const string bucketPrefix = "private-products/";
+        var bucketIndex = normalizedValue.IndexOf(bucketPrefix, StringComparison.OrdinalIgnoreCase);
+        if (bucketIndex >= 0)
+        {
+            normalizedValue = normalizedValue[(bucketIndex + bucketPrefix.Length)..];
+        }
+
+        return normalizedValue.StartsWith(
+            $"users/{userId:D}/",
+            StringComparison.OrdinalIgnoreCase)
+            ? normalizedValue
+            : null;
+    }
+
+    private static void ValidateUserScopedAsset(Guid userId, string? urlOrObjectKey)
+    {
+        if (string.IsNullOrWhiteSpace(urlOrObjectKey))
+        {
+            return;
+        }
+
+        var normalizedValue = Uri.TryCreate(urlOrObjectKey, UriKind.Absolute, out var uri)
+            ? Uri.UnescapeDataString(uri.AbsolutePath).TrimStart('/')
+            : urlOrObjectKey.Trim().TrimStart('/');
+        var usersSegmentIndex = normalizedValue.IndexOf("users/", StringComparison.OrdinalIgnoreCase);
+        if (usersSegmentIndex < 0)
+        {
+            return;
+        }
+
+        var expectedPrefix = $"users/{userId:D}/";
+        if (!normalizedValue[usersSegmentIndex..].StartsWith(
+            expectedPrefix,
+            StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ForbiddenException("Baska bir kullaniciya ait dosya bu derse baglanamaz.");
         }
     }
 

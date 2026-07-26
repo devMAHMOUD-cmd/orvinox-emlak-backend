@@ -10,6 +10,7 @@ using CraftoraApi.Models.Elasticsearch;
 using CraftoraApi.Models.Entities;
 using CraftoraApi.Models.Enums;
 using CraftoraApi.Services.Interfaces;
+using CraftoraApi.Redis;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Distributed;
 
@@ -29,6 +30,7 @@ public sealed class ShopService : IShopService
     private readonly ILogger<ShopService> _logger;
     private readonly IDistributedCache _cache;
     private readonly IStorageService _storageService;
+    private readonly IUploadService _uploadService;
     private readonly IRabbitMqPublisher _rabbitMqPublisher;
 
     public ShopService(
@@ -36,18 +38,23 @@ public sealed class ShopService : IShopService
         ILogger<ShopService> logger,
         IDistributedCache cache,
         IStorageService storageService,
+        IUploadService uploadService,
         IRabbitMqPublisher rabbitMqPublisher)
     {
         _dbContext = dbContext ?? throw new ArgumentNullException(nameof(dbContext));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _cache = cache ?? throw new ArgumentNullException(nameof(cache));
         _storageService = storageService ?? throw new ArgumentNullException(nameof(storageService));
+        _uploadService = uploadService ?? throw new ArgumentNullException(nameof(uploadService));
         _rabbitMqPublisher = rabbitMqPublisher ?? throw new ArgumentNullException(nameof(rabbitMqPublisher));
     }
 
     public async Task<ShopResponseDto> CreateShopAsync(Guid userId, CreateShopDto dto)
     {
         ArgumentNullException.ThrowIfNull(dto);
+        ValidatePublicAssetOwnership(userId, dto.LogoUrl);
+        ValidatePublicAssetOwnership(userId, dto.BannerUrl);
+        await ValidatePublicAssetsExistAsync(userId, dto.LogoUrl, dto.BannerUrl);
 
         await using var transaction = await _dbContext.Database.BeginTransactionAsync();
 
@@ -134,7 +141,18 @@ public sealed class ShopService : IShopService
 
         var normalizedSlug = slug.Trim().ToLowerInvariant();
         var cacheKey = GetShopSlugCacheKey(normalizedSlug);
-        var cachedShop = await _cache.GetStringAsync(cacheKey);
+        string? cachedShop = null;
+        try
+        {
+            cachedShop = await _cache.GetStringAsync(cacheKey);
+        }
+        catch (Exception exception)
+        {
+            _logger.LogWarning(
+                exception,
+                "Public shop cache could not be read. Slug: {Slug}",
+                normalizedSlug);
+        }
 
         if (!string.IsNullOrWhiteSpace(cachedShop))
         {
@@ -155,10 +173,20 @@ public sealed class ShopService : IShopService
         }
 
         var response = await MapToPublicResponseAsync(shop);
-        await _cache.SetStringAsync(
-            cacheKey,
-            JsonSerializer.Serialize(response),
-            ShopCacheOptions);
+        try
+        {
+            await _cache.SetStringAsync(
+                cacheKey,
+                JsonSerializer.Serialize(response),
+                ShopCacheOptions);
+        }
+        catch (Exception exception)
+        {
+            _logger.LogWarning(
+                exception,
+                "Public shop cache could not be written. Slug: {Slug}",
+                normalizedSlug);
+        }
 
         return await ApplyCurrentUserFollowStateAsync(response, currentUserId);
     }
@@ -178,63 +206,12 @@ public sealed class ShopService : IShopService
         return await ApplyCurrentUserFollowStateAsync(response, currentUserId);
     }
 
-    private async Task DeleteShopHardAsync(Guid id, Guid userId)
-    {
-        await using var transaction = await _dbContext.Database.BeginTransactionAsync();
-
-        try
-        {
-            var shop = await _dbContext.Shops
-                .FirstOrDefaultAsync(s => s.Id == id && s.UserId == userId);
-
-            if (shop is null)
-            {
-                throw new NotFoundException("Mağaza", id.ToString());
-            }
-
-            // İlişkili subscription'ı sil
-            var subscription = await _dbContext.SellerSubscriptions
-                .FirstOrDefaultAsync(s => s.ShopId == shop.Id);
-
-            if (subscription is not null)
-            {
-                _dbContext.SellerSubscriptions.Remove(subscription);
-            }
-
-            // Shop'ı sil
-            _dbContext.Shops.Remove(shop);
-
-            // User role'ünü geri User'a çevir (artık shop olmadığından)
-            var user = await _dbContext.Users
-                .FirstOrDefaultAsync(u => u.Id == userId);
-
-            if (user?.Role == UserRole.Seller)
-            {
-                // Shop var mı kontrol et
-                var hasOtherShop = await _dbContext.Shops
-                    .AnyAsync(s => s.UserId == userId);
-
-                if (!hasOtherShop)
-                {
-                    user.Role = UserRole.User;
-                }
-            }
-
-            await _dbContext.SaveChangesAsync();
-            await transaction.CommitAsync();
-
-            _logger.LogInformation("Shop deleted. ShopId: {ShopId}, UserId: {UserId}", shop.Id, userId);
-        }
-        catch
-        {
-            await transaction.RollbackAsync();
-            throw;
-        }
-    }
-
     public async Task<ShopResponseDto> UpdateShopAsync(Guid userId, UpdateShopDto dto)
     {
         ArgumentNullException.ThrowIfNull(dto);
+        ValidatePublicAssetOwnership(userId, dto.LogoUrl);
+        ValidatePublicAssetOwnership(userId, dto.BannerUrl);
+        await ValidatePublicAssetsExistAsync(userId, dto.LogoUrl, dto.BannerUrl);
 
         var shop = await _dbContext.Shops.FirstOrDefaultAsync(shop => shop.UserId == userId);
         if (shop is null)
@@ -243,6 +220,8 @@ public sealed class ShopService : IShopService
         }
 
         var oldSlug = shop.Slug;
+        var oldLogoUrl = shop.LogoUrl;
+        var oldBannerUrl = shop.BannerUrl;
 
         if (!string.IsNullOrWhiteSpace(dto.ShopName) &&
             !string.Equals(shop.ShopName, dto.ShopName.Trim(), StringComparison.Ordinal))
@@ -282,14 +261,16 @@ public sealed class ShopService : IShopService
         }
 
         await _dbContext.SaveChangesAsync();
-        await _cache.RemoveAsync(GetShopSlugCacheKey(oldSlug));
+        await TryRemoveShopCacheAsync(oldSlug);
 
         if (!string.Equals(oldSlug, shop.Slug, StringComparison.Ordinal))
         {
-            await _cache.RemoveAsync(GetShopSlugCacheKey(shop.Slug));
+            await TryRemoveShopCacheAsync(shop.Slug);
         }
 
         await PublishShopIndexMessageAsync(shop.Id);
+        await TryDeleteReplacedPublicAssetAsync(oldLogoUrl, shop.LogoUrl);
+        await TryDeleteReplacedPublicAssetAsync(oldBannerUrl, shop.BannerUrl);
 
         return await MapToResponseAsync(shop);
     }
@@ -479,7 +460,7 @@ public sealed class ShopService : IShopService
                 .CountAsync(item => item.ShopId == shopId);
 
             await transaction.CommitAsync();
-            await _cache.RemoveAsync(GetShopSlugCacheKey(shop.Slug));
+            await TryRemoveShopCacheAsync(shop.Slug);
             await PublishShopIndexMessageAsync(shopId);
 
             return new ShopFollowResponseDto(shopId, isFollowing, followerCount);
@@ -540,14 +521,32 @@ public sealed class ShopService : IShopService
 
     public async Task DeleteShopAsync(Guid shopId, Guid userId)
     {
+        await using var transaction = await _dbContext.Database.BeginTransactionAsync();
         var shop = await EnsureShopOwnerAsync(shopId, userId);
+        var subscription = await _dbContext.SellerSubscriptions
+            .FirstOrDefaultAsync(item =>
+                item.ShopId == shopId &&
+                item.Status == SubStatus.Active);
 
         shop.IsActive = false;
-        await _dbContext.SaveChangesAsync();
-        await _cache.RemoveAsync(GetShopSlugCacheKey(shop.Slug));
-        await PublishShopIndexMessageAsync(shop.Id);
+        shop.UpdatedAt = DateTime.UtcNow;
+        if (subscription is not null)
+        {
+            subscription.Status = SubStatus.Canceled;
+            subscription.UpdatedAt = shop.UpdatedAt;
+        }
 
-        _logger.LogInformation("Shop deactivated. ShopId: {ShopId}, UserId: {UserId}", shopId, userId);
+        await _dbContext.SaveChangesAsync();
+        await transaction.CommitAsync();
+        await TryRemoveShopCacheAsync(shop.Slug);
+        await PublishShopIndexMessageAsync(shop.Id);
+        await PublishInactiveShopContentAsync(shop.Id);
+
+        _logger.LogInformation(
+            "Shop deactivated and active subscription canceled. ShopId: {ShopId}, UserId: {UserId}, SubscriptionId: {SubscriptionId}",
+            shopId,
+            userId,
+            subscription?.Id);
     }
 
     private async Task<string> GenerateUniqueSlugAsync(string shopName)
@@ -557,49 +556,89 @@ public sealed class ShopService : IShopService
 
     private async Task PublishShopIndexMessageAsync(Guid shopId)
     {
-        var shop = await _dbContext.Shops
-            .AsNoTracking()
-            .FirstOrDefaultAsync(item => item.Id == shopId);
-
-        if (shop is null)
+        try
         {
-            await _rabbitMqPublisher.PublishShopSyncMessage(new ShopSyncMessage(
-                ShopId: shopId,
-                Action: "Delete",
-                Document: null));
-            return;
-        }
+            var shop = await _dbContext.Shops
+                .AsNoTracking()
+                .FirstOrDefaultAsync(item => item.Id == shopId);
 
-        if (shop.IsActive != true)
-        {
+            if (shop is null || shop.IsActive != true)
+            {
+                await _rabbitMqPublisher.PublishShopSyncMessage(new ShopSyncMessage(
+                    ShopId: shopId,
+                    Action: "Delete",
+                    Document: null));
+                return;
+            }
+
+            var followerCount = await _dbContext.Subscriptions
+                .AsNoTracking()
+                .CountAsync(subscription => subscription.ShopId == shop.Id);
+
+            var document = new ShopDocument
+            {
+                Id = shop.Id,
+                ShopName = shop.ShopName,
+                Slug = shop.Slug,
+                ShortDescription = shop.ShortDescription,
+                LogoObjectKey = shop.LogoUrl,
+                BannerObjectKey = shop.BannerUrl,
+                IsActive = true,
+                IsVerified = shop.IsVerified == true,
+                FollowerCount = followerCount
+            };
+
             await _rabbitMqPublisher.PublishShopSyncMessage(new ShopSyncMessage(
                 ShopId: shop.Id,
-                Action: "Delete",
-                Document: null));
-            return;
+                Action: "Index",
+                Document: document));
         }
-
-        var followerCount = await _dbContext.Subscriptions
-            .AsNoTracking()
-            .CountAsync(subscription => subscription.ShopId == shop.Id);
-
-        var document = new ShopDocument
+        catch (Exception exception)
         {
-            Id = shop.Id,
-            ShopName = shop.ShopName,
-            Slug = shop.Slug,
-            ShortDescription = shop.ShortDescription,
-            LogoObjectKey = shop.LogoUrl,
-            BannerObjectKey = shop.BannerUrl,
-            IsActive = true,
-            IsVerified = shop.IsVerified == true,
-            FollowerCount = followerCount
-        };
+            _logger.LogError(
+                exception,
+                "Shop search index message could not be published. ShopId: {ShopId}",
+                shopId);
+        }
+    }
 
-        await _rabbitMqPublisher.PublishShopSyncMessage(new ShopSyncMessage(
-            ShopId: shop.Id,
-            Action: "Index",
-            Document: document));
+    private async Task PublishInactiveShopContentAsync(Guid shopId)
+    {
+        try
+        {
+            var productIds = await _dbContext.Products
+                .AsNoTracking()
+                .Where(product => product.ShopId == shopId)
+                .Select(product => product.Id)
+                .ToListAsync();
+            foreach (var productId in productIds)
+            {
+                await _rabbitMqPublisher.PublishProductSyncMessage(new ProductSyncMessage(
+                    ProductId: productId,
+                    Action: "Delete",
+                    Document: null));
+            }
+
+            var mediaIds = await _dbContext.Media
+                .AsNoTracking()
+                .Where(media => media.ShopId == shopId)
+                .Select(media => media.Id)
+                .ToListAsync();
+            foreach (var mediaId in mediaIds)
+            {
+                await _rabbitMqPublisher.PublishMediaSyncMessage(new MediaSyncMessage(
+                    MediaId: mediaId,
+                    Action: "Delete",
+                    Document: null));
+            }
+        }
+        catch (Exception exception)
+        {
+            _logger.LogError(
+                exception,
+                "Inactive shop content search messages could not be published. ShopId: {ShopId}",
+                shopId);
+        }
     }
 
     private async Task<string> GenerateUniqueSlugAsync(string shopName, Guid? excludedShopId)
@@ -646,7 +685,22 @@ public sealed class ShopService : IShopService
 
     private static string GetShopSlugCacheKey(string slug)
     {
-        return $"shop:public:slug:v2:{slug.Trim().ToLowerInvariant()}";
+        return CacheKeys.PublicShopBySlug(slug);
+    }
+
+    private async Task TryRemoveShopCacheAsync(string slug)
+    {
+        try
+        {
+            await _cache.RemoveAsync(GetShopSlugCacheKey(slug));
+        }
+        catch (Exception exception)
+        {
+            _logger.LogWarning(
+                exception,
+                "Public shop cache could not be invalidated. Slug: {Slug}",
+                slug);
+        }
     }
 
     private async Task<PublicShopResponseDto> MapToPublicResponseAsync(Shop shop)
@@ -725,8 +779,9 @@ public sealed class ShopService : IShopService
             FollowingCount: followingCount);
     }
 
-    private string? GeneratePublicAssetUrl(string? objectKey)
+    private string? GeneratePublicAssetUrl(string? urlOrObjectKey)
     {
+        var objectKey = ExtractObjectKey(urlOrObjectKey, PublicAssetsBucketName);
         if (string.IsNullOrWhiteSpace(objectKey))
         {
             return null;
@@ -736,6 +791,96 @@ public sealed class ShopService : IShopService
             PublicAssetsBucketName,
             objectKey,
             PublicAssetUrlExpiryMinutes);
+    }
+
+    private async Task TryDeleteReplacedPublicAssetAsync(
+        string? oldValue,
+        string? currentValue)
+    {
+        var oldObjectKey = ExtractObjectKey(oldValue, PublicAssetsBucketName);
+        var currentObjectKey = ExtractObjectKey(currentValue, PublicAssetsBucketName);
+        if (string.IsNullOrWhiteSpace(oldObjectKey) ||
+            !oldObjectKey.StartsWith("users/", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(oldObjectKey, currentObjectKey, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        try
+        {
+            await _storageService.DeleteFileAsync(PublicAssetsBucketName, oldObjectKey);
+        }
+        catch (Exception exception)
+        {
+            _logger.LogWarning(
+                exception,
+                "Replaced shop asset could not be deleted. ObjectKey: {ObjectKey}",
+                oldObjectKey);
+        }
+    }
+
+    private static void ValidatePublicAssetOwnership(Guid userId, string? urlOrObjectKey)
+    {
+        if (string.IsNullOrWhiteSpace(urlOrObjectKey))
+        {
+            return;
+        }
+
+        var normalizedValue = Uri.TryCreate(urlOrObjectKey, UriKind.Absolute, out var uri)
+            ? Uri.UnescapeDataString(uri.AbsolutePath).TrimStart('/')
+            : urlOrObjectKey.Trim().TrimStart('/');
+        var usersSegmentIndex = normalizedValue.IndexOf("users/", StringComparison.OrdinalIgnoreCase);
+        if (usersSegmentIndex < 0)
+        {
+            return;
+        }
+
+        var expectedPrefix = $"users/{userId:D}/";
+        if (!normalizedValue[usersSegmentIndex..].StartsWith(
+            expectedPrefix,
+            StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ForbiddenException("Baska bir kullaniciya ait dosya bu magazaya baglanamaz.");
+        }
+    }
+
+    private async Task ValidatePublicAssetsExistAsync(
+        Guid userId,
+        params string?[] values)
+    {
+        foreach (var objectKey in values
+            .Select(value => ExtractObjectKey(value, PublicAssetsBucketName))
+            .Where(value =>
+                value?.StartsWith(
+                    $"users/{userId:D}/",
+                    StringComparison.OrdinalIgnoreCase) == true)
+            .Distinct(StringComparer.Ordinal))
+        {
+            await _uploadService.ValidateOwnedObjectAsync(
+                userId,
+                objectKey!,
+                isPublic: true);
+        }
+    }
+
+    private static string? ExtractObjectKey(string? urlOrObjectKey, string bucketName)
+    {
+        if (string.IsNullOrWhiteSpace(urlOrObjectKey))
+        {
+            return null;
+        }
+
+        if (!Uri.TryCreate(urlOrObjectKey, UriKind.Absolute, out var uri))
+        {
+            return urlOrObjectKey.Trim().TrimStart('/');
+        }
+
+        var path = Uri.UnescapeDataString(uri.AbsolutePath).TrimStart('/');
+        var bucketPrefix = $"{bucketName}/";
+        var bucketIndex = path.IndexOf(bucketPrefix, StringComparison.OrdinalIgnoreCase);
+        return bucketIndex >= 0
+            ? path[(bucketIndex + bucketPrefix.Length)..]
+            : path;
     }
 
     private async Task<bool> HasActiveSubscriptionAsync(Guid shopId)

@@ -8,11 +8,13 @@ using CraftoraApi.Services.Interfaces;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.AspNetCore.RateLimiting;
 
 namespace CraftoraApi.Controllers;
 
 [ApiController]
 [Route("api/[controller]")]
+[EnableRateLimiting("general")]
 public sealed class ProductController : ControllerBase
 {
     private readonly IProductService _productService;

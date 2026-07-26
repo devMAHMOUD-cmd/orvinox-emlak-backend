@@ -1,5 +1,11 @@
 namespace CraftoraApi.Services.Interfaces;
 
+public sealed record StorageObjectInfo(
+    long ContentLength,
+    string? ContentType,
+    string? ETag,
+    DateTime? LastModified);
+
 public interface IStorageService
 {
     Task InitializeBucketsAsync();
@@ -29,5 +35,13 @@ public interface IStorageService
         string contentType,
         CancellationToken cancellationToken = default);
 
-    Task DeleteFileAsync(string bucketName, string objectKey);
+    Task<StorageObjectInfo?> GetObjectInfoAsync(
+        string bucketName,
+        string objectKey,
+        CancellationToken cancellationToken = default);
+
+    Task DeleteFileAsync(
+        string bucketName,
+        string objectKey,
+        CancellationToken cancellationToken = default);
 }

@@ -1,8 +1,11 @@
 using CraftoraApi.Data;
 using CraftoraApi.DTOs.Course;
+using CraftoraApi.Infrastructure.Messaging;
 using CraftoraApi.Middleware;
+using CraftoraApi.Models.Elasticsearch;
 using CraftoraApi.Models.Entities;
 using CraftoraApi.Models.Enums;
+using CraftoraApi.Redis;
 using CraftoraApi.Services.Interfaces;
 using Microsoft.EntityFrameworkCore;
 
@@ -10,6 +13,7 @@ namespace CraftoraApi.Services;
 
 public sealed class CourseService : ICourseService
 {
+    private const string PopularProductsCacheKey = "products:popular:public-active-shops:v4";
     private static readonly HashSet<string> AllowedLevels = new(StringComparer.OrdinalIgnoreCase)
     {
         "Beginner",
@@ -25,10 +29,23 @@ public sealed class CourseService : ICourseService
     };
 
     private readonly AppDbContext _dbContext;
+    private readonly ICacheService _cacheService;
+    private readonly IRabbitMqPublisher _rabbitMqPublisher;
+    private readonly IUploadService _uploadService;
+    private readonly ILogger<CourseService> _logger;
 
-    public CourseService(AppDbContext dbContext)
+    public CourseService(
+        AppDbContext dbContext,
+        ICacheService cacheService,
+        IRabbitMqPublisher rabbitMqPublisher,
+        IUploadService uploadService,
+        ILogger<CourseService> logger)
     {
         _dbContext = dbContext ?? throw new ArgumentNullException(nameof(dbContext));
+        _cacheService = cacheService ?? throw new ArgumentNullException(nameof(cacheService));
+        _rabbitMqPublisher = rabbitMqPublisher ?? throw new ArgumentNullException(nameof(rabbitMqPublisher));
+        _uploadService = uploadService ?? throw new ArgumentNullException(nameof(uploadService));
+        _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
 
     public async Task<CourseResponseDto> CreateCourseAsync(Guid userId, CreateCourseDto dto)
@@ -38,6 +55,7 @@ public sealed class CourseService : ICourseService
         ValidateResources(dto.Sections.SelectMany(section => section.Lessons).SelectMany(lesson => lesson.Resources));
 
         var product = await GetOwnedProductAsync(userId, dto.ProductId);
+        await ValidateAssetsAsync(userId, dto.Sections);
 
         var courseExists = await _dbContext.Courses.AnyAsync(course => course.ProductId == dto.ProductId);
         if (courseExists)
@@ -59,6 +77,8 @@ public sealed class CourseService : ICourseService
 
         _dbContext.Courses.Add(course);
         await _dbContext.SaveChangesAsync();
+        await InvalidateProductCachesAsync(product.ShopId);
+        await PublishProductIndexMessageAsync(product);
 
         return await GetCourseByIdAsync(course.Id);
     }
@@ -68,6 +88,7 @@ public sealed class CourseService : ICourseService
         ArgumentNullException.ThrowIfNull(dto);
         ValidateLevel(dto.Level);
         ValidateResources(dto.Sections.SelectMany(section => section.Lessons).SelectMany(lesson => lesson.Resources));
+        await ValidateAssetsAsync(userId, dto.Sections);
 
         var course = await _dbContext.Courses
             .Include(course => course.CourseSections)
@@ -106,10 +127,13 @@ public sealed class CourseService : ICourseService
             throw new NotFoundException("Egitim bulunamadi.");
         }
 
-        await EnsureProductOwnershipAsync(userId, course.ProductId);
+        var product = await GetOwnedProductAsync(userId, course.ProductId);
 
+        product.Type = ProductType.DigitalFile;
         _dbContext.Courses.Remove(course);
         await _dbContext.SaveChangesAsync();
+        await InvalidateProductCachesAsync(product.ShopId);
+        await PublishProductIndexMessageAsync(product);
     }
 
     public async Task<CourseResponseDto> GetCourseByIdAsync(Guid courseId)
@@ -173,6 +197,160 @@ public sealed class CourseService : ICourseService
     private async Task EnsureProductOwnershipAsync(Guid userId, Guid productId)
     {
         _ = await GetOwnedProductAsync(userId, productId);
+    }
+
+    private async Task InvalidateProductCachesAsync(Guid shopId)
+    {
+        try
+        {
+            await _cacheService.RemoveAsync(PopularProductsCacheKey);
+            var shopSlug = await _dbContext.Shops
+                .AsNoTracking()
+                .Where(shop => shop.Id == shopId)
+                .Select(shop => shop.Slug)
+                .FirstOrDefaultAsync();
+            if (!string.IsNullOrWhiteSpace(shopSlug))
+            {
+                await _cacheService.RemoveAsync(CacheKeys.PublicShopBySlug(shopSlug));
+            }
+        }
+        catch (Exception exception)
+        {
+            _logger.LogWarning(
+                exception,
+                "Legacy course product caches could not be invalidated. ShopId: {ShopId}",
+                shopId);
+        }
+    }
+
+    private async Task PublishProductIndexMessageAsync(Product product)
+    {
+        try
+        {
+            await _rabbitMqPublisher.PublishProductSyncMessage(new ProductSyncMessage(
+                ProductId: product.Id,
+                Action: "Index",
+                Document: new ProductDocument
+                {
+                    Id = product.Id,
+                    Name = product.Title,
+                    Description = product.Description,
+                    Price = product.Price,
+                    CategoryId = product.CategoryId,
+                    ShopId = product.ShopId,
+                    ShopName = product.Shop.ShopName,
+                    IsActive = product.IsActive == true,
+                    IsPublished = product.Status == ProductStatus.Published,
+                    ShopIsActive = product.Shop.IsActive == true
+                }));
+        }
+        catch (Exception exception)
+        {
+            _logger.LogError(
+                exception,
+                "Legacy course product search message could not be published. ProductId: {ProductId}",
+                product.Id);
+        }
+    }
+
+    private async Task ValidateAssetsAsync(Guid userId, IEnumerable<CreateCourseSectionDto> sections)
+    {
+        foreach (var lesson in sections.SelectMany(section => section.Lessons))
+        {
+            ValidateUserScopedAsset(userId, lesson.VideoUrl);
+            await ValidatePrivateAssetExistsAsync(userId, lesson.VideoUrl);
+            foreach (var resource in lesson.Resources)
+            {
+                if (string.Equals(
+                    resource.ResourceType,
+                    "ExternalLink",
+                    StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+                ValidateUserScopedAsset(userId, resource.FileUrl);
+                await ValidatePrivateAssetExistsAsync(userId, resource.FileUrl);
+            }
+        }
+    }
+
+    private async Task ValidateAssetsAsync(Guid userId, IEnumerable<UpdateCourseSectionDto> sections)
+    {
+        foreach (var lesson in sections.SelectMany(section => section.Lessons))
+        {
+            ValidateUserScopedAsset(userId, lesson.VideoUrl);
+            await ValidatePrivateAssetExistsAsync(userId, lesson.VideoUrl);
+            foreach (var resource in lesson.Resources)
+            {
+                if (string.Equals(
+                    resource.ResourceType,
+                    "ExternalLink",
+                    StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+                ValidateUserScopedAsset(userId, resource.FileUrl);
+                await ValidatePrivateAssetExistsAsync(userId, resource.FileUrl);
+            }
+        }
+    }
+
+    private async Task ValidatePrivateAssetExistsAsync(Guid userId, string? urlOrObjectKey)
+    {
+        var objectKey = GetUserScopedObjectKey(userId, urlOrObjectKey);
+        if (!string.IsNullOrWhiteSpace(objectKey))
+        {
+            await _uploadService.ValidateOwnedObjectAsync(userId, objectKey, isPublic: false);
+        }
+    }
+
+    private static string? GetUserScopedObjectKey(Guid userId, string? urlOrObjectKey)
+    {
+        if (string.IsNullOrWhiteSpace(urlOrObjectKey))
+        {
+            return null;
+        }
+
+        var normalizedValue = Uri.TryCreate(urlOrObjectKey, UriKind.Absolute, out var uri)
+            ? Uri.UnescapeDataString(uri.AbsolutePath).TrimStart('/')
+            : urlOrObjectKey.Trim().TrimStart('/');
+        var bucketPrefix = "private-products/";
+        var bucketIndex = normalizedValue.IndexOf(bucketPrefix, StringComparison.OrdinalIgnoreCase);
+        if (bucketIndex >= 0)
+        {
+            normalizedValue = normalizedValue[(bucketIndex + bucketPrefix.Length)..];
+        }
+
+        return normalizedValue.StartsWith(
+            $"users/{userId:D}/",
+            StringComparison.OrdinalIgnoreCase)
+            ? normalizedValue
+            : null;
+    }
+
+    private static void ValidateUserScopedAsset(Guid userId, string? urlOrObjectKey)
+    {
+        if (string.IsNullOrWhiteSpace(urlOrObjectKey))
+        {
+            return;
+        }
+
+        var normalizedValue = Uri.TryCreate(urlOrObjectKey, UriKind.Absolute, out var uri)
+            ? Uri.UnescapeDataString(uri.AbsolutePath).TrimStart('/')
+            : urlOrObjectKey.Trim().TrimStart('/');
+        var usersSegmentIndex = normalizedValue.IndexOf("users/", StringComparison.OrdinalIgnoreCase);
+        if (usersSegmentIndex < 0)
+        {
+            return;
+        }
+
+        var expectedPrefix = $"users/{userId:D}/";
+        if (!normalizedValue[usersSegmentIndex..].StartsWith(
+            expectedPrefix,
+            StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ForbiddenException("Baska bir kullaniciya ait dosya bu kursa baglanamaz.");
+        }
     }
 
     private static void AddSections(Course course, IEnumerable<CreateCourseSectionDto> sections)

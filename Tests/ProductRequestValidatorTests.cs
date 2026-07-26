@@ -125,6 +125,54 @@ public sealed class ProductRequestValidatorTests
         Assert.True(_createValidator.Validate(request).IsValid);
     }
 
+    [Fact]
+    public void Product_images_are_limited_to_eight_valid_object_keys()
+    {
+        var tooMany = Create() with
+        {
+            ImageObjectKeys = Enumerable.Range(0, 9)
+                .Select(index => $"users/test/public/image-{index}.jpg")
+                .ToList()
+        };
+        var invalidKey = Create() with
+        {
+            ImageObjectKeys = ["", "users/test/public/image.jpg"]
+        };
+        var valid = Create() with
+        {
+            ImageObjectKeys = Enumerable.Range(0, 8)
+                .Select(index => $"users/test/public/image-{index}.jpg")
+                .ToList()
+        };
+
+        Assert.Contains(
+            _createValidator.Validate(tooMany).Errors,
+            error => error.PropertyName == nameof(CreateProductDto.ImageObjectKeys));
+        Assert.Contains(
+            _createValidator.Validate(invalidKey).Errors,
+            error => error.PropertyName == nameof(CreateProductDto.ImageObjectKeys));
+        Assert.True(_createValidator.Validate(valid).IsValid);
+    }
+
+    [Fact]
+    public void Product_rejects_invalid_json_metadata_and_oversized_tags()
+    {
+        var invalidMetadata = Create() with { Metadata = "{invalid-json" };
+        var oversizedTags = Create() with
+        {
+            Tags = Enumerable.Range(0, 21)
+                .Select(index => $"tag-{index}")
+                .ToList()
+        };
+
+        Assert.Contains(
+            _createValidator.Validate(invalidMetadata).Errors,
+            error => error.PropertyName == nameof(CreateProductDto.Metadata));
+        Assert.Contains(
+            _createValidator.Validate(oversizedTags).Errors,
+            error => error.PropertyName == nameof(CreateProductDto.Tags));
+    }
+
     private static CreateProductDto Create(
         decimal price = 10m,
         string title = "Valid product",

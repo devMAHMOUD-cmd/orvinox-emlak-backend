@@ -15,10 +15,13 @@ public sealed record ProductResponseDto(
     string? CoverImagePublicUrl,
     string? PreviewVideoUrl,
     string? PreviewVideoPublicUrl,
+    string? FileUrl,
     bool HasProductFile,
     string? ProductFileName,
+    IReadOnlyList<ProductImageResponseDto> Images,
     ProductStatus Status,
     List<string> Tags,
+    string? Metadata,
     decimal? RatingAverage,
     int ReviewCount,
     int SalesCount);

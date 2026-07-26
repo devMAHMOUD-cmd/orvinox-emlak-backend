@@ -5,6 +5,7 @@ using CraftoraApi.Middleware;
 using CraftoraApi.Models.Elasticsearch;
 using CraftoraApi.Models.Entities;
 using CraftoraApi.Models.Enums;
+using CraftoraApi.Redis;
 using CraftoraApi.Services.Interfaces;
 using Microsoft.EntityFrameworkCore;
 
@@ -16,21 +17,25 @@ public sealed class SubscriptionService : ISubscriptionService
     private const string PrivateProductsBucketName = "private-products";
     private const string DefaultPlanCode = "professional";
     private const string PaymentProvider = "stripe_mock";
+    private const string PopularProductsCacheKey = "products:popular:public-active-shops:v4";
 
     private readonly AppDbContext _dbContext;
     private readonly IPaymentService _paymentService;
     private readonly IRabbitMqPublisher _rabbitMqPublisher;
+    private readonly ICacheService _cacheService;
     private readonly ILogger<SubscriptionService> _logger;
 
     public SubscriptionService(
         AppDbContext dbContext,
         IPaymentService paymentService,
         IRabbitMqPublisher rabbitMqPublisher,
+        ICacheService cacheService,
         ILogger<SubscriptionService> logger)
     {
         _dbContext = dbContext ?? throw new ArgumentNullException(nameof(dbContext));
         _paymentService = paymentService ?? throw new ArgumentNullException(nameof(paymentService));
         _rabbitMqPublisher = rabbitMqPublisher ?? throw new ArgumentNullException(nameof(rabbitMqPublisher));
+        _cacheService = cacheService ?? throw new ArgumentNullException(nameof(cacheService));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
 
@@ -168,8 +173,8 @@ public sealed class SubscriptionService : ISubscriptionService
         });
         await _dbContext.SaveChangesAsync();
         await transaction.CommitAsync();
-        await PublishShopIndexMessageAsync(shop.Id);
-        await PublishActiveShopContentAsync(shop.Id);
+        await InvalidateVisibilityCachesAsync(shop);
+        await TryPublishShopVisibilityAsync(shop.Id, isActive: true);
 
         return MapToResponse(subscription);
     }
@@ -194,10 +199,50 @@ public sealed class SubscriptionService : ISubscriptionService
         shop.UpdatedAt = subscription.UpdatedAt;
 
         await _dbContext.SaveChangesAsync();
-        await PublishShopIndexMessageAsync(shop.Id);
-        await PublishInactiveShopContentAsync(shop.Id);
+        await InvalidateVisibilityCachesAsync(shop);
+        await TryPublishShopVisibilityAsync(shop.Id, isActive: false);
 
         return MapToResponse(subscription);
+    }
+
+    private async Task InvalidateVisibilityCachesAsync(Shop shop)
+    {
+        try
+        {
+            await _cacheService.RemoveAsync(PopularProductsCacheKey);
+            await _cacheService.RemoveAsync(CacheKeys.PublicShopBySlug(shop.Slug));
+        }
+        catch (Exception exception)
+        {
+            _logger.LogWarning(
+                exception,
+                "Subscription visibility caches could not be invalidated. ShopId: {ShopId}",
+                shop.Id);
+        }
+    }
+
+    private async Task TryPublishShopVisibilityAsync(Guid shopId, bool isActive)
+    {
+        try
+        {
+            await PublishShopIndexMessageAsync(shopId);
+            if (isActive)
+            {
+                await PublishActiveShopContentAsync(shopId);
+            }
+            else
+            {
+                await PublishInactiveShopContentAsync(shopId);
+            }
+        }
+        catch (Exception exception)
+        {
+            _logger.LogError(
+                exception,
+                "Subscription search visibility messages could not be published. ShopId: {ShopId}, IsActive: {IsActive}",
+                shopId,
+                isActive);
+        }
     }
 
     private async Task PublishShopIndexMessageAsync(Guid shopId)

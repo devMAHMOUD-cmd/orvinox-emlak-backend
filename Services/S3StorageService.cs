@@ -67,6 +67,7 @@ public sealed class S3StorageService : IStorageService, IDisposable
         ArgumentException.ThrowIfNullOrWhiteSpace(bucketName);
         ArgumentException.ThrowIfNullOrWhiteSpace(objectKey);
         ArgumentException.ThrowIfNullOrWhiteSpace(contentType);
+        objectKey = NormalizeObjectKey(bucketName, objectKey);
 
         var request = new GetPreSignedUrlRequest
         {
@@ -87,6 +88,7 @@ public sealed class S3StorageService : IStorageService, IDisposable
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(bucketName);
         ArgumentException.ThrowIfNullOrWhiteSpace(objectKey);
+        objectKey = NormalizeObjectKey(bucketName, objectKey);
 
         var request = new GetPreSignedUrlRequest
         {
@@ -110,6 +112,7 @@ public sealed class S3StorageService : IStorageService, IDisposable
         ArgumentException.ThrowIfNullOrWhiteSpace(objectKey);
         ArgumentNullException.ThrowIfNull(content);
         ArgumentException.ThrowIfNullOrWhiteSpace(contentType);
+        objectKey = NormalizeObjectKey(bucketName, objectKey);
 
         await using var stream = new MemoryStream(content);
         await _s3Client.PutObjectAsync(new PutObjectRequest
@@ -135,6 +138,7 @@ public sealed class S3StorageService : IStorageService, IDisposable
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(bucketName);
         ArgumentException.ThrowIfNullOrWhiteSpace(objectKey);
+        objectKey = NormalizeObjectKey(bucketName, objectKey);
         ArgumentNullException.ThrowIfNull(content);
         ArgumentException.ThrowIfNullOrWhiteSpace(contentType);
 
@@ -153,27 +157,61 @@ public sealed class S3StorageService : IStorageService, IDisposable
             objectKey);
     }
 
-    public async Task DeleteFileAsync(string bucketName, string objectKey)
+    public async Task<StorageObjectInfo?> GetObjectInfoAsync(
+        string bucketName,
+        string objectKey,
+        CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(bucketName);
         ArgumentException.ThrowIfNullOrWhiteSpace(objectKey);
+        objectKey = NormalizeObjectKey(bucketName, objectKey);
 
         try
         {
-            await _s3Client.DeleteObjectAsync(new DeleteObjectRequest
+            var response = await _s3Client.GetObjectMetadataAsync(
+                new GetObjectMetadataRequest
+                {
+                    BucketName = bucketName,
+                    Key = objectKey
+                },
+                cancellationToken);
+
+            return new StorageObjectInfo(
+                response.ContentLength,
+                response.Headers.ContentType,
+                response.ETag,
+                response.LastModified);
+        }
+        catch (AmazonS3Exception exception) when (
+            exception.StatusCode == System.Net.HttpStatusCode.NotFound ||
+            string.Equals(exception.ErrorCode, "NoSuchKey", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(exception.ErrorCode, "NotFound", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+    }
+
+    public async Task DeleteFileAsync(
+        string bucketName,
+        string objectKey,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(bucketName);
+        ArgumentException.ThrowIfNullOrWhiteSpace(objectKey);
+        objectKey = NormalizeObjectKey(bucketName, objectKey);
+
+        await _s3Client.DeleteObjectAsync(
+            new DeleteObjectRequest
             {
                 BucketName = bucketName,
                 Key = objectKey
-            });
-        }
-        catch (Exception exception)
-        {
-            _logger.LogError(
-                exception,
-                "Storage file delete failed. BucketName: {BucketName}, ObjectKey: {ObjectKey}",
-                bucketName,
-                objectKey);
-        }
+            },
+            cancellationToken);
+
+        _logger.LogInformation(
+            "Storage file deleted. BucketName: {BucketName}, ObjectKey: {ObjectKey}",
+            bucketName,
+            objectKey);
     }
 
     public void Dispose()
@@ -291,5 +329,32 @@ public sealed class S3StorageService : IStorageService, IDisposable
         };
 
         return normalizedUrl.Uri.AbsoluteUri;
+    }
+
+    private static string NormalizeObjectKey(string bucketName, string objectKey)
+    {
+        var normalized = objectKey.Trim();
+        if (Uri.TryCreate(normalized, UriKind.Absolute, out var uri))
+        {
+            normalized = Uri.UnescapeDataString(uri.AbsolutePath).TrimStart('/');
+            var bucketPrefix = $"{bucketName}/";
+            var bucketIndex = normalized.IndexOf(bucketPrefix, StringComparison.OrdinalIgnoreCase);
+            if (bucketIndex >= 0)
+            {
+                normalized = normalized[(bucketIndex + bucketPrefix.Length)..];
+            }
+        }
+        else
+        {
+            normalized = normalized.TrimStart('/');
+        }
+
+        if (string.IsNullOrWhiteSpace(normalized) ||
+            normalized.Split('/').Any(segment => segment is "." or ".."))
+        {
+            throw new ArgumentException("Storage object key is invalid.", nameof(objectKey));
+        }
+
+        return normalized;
     }
 }

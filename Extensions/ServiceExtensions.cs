@@ -93,6 +93,7 @@ public static class ServiceExtensions
 
         services.AddSingleton<IAmazonS3>(new AmazonS3Client(credentials, s3Config));
         services.AddScoped<IStorageService, S3StorageService>();
+        services.AddScoped<IUploadService, UploadService>();
         services.Configure<StorageSettings>(options =>
         {
             options.ServiceUrl = storageSettings.ServiceUrl;
@@ -654,7 +655,9 @@ public static class ServiceExtensions
         var rateLimitSettings = configuration.GetSection("RateLimit");
         var generalLimit = int.Parse(rateLimitSettings["General"] ?? "100");
         var authLimit = int.Parse(rateLimitSettings["Auth"] ?? "10");
-        var uploadLimit = int.Parse(rateLimitSettings["Upload"] ?? "5");
+        // One asset uses both presign and completion requests. A product or
+        // course can legitimately upload multiple assets in a short burst.
+        var uploadLimit = Math.Max(int.Parse(rateLimitSettings["Upload"] ?? "60"), 60);
         var searchLimit = int.Parse(rateLimitSettings["Search"] ?? "30");
 
         services.AddRateLimiter(options =>

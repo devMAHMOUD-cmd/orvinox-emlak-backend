@@ -2,6 +2,7 @@ using CraftoraApi.Data;
 using CraftoraApi.DTOs.Notification;
 using CraftoraApi.Infrastructure.Messaging;
 using CraftoraApi.Models.Elasticsearch;
+using CraftoraApi.Redis;
 using CraftoraApi.Services.Interfaces;
 using Microsoft.EntityFrameworkCore;
 using System.Data;
@@ -11,6 +12,7 @@ namespace CraftoraApi.HostedServices;
 public sealed class SubscriptionMonitorWorker : BackgroundService
 {
     private static readonly TimeSpan CheckInterval = TimeSpan.FromMinutes(10);
+    private const string PopularProductsCacheKey = "products:popular:public-active-shops:v4";
 
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly IRabbitMqPublisher _rabbitMqPublisher;
@@ -53,17 +55,81 @@ public sealed class SubscriptionMonitorWorker : BackgroundService
         using var scope = _scopeFactory.CreateScope();
         var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
         var notificationService = scope.ServiceProvider.GetRequiredService<INotificationService>();
+        var cacheService = scope.ServiceProvider.GetRequiredService<ICacheService>();
         var expiredSubscriptions = await ExpireSubscriptionsAsync(dbContext, cancellationToken);
 
         foreach (var subscription in expiredSubscriptions)
         {
+            await InvalidateVisibilityCachesAsync(
+                dbContext,
+                cacheService,
+                subscription.ShopId,
+                cancellationToken);
             await PublishDeactivationMessagesAsync(subscription, cancellationToken);
-            await notificationService.SendNotificationAsync(
+            await TrySendExpirationNotificationAsync(
+                notificationService,
                 subscription.UserId,
                 "Aboneliğiniz sona erdi",
                 "Abonelik dönemi bittiği için mağazanız donduruldu. Yenileyerek tekrar açabilirsiniz.",
                 NotificationType.System,
                 subscription.SubscriptionId);
+        }
+    }
+
+    private async Task InvalidateVisibilityCachesAsync(
+        AppDbContext dbContext,
+        ICacheService cacheService,
+        Guid shopId,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await cacheService.RemoveAsync(PopularProductsCacheKey, cancellationToken);
+            var shopSlug = await dbContext.Shops
+                .AsNoTracking()
+                .Where(shop => shop.Id == shopId)
+                .Select(shop => shop.Slug)
+                .FirstOrDefaultAsync(cancellationToken);
+            if (!string.IsNullOrWhiteSpace(shopSlug))
+            {
+                await cacheService.RemoveAsync(
+                    CacheKeys.PublicShopBySlug(shopSlug),
+                    cancellationToken);
+            }
+        }
+        catch (Exception exception)
+        {
+            _logger.LogWarning(
+                exception,
+                "Expired subscription caches could not be invalidated. ShopId: {ShopId}",
+                shopId);
+        }
+    }
+
+    private async Task TrySendExpirationNotificationAsync(
+        INotificationService notificationService,
+        Guid userId,
+        string title,
+        string message,
+        NotificationType type,
+        Guid subscriptionId)
+    {
+        try
+        {
+            await notificationService.SendNotificationAsync(
+                userId,
+                title,
+                message,
+                type,
+                subscriptionId);
+        }
+        catch (Exception exception)
+        {
+            _logger.LogError(
+                exception,
+                "Subscription expiration notification failed. SubscriptionId: {SubscriptionId}, UserId: {UserId}",
+                subscriptionId,
+                userId);
         }
     }
 
