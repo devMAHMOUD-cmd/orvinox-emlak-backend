@@ -209,6 +209,17 @@ public sealed class ShopService : IShopService
     public async Task<ShopResponseDto> UpdateShopAsync(Guid userId, UpdateShopDto dto)
     {
         ArgumentNullException.ThrowIfNull(dto);
+
+        if (dto.RemoveLogo && dto.LogoUrl is not null)
+        {
+            throw new BadRequestException("Logo ayni istekte hem guncellenip hem kaldirilamaz.");
+        }
+
+        if (dto.RemoveBanner && dto.BannerUrl is not null)
+        {
+            throw new BadRequestException("Banner ayni istekte hem guncellenip hem kaldirilamaz.");
+        }
+
         ValidatePublicAssetOwnership(userId, dto.LogoUrl);
         ValidatePublicAssetOwnership(userId, dto.BannerUrl);
         await ValidatePublicAssetsExistAsync(userId, dto.LogoUrl, dto.BannerUrl);
@@ -250,12 +261,20 @@ public sealed class ShopService : IShopService
             shop.SocialLinks = dto.SocialLinks;
         }
 
-        if (dto.LogoUrl is not null)
+        if (dto.RemoveLogo)
+        {
+            shop.LogoUrl = null;
+        }
+        else if (dto.LogoUrl is not null)
         {
             shop.LogoUrl = dto.LogoUrl;
         }
 
-        if (dto.BannerUrl is not null)
+        if (dto.RemoveBanner)
+        {
+            shop.BannerUrl = null;
+        }
+        else if (dto.BannerUrl is not null)
         {
             shop.BannerUrl = dto.BannerUrl;
         }

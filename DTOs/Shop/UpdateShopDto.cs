@@ -25,4 +25,8 @@ public sealed record UpdateShopDto(
     string? LogoUrl,
 
     [property: StringLength(1024, ErrorMessage = "Banner dosya anahtari en fazla 1024 karakter olabilir.")]
-    string? BannerUrl);
+    string? BannerUrl,
+
+    bool RemoveLogo = false,
+
+    bool RemoveBanner = false);
