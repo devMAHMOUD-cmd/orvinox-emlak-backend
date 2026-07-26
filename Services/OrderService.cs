@@ -26,6 +26,7 @@ public sealed class OrderService : IOrderService
     private readonly IAnalyticsEventService _analyticsEventService;
     private readonly ISellerNotificationPreferenceService _sellerNotificationPreferenceService;
     private readonly IGamificationService _gamificationService;
+    private readonly ILogger<OrderService> _logger;
 
     public OrderService(
         AppDbContext dbContext,
@@ -35,7 +36,8 @@ public sealed class OrderService : IOrderService
         ICacheService cacheService,
         IAnalyticsEventService analyticsEventService,
         ISellerNotificationPreferenceService sellerNotificationPreferenceService,
-        IGamificationService gamificationService)
+        IGamificationService gamificationService,
+        ILogger<OrderService> logger)
     {
         _dbContext = dbContext ?? throw new ArgumentNullException(nameof(dbContext));
         _paymentService = paymentService ?? throw new ArgumentNullException(nameof(paymentService));
@@ -45,6 +47,7 @@ public sealed class OrderService : IOrderService
         _analyticsEventService = analyticsEventService ?? throw new ArgumentNullException(nameof(analyticsEventService));
         _sellerNotificationPreferenceService = sellerNotificationPreferenceService ?? throw new ArgumentNullException(nameof(sellerNotificationPreferenceService));
         _gamificationService = gamificationService ?? throw new ArgumentNullException(nameof(gamificationService));
+        _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
 
     public async Task<List<OrderResponseDto>> CheckoutCartAsync(Guid buyerId, CheckoutRequestDto request)
@@ -90,6 +93,24 @@ public sealed class OrderService : IOrderService
         if (cartItems.Any(cartItem => cartItem.Product.Shop.UserId == buyerId))
         {
             throw new BadRequestException("Kendi urununuzu satin alamazsiniz.");
+        }
+
+        var cartProductIds = cartItems
+            .Select(item => item.ProductId)
+            .Distinct()
+            .ToList();
+        var alreadyOwnedProductIds = await _dbContext.UserLibraries
+            .AsNoTracking()
+            .Where(item =>
+                item.UserId == buyerId &&
+                cartProductIds.Contains(item.ProductId))
+            .Select(item => item.ProductId)
+            .ToListAsync();
+
+        if (alreadyOwnedProductIds.Count > 0)
+        {
+            throw new ConflictException(
+                "Sepetinizde zaten kutuphanenizde bulunan bir urun var. Sepeti yenileyip tekrar deneyin.");
         }
 
         var commissionSnapshots = new Dictionary<Guid, CommissionSnapshot>();
@@ -182,22 +203,11 @@ public sealed class OrderService : IOrderService
             await transaction.CommitAsync();
             createdOrders.Add(order);
 
-            if (paymentResult.IsSuccess)
-            {
-                await _analyticsEventService.TrackPurchaseCompletedAsync(order.Id, buyerId);
-                await _gamificationService.AwardPointsAsync(
-                    buyerId,
-                    "purchase_product",
-                    5m,
-                    order.Id,
-                    preventDuplicate: true);
-            }
         }
 
         foreach (var (order, product) in successfulOrders)
         {
-            await SendOrderNotificationsAsync(order, product, buyer);
-            await PublishInvoiceCommandAsync(order, buyer);
+            await RunPostCheckoutActionsSafelyAsync(order, product, buyer);
         }
 
         return createdOrders.Select(MapToResponse).ToList();
@@ -323,15 +333,7 @@ public sealed class OrderService : IOrderService
 
             if (paymentResult.IsSuccess)
             {
-                await _analyticsEventService.TrackPurchaseCompletedAsync(order.Id, buyerId);
-                await _gamificationService.AwardPointsAsync(
-                    buyerId,
-                    "purchase_product",
-                    5m,
-                    order.Id,
-                    preventDuplicate: true);
-                await SendOrderNotificationsAsync(order, product, buyer);
-                await PublishInvoiceCommandAsync(order, buyer);
+                await RunPostCheckoutActionsSafelyAsync(order, product, buyer);
             }
 
             return MapToResponse(order);
@@ -429,6 +431,53 @@ public sealed class OrderService : IOrderService
                 order.Id);
 
             await PublishSellerOrderEmailIfEnabledAsync(order, product, buyer);
+        }
+    }
+
+    private async Task RunPostCheckoutActionsSafelyAsync(Order order, Product product, User buyer)
+    {
+        await TryRunPostCheckoutActionAsync(
+            order.Id,
+            "analytics",
+            () => _analyticsEventService.TrackPurchaseCompletedAsync(order.Id, buyer.Id));
+
+        await TryRunPostCheckoutActionAsync(
+            order.Id,
+            "gamification",
+            () => _gamificationService.AwardPointsAsync(
+                buyer.Id,
+                "purchase_product",
+                5m,
+                order.Id,
+                preventDuplicate: true));
+
+        await TryRunPostCheckoutActionAsync(
+            order.Id,
+            "notifications",
+            () => SendOrderNotificationsAsync(order, product, buyer));
+
+        await TryRunPostCheckoutActionAsync(
+            order.Id,
+            "invoice",
+            () => PublishInvoiceCommandAsync(order, buyer));
+    }
+
+    private async Task TryRunPostCheckoutActionAsync(
+        Guid orderId,
+        string actionName,
+        Func<Task> action)
+    {
+        try
+        {
+            await action();
+        }
+        catch (Exception exception)
+        {
+            _logger.LogWarning(
+                exception,
+                "Post-checkout action failed without changing the completed order. OrderId: {OrderId}, Action: {Action}",
+                orderId,
+                actionName);
         }
     }
 

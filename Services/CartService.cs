@@ -152,9 +152,9 @@ public sealed class CartService : ICartService
 
     private static void ValidateQuantity(int quantity)
     {
-        if (quantity < 1)
+        if (quantity != 1)
         {
-            throw new BadRequestException("Miktar 1 veya daha buyuk olmalidir.");
+            throw new BadRequestException("Dijital urunlerde miktar 1 olmalidir.");
         }
     }
 

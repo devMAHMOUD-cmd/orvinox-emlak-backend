@@ -19,7 +19,6 @@ public sealed class OrderController : ControllerBase
         _orderService = orderService ?? throw new ArgumentNullException(nameof(orderService));
     }
 
-    [Authorize(Roles = "user")]
     [HttpPost("checkout")]
     public async Task<IActionResult> CheckoutAsync([FromBody] CheckoutRequestDto request)
     {
