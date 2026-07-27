@@ -30,6 +30,8 @@ Final production verification:
 - Admin-targeted email campaigns with preview, audience selection, queue-based
   delivery, idempotency, retry support, and recipient status tracking
 - Incoming `support@craftoramedya.com` email conversion to support tickets
+- Email replies routed back into the same support ticket through ticket-specific
+  plus addressing, with quoted email history removed
 - Resend webhook signature verification, replay protection, request size limit,
   registered-user matching, and admin notification
 - Admin support replies delivered through in-app/push notifications and branded
@@ -115,14 +117,22 @@ Final production verification:
 - Real Resend admin campaign to two selected recipients: sent successfully
 - Real inbound email to `support@craftoramedya.com`: converted to a support
   ticket and generated admin notifications
+- Real admin email reply delivered to Gmail; Gmail reply returned to the same
+  support ticket and quoted-history cleanup verified
+- Real Android Firebase token registered from a Samsung device; push delivery
+  recorded as `sent` and displayed on the phone with the Craftora logo
 - Final Craftora logo prepared as a safe SVG Tiny PS BIMI asset
+- SPF, aligned DKIM, and DMARC verified as passing; DMARC enforcement and the
+  public BIMI assertion were published and confirmed through independent DNS
+  resolvers
 - Final test records were removed after verification
 
 ## Deferred Outside Backend Closure
 
 - Real payment provider credentials, webhooks, refunds, and settlement behavior
-- Real Android FCM delivery test using an actual app-generated device token
-- Gmail BIMI certificate issuance and final DNS enforcement
+- Gmail CMC/VMC certificate issuance, which is an optional paid external
+  certification
 
-The Android FCM and BIMI certificate items do not block backend closure. They
-belong to the mobile-release and brand/domain rollout phases respectively.
+The optional Gmail CMC/VMC certificate does not block backend closure. The
+mobile release will reuse the now-verified Firebase token registration and push
+delivery contract.
