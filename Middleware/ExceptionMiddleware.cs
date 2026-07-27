@@ -140,6 +140,17 @@ public class ExceptionMiddleware
                 when IsInvalidInputError(postgresException.SqlState) =>
                 (400, "INVALID_INPUT", "Gönderilen alanlardan biri izin verilen sınırların dışında."),
 
+            BadHttpRequestException badHttpRequestException =>
+                (
+                    badHttpRequestException.StatusCode,
+                    badHttpRequestException.StatusCode == StatusCodes.Status413PayloadTooLarge
+                        ? "PAYLOAD_TOO_LARGE"
+                        : "BAD_REQUEST",
+                    badHttpRequestException.StatusCode == StatusCodes.Status413PayloadTooLarge
+                        ? "Istek govdesi izin verilen boyutu asiyor."
+                        : "Gecersiz HTTP istegi."
+                ),
+
             // İptal edilen istek - loglama yapılmayacak
             OperationCanceledException =>
                 (499, "CLIENT_CLOSED_REQUEST", "İstek iptal edildi"),
