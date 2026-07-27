@@ -235,6 +235,7 @@ public sealed class CourseService : ICourseService
                     Id = product.Id,
                     Name = product.Title,
                     Description = product.Description,
+                    Type = product.Type == ProductType.Course ? "course" : "digital_file",
                     Price = product.Price,
                     CategoryId = product.CategoryId,
                     ShopId = product.ShopId,

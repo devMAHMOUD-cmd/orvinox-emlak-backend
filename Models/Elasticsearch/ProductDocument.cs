@@ -8,6 +8,8 @@ public sealed class ProductDocument
 
     public string? Description { get; set; }
 
+    public string Type { get; set; } = string.Empty;
+
     public decimal Price { get; set; }
 
     public Guid CategoryId { get; set; }

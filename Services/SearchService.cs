@@ -202,6 +202,7 @@ public sealed class SearchService : ISearchService
                 Id = product.Id,
                 Name = product.Title,
                 Description = product.Description,
+                Type = product.Type == ProductType.Course ? "course" : "digital_file",
                 Price = product.Price,
                 CategoryId = product.CategoryId,
                 ShopId = product.ShopId,
@@ -363,6 +364,13 @@ public sealed class SearchService : ISearchService
     {
         ArgumentNullException.ThrowIfNull(request);
 
+        if (request.MinPrice.HasValue &&
+            request.MaxPrice.HasValue &&
+            request.MinPrice.Value > request.MaxPrice.Value)
+        {
+            throw new BadRequestException("Minimum fiyat maksimum fiyattan buyuk olamaz.");
+        }
+
         var page = Math.Max(request.Page, 1);
         var pageSize = Math.Clamp(request.PageSize, 1, 100);
         var from = (page - 1) * pageSize;
@@ -471,11 +479,23 @@ public sealed class SearchService : ISearchService
         var pageSize = Math.Clamp(request.PageSize, 1, 50);
         var from = (page - 1) * pageSize;
 
-        var productDocuments = await SearchProductDocumentsForGlobalAsync(query, from, pageSize, cancellationToken);
+        var productDocuments = await SearchProductDocumentsForGlobalAsync(
+            query,
+            "digital_file",
+            from,
+            pageSize,
+            cancellationToken);
+        var courseDocuments = await SearchProductDocumentsForGlobalAsync(
+            query,
+            "course",
+            from,
+            pageSize,
+            cancellationToken);
         var shopDocuments = await SearchShopDocumentsAsync(query, from, pageSize, cancellationToken);
         var mediaDocuments = await SearchMediaDocumentsAsync(query, from, pageSize, cancellationToken);
 
         var productResults = await MapProductResultsAsync(productDocuments, cancellationToken);
+        var courseResults = await MapCourseResultsAsync(courseDocuments, cancellationToken);
         var followedShopIds = currentUserId.HasValue && shopDocuments.Count > 0
             ? await _dbContext.Subscriptions
                 .AsNoTracking()
@@ -514,13 +534,14 @@ public sealed class SearchService : ISearchService
         return new GlobalSearchResponseDto(
             Query: query,
             Products: productResults,
-            Courses: new List<CourseSearchResultDto>(),
+            Courses: courseResults,
             Media: mediaResults,
             Shops: shopResults);
     }
 
     private async Task<List<ProductDocument>> SearchProductDocumentsForGlobalAsync(
         string query,
+        string productType,
         int from,
         int pageSize,
         CancellationToken cancellationToken)
@@ -547,7 +568,10 @@ public sealed class SearchService : ISearchService
                     .Filter(
                         filter => filter.Term(term => term.Field(product => product.IsActive).Value(true)),
                         filter => filter.Term(term => term.Field(product => product.IsPublished).Value(true)),
-                        filter => filter.Term(term => term.Field(product => product.ShopIsActive).Value(true))))),
+                        filter => filter.Term(term => term.Field(product => product.ShopIsActive).Value(true)),
+                        filter => filter.Term(term => term
+                            .Field(product => product.Type.Suffix("keyword"))
+                            .Value(productType))))),
             cancellationToken);
 
         if (!response.IsValidResponse)
@@ -678,6 +702,48 @@ public sealed class SearchService : ISearchService
                     CoverImagePublicUrl: GeneratePublicAssetUrl(product.CoverImageUrl),
                     ShopId: product.ShopId,
                     ShopName: product.Shop.ShopName);
+            })
+            .ToList();
+    }
+
+    private async Task<List<CourseSearchResultDto>> MapCourseResultsAsync(
+        List<ProductDocument> documents,
+        CancellationToken cancellationToken)
+    {
+        if (documents.Count == 0)
+        {
+            return new List<CourseSearchResultDto>();
+        }
+
+        var productIds = documents.Select(document => document.Id).ToList();
+        var courses = await _dbContext.Courses
+            .AsNoTracking()
+            .Include(course => course.Product)
+                .ThenInclude(product => product.Shop)
+            .Where(course =>
+                productIds.Contains(course.ProductId) &&
+                course.Product.IsActive == true &&
+                course.Product.Status == ProductStatus.Published &&
+                course.Product.Shop.IsActive == true)
+            .ToListAsync(cancellationToken);
+        var courseMap = courses.ToDictionary(course => course.ProductId);
+
+        return documents
+            .Where(document => courseMap.ContainsKey(document.Id))
+            .Select(document =>
+            {
+                var course = courseMap[document.Id];
+                var product = course.Product;
+                return new CourseSearchResultDto(
+                    Id: course.Id,
+                    Title: product.Title,
+                    Description: product.Description,
+                    Price: product.Price,
+                    CoverImagePublicUrl: GeneratePublicAssetUrl(product.CoverImageUrl),
+                    ShopId: product.ShopId,
+                    ShopName: product.Shop.ShopName,
+                    Level: course.Level,
+                    TotalDurationInMinutes: course.TotalDurationInMinutes);
             })
             .ToList();
     }
