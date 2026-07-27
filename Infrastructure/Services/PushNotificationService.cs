@@ -95,20 +95,42 @@ public sealed class PushNotificationService : IPushNotificationService
             : response.SuccessCount == 0
                 ? "failed"
                 : "partial";
+        var failureCodes = response.Responses
+            .Where(item => !item.IsSuccess)
+            .Select(item => (item.Exception as FirebaseMessagingException)?.MessagingErrorCode?.ToString()
+                ?? "Unknown")
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(item => item, StringComparer.Ordinal)
+            .ToArray();
+
+        await DeactivateInvalidTokensAsync(tokens, response, cancellationToken);
+
         await RecordDeliveryAsync(
             notificationId,
             status,
             "firebase",
             response.FailureCount == 0
                 ? null
-                : $"{response.FailureCount} device delivery failed.",
+                : $"{response.FailureCount} device delivery failed ({string.Join(", ", failureCodes)}).",
             cancellationToken);
 
-        _logger.LogInformation(
-            "Push notification sent. UserId: {UserId}, Success: {SuccessCount}, Failure: {FailureCount}",
-            userId,
-            response.SuccessCount,
-            response.FailureCount);
+        if (response.FailureCount == 0)
+        {
+            _logger.LogInformation(
+                "Push notification delivered. UserId: {UserId}, Success: {SuccessCount}",
+                userId,
+                response.SuccessCount);
+        }
+        else
+        {
+            _logger.LogWarning(
+                "Push notification {Status}. UserId: {UserId}, Success: {SuccessCount}, Failure: {FailureCount}, ErrorCodes: {ErrorCodes}",
+                status,
+                userId,
+                response.SuccessCount,
+                response.FailureCount,
+                failureCodes);
+        }
     }
 
     private async Task RecordDeliveryAsync(
@@ -186,6 +208,55 @@ public sealed class PushNotificationService : IPushNotificationService
                 await _dbContext.Database.CloseConnectionAsync();
             }
         }
+    }
+
+    private async Task DeactivateInvalidTokensAsync(
+        IReadOnlyList<string> tokens,
+        BatchResponse response,
+        CancellationToken cancellationToken)
+    {
+        for (var index = 0; index < response.Responses.Count; index++)
+        {
+            var sendResponse = response.Responses[index];
+            if (sendResponse.IsSuccess ||
+                sendResponse.Exception is not FirebaseMessagingException exception ||
+                !IsPermanentTokenFailure(exception))
+            {
+                continue;
+            }
+
+            var connection = _dbContext.Database.GetDbConnection();
+            var openedHere = connection.State != ConnectionState.Open;
+            if (openedHere)
+            {
+                await _dbContext.Database.OpenConnectionAsync(cancellationToken);
+            }
+
+            try
+            {
+                await using var command = connection.CreateCommand();
+                command.CommandText = """
+                    SELECT public.deactivate_user_device_token(CAST(@device_token AS text))
+                    """;
+                AddParameter(command, "device_token", tokens[index]);
+                await command.ExecuteScalarAsync(cancellationToken);
+            }
+            finally
+            {
+                if (openedHere)
+                {
+                    await _dbContext.Database.CloseConnectionAsync();
+                }
+            }
+        }
+    }
+
+    private static bool IsPermanentTokenFailure(FirebaseMessagingException exception)
+    {
+        return exception.MessagingErrorCode is MessagingErrorCode.Unregistered
+            or MessagingErrorCode.SenderIdMismatch ||
+            exception.MessagingErrorCode == MessagingErrorCode.InvalidArgument &&
+            exception.Message.Contains("registration token", StringComparison.OrdinalIgnoreCase);
     }
 
     private static void AddParameter(DbCommand command, string name, object? value)
