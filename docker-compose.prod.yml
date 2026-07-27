@@ -178,7 +178,12 @@ services:
       Storage__ForcePathStyle: "true"
       Storage__CorsAllowedOrigins__0: "${CORS_ORIGIN_0}"
       Storage__CorsAllowedOrigins__1: "${CORS_ORIGIN_1:-}"
+      Firebase__ProjectId: "${FIREBASE_PROJECT_ID}"
+      Firebase__CredentialsPath: "/run/secrets/firebase-service-account.json"
+      GOOGLE_APPLICATION_CREDENTIALS: "/run/secrets/firebase-service-account.json"
       Sentry__Dsn: "${SENTRY_DSN}"
+    volumes:
+      - ./secrets/firebase-service-account.json:/run/secrets/firebase-service-account.json:ro
     expose:
       - "5000"
     networks:
