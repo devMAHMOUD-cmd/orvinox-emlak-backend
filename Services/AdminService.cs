@@ -2131,10 +2131,20 @@ public sealed class AdminService : IAdminService
 
     private async Task DeleteReportedCommentAsync(Guid commentId, CancellationToken cancellationToken)
     {
-        var comment = await _dbContext.MediaComments.SingleOrDefaultAsync(item => item.Id == commentId, cancellationToken)
-            ?? throw new NotFoundException("Yorum bulunamadi.");
-        _dbContext.MediaComments.Remove(comment);
-        await _dbContext.SaveChangesAsync(cancellationToken);
+        var deleted = await CountRawAsync(
+            """
+            SELECT CASE
+                WHEN public.delete_reported_media_comment(@p0) THEN 1
+                ELSE 0
+            END
+            """,
+            cancellationToken,
+            commentId);
+
+        if (deleted == 0)
+        {
+            throw new NotFoundException("Yorum bulunamadi.");
+        }
     }
 
     private object CreateShopTarget(Shop shop) => new
