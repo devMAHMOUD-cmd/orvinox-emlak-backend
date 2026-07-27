@@ -12,6 +12,7 @@ namespace CraftoraApi.HostedServices;
 public sealed class SubscriptionMonitorWorker : BackgroundService
 {
     private static readonly TimeSpan CheckInterval = TimeSpan.FromMinutes(10);
+    private static readonly TimeSpan FailureRetryDelay = TimeSpan.FromSeconds(30);
     private const string PopularProductsCacheKey = "products:popular:public-active-shops:v4";
 
     private readonly IServiceScopeFactory _scopeFactory;
@@ -46,6 +47,7 @@ public sealed class SubscriptionMonitorWorker : BackgroundService
             catch (Exception exception)
             {
                 _logger.LogError(exception, "Seller subscription monitor failed.");
+                await Task.Delay(FailureRetryDelay, stoppingToken);
             }
         }
     }
@@ -56,23 +58,35 @@ public sealed class SubscriptionMonitorWorker : BackgroundService
         var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
         var notificationService = scope.ServiceProvider.GetRequiredService<INotificationService>();
         var cacheService = scope.ServiceProvider.GetRequiredService<ICacheService>();
-        var expiredSubscriptions = await ExpireSubscriptionsAsync(dbContext, cancellationToken);
+        var transitions = await ProcessSubscriptionLifecycleAsync(dbContext, cancellationToken);
 
-        foreach (var subscription in expiredSubscriptions)
+        foreach (var transition in transitions)
         {
+            if (transition.Transition == SubscriptionTransition.PastDue)
+            {
+                await TrySendExpirationNotificationAsync(
+                    notificationService,
+                    transition.UserId,
+                    "Abonelik ödemeniz gecikti",
+                    "Mağazanız 7 günlük ek süre boyunca açık kalacak. Aboneliğinizi yenileyerek kesintiyi önleyebilirsiniz.",
+                    NotificationType.System,
+                    transition.SubscriptionId);
+                continue;
+            }
+
             await InvalidateVisibilityCachesAsync(
                 dbContext,
                 cacheService,
-                subscription.ShopId,
+                transition.ShopId,
                 cancellationToken);
-            await PublishDeactivationMessagesAsync(subscription, cancellationToken);
+            await PublishDeactivationMessagesAsync(transition, cancellationToken);
             await TrySendExpirationNotificationAsync(
                 notificationService,
-                subscription.UserId,
+                transition.UserId,
                 "Aboneliğiniz sona erdi",
-                "Abonelik dönemi bittiği için mağazanız donduruldu. Yenileyerek tekrar açabilirsiniz.",
+                "Ek süre sona erdiği için mağazanız donduruldu. Aboneliğinizi yenileyerek tekrar açabilirsiniz.",
                 NotificationType.System,
-                subscription.SubscriptionId);
+                transition.SubscriptionId);
         }
     }
 
@@ -133,7 +147,7 @@ public sealed class SubscriptionMonitorWorker : BackgroundService
         }
     }
 
-    private static async Task<List<ExpiredSubscription>> ExpireSubscriptionsAsync(
+    private static async Task<List<SubscriptionLifecycleTransition>> ProcessSubscriptionLifecycleAsync(
         AppDbContext dbContext,
         CancellationToken cancellationToken)
     {
@@ -145,27 +159,36 @@ public sealed class SubscriptionMonitorWorker : BackgroundService
 
         await using var command = connection.CreateCommand();
         command.CommandText = """
-            SELECT subscription_id, shop_id, user_id, product_ids, media_ids
-            FROM public.expire_seller_subscriptions()
+            SELECT transition, subscription_id, shop_id, user_id, product_ids, media_ids
+            FROM public.process_seller_subscription_lifecycle()
             """;
 
-        var results = new List<ExpiredSubscription>();
+        var results = new List<SubscriptionLifecycleTransition>();
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         while (await reader.ReadAsync(cancellationToken))
         {
-            results.Add(new ExpiredSubscription(
-                reader.GetGuid(0),
+            var transition = reader.GetString(0) switch
+            {
+                "past_due" => SubscriptionTransition.PastDue,
+                "unpaid" => SubscriptionTransition.Unpaid,
+                var value => throw new InvalidOperationException(
+                    $"Unknown subscription lifecycle transition: {value}")
+            };
+
+            results.Add(new SubscriptionLifecycleTransition(
+                transition,
                 reader.GetGuid(1),
                 reader.GetGuid(2),
-                reader.GetFieldValue<Guid[]>(3),
-                reader.GetFieldValue<Guid[]>(4)));
+                reader.GetGuid(3),
+                reader.GetFieldValue<Guid[]>(4),
+                reader.GetFieldValue<Guid[]>(5)));
         }
 
         return results;
     }
 
     private async Task PublishDeactivationMessagesAsync(
-        ExpiredSubscription subscription,
+        SubscriptionLifecycleTransition subscription,
         CancellationToken cancellationToken)
     {
         try
@@ -200,7 +223,14 @@ public sealed class SubscriptionMonitorWorker : BackgroundService
         }
     }
 
-    private sealed record ExpiredSubscription(
+    private enum SubscriptionTransition
+    {
+        PastDue,
+        Unpaid
+    }
+
+    private sealed record SubscriptionLifecycleTransition(
+        SubscriptionTransition Transition,
         Guid SubscriptionId,
         Guid ShopId,
         Guid UserId,
