@@ -18,6 +18,8 @@ public sealed class SearchService : ISearchService
     private const string PublicAssetsBucketName = "public-assets";
     private const string PrivateProductsBucketName = "private-products";
     private const int PublicUrlExpiryMinutes = 60;
+    private const int MaxSearchQueryLength = 200;
+    private const decimal MaxSearchPrice = 99999999.99m;
 
     private readonly ElasticsearchClient _client;
     private readonly AppDbContext _dbContext;
@@ -364,6 +366,17 @@ public sealed class SearchService : ISearchService
     {
         ArgumentNullException.ThrowIfNull(request);
 
+        if (request.Query?.Length > MaxSearchQueryLength)
+        {
+            throw new BadRequestException("Arama metni en fazla 200 karakter olabilir.");
+        }
+
+        if (request.MinPrice is < 0 or > MaxSearchPrice ||
+            request.MaxPrice is < 0 or > MaxSearchPrice)
+        {
+            throw new BadRequestException("Fiyat filtresi gecersiz.");
+        }
+
         if (request.MinPrice.HasValue &&
             request.MaxPrice.HasValue &&
             request.MinPrice.Value > request.MaxPrice.Value)
@@ -371,8 +384,13 @@ public sealed class SearchService : ISearchService
             throw new BadRequestException("Minimum fiyat maksimum fiyattan buyuk olamaz.");
         }
 
-        var page = Math.Max(request.Page, 1);
-        var pageSize = Math.Clamp(request.PageSize, 1, 100);
+        if (request.Page < 1 || request.PageSize is < 1 or > 100)
+        {
+            throw new BadRequestException("Arama sayfalama degerleri gecersiz.");
+        }
+
+        var page = request.Page;
+        var pageSize = request.PageSize;
         var from = (page - 1) * pageSize;
 
         var response = await _client.SearchAsync<ProductDocument>(
@@ -474,9 +492,19 @@ public sealed class SearchService : ISearchService
     {
         ArgumentNullException.ThrowIfNull(request);
 
+        if (request.Query?.Length > MaxSearchQueryLength)
+        {
+            throw new BadRequestException("Arama metni en fazla 200 karakter olabilir.");
+        }
+
+        if (request.Page < 1 || request.PageSize is < 1 or > 50)
+        {
+            throw new BadRequestException("Global arama sayfalama degerleri gecersiz.");
+        }
+
         var query = request.Query?.Trim() ?? string.Empty;
-        var page = Math.Max(request.Page, 1);
-        var pageSize = Math.Clamp(request.PageSize, 1, 50);
+        var page = request.Page;
+        var pageSize = request.PageSize;
         var from = (page - 1) * pageSize;
 
         var productDocuments = await SearchProductDocumentsForGlobalAsync(
