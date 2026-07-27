@@ -38,10 +38,13 @@ public sealed class AdminEmailCampaignController : ControllerBase
             GetCurrentUserId(),
             request,
             cancellationToken);
-        return AcceptedAtAction(nameof(GetAsync), new { campaignId = result.Id }, result);
+        return AcceptedAtRoute(
+            "GetAdminEmailCampaign",
+            new { campaignId = result.Id },
+            result);
     }
 
-    [HttpGet("{campaignId:guid}")]
+    [HttpGet("{campaignId:guid}", Name = "GetAdminEmailCampaign")]
     public async Task<IActionResult> GetAsync(
         [FromRoute] Guid campaignId,
         CancellationToken cancellationToken)
