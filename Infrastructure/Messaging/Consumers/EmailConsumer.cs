@@ -35,7 +35,8 @@ public sealed class EmailConsumer : IConsumer<SendEmailCommand>
                 message.Subject,
                 message.Body,
                 message.IsHtml,
-                context.CancellationToken);
+                context.CancellationToken,
+                message.ReplyTo);
 
             _logger.LogInformation(
                 "Email command consumed successfully. MessageId: {MessageId}, To: {To}",

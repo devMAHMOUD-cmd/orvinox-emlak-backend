@@ -7,5 +7,6 @@ public interface IEmailService
         string subject,
         string body,
         bool isHtml,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default,
+        string? replyTo = null);
 }

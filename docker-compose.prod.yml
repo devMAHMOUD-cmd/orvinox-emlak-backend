@@ -158,7 +158,7 @@ services:
       Email__Resend__ApiKey: "${RESEND_API_KEY}"
       Email__FromEmail: "${EMAIL_FROM}"
       Email__FromName: "${EMAIL_FROM_NAME:-Craftora}"
-      Email__ReplyTo: "${EMAIL_REPLY_TO:-}"
+      Email__ReplyTo: "${EMAIL_REPLY_TO:-support@craftoramedya.com}"
       ResendInbound__ApiKey: "${RESEND_INBOUND_API_KEY:-}"
       ResendInbound__WebhookSecret: "${RESEND_WEBHOOK_SECRET:-}"
       ResendInbound__SupportAddress: "${RESEND_SUPPORT_ADDRESS:-support@craftoramedya.com}"

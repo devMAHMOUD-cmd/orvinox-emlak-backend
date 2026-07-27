@@ -37,6 +37,35 @@ public sealed class EmailServiceTests
             payload.RootElement.GetProperty("reply_to").GetString());
     }
 
+    [Fact]
+    public async Task SendEmail_prefers_message_reply_to_override()
+    {
+        var handler = new CapturingHandler();
+        var service = new EmailService(
+            Options.Create(new EmailSettings
+            {
+                FromEmail = "noreply@craftoramedya.com",
+                FromName = "Craftora",
+                ReplyTo = "support@craftoramedya.com",
+                Resend = new ResendEmailSettings { ApiKey = "test-key" }
+            }),
+            new TestHttpClientFactory(handler),
+            NullLogger<EmailService>.Instance);
+        var ticketId = Guid.NewGuid();
+
+        await service.SendEmailAsync(
+            "buyer@example.com",
+            "Support",
+            "<p>Reply</p>",
+            isHtml: true,
+            replyTo: $"support+{ticketId:D}@craftoramedya.com");
+
+        using var payload = JsonDocument.Parse(handler.RequestBody!);
+        Assert.Equal(
+            $"support+{ticketId:D}@craftoramedya.com",
+            payload.RootElement.GetProperty("reply_to").GetString());
+    }
+
     private sealed class CapturingHandler : HttpMessageHandler
     {
         public string? RequestBody { get; private set; }

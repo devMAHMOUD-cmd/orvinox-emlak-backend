@@ -32,6 +32,8 @@ Final production verification:
 - Incoming `support@craftoramedya.com` email conversion to support tickets
 - Resend webhook signature verification, replay protection, request size limit,
   registered-user matching, and admin notification
+- Admin support replies delivered through in-app/push notifications and branded
+  email
 
 ### Shops and Subscriptions
 
@@ -113,13 +115,14 @@ Final production verification:
 - Real Resend admin campaign to two selected recipients: sent successfully
 - Real inbound email to `support@craftoramedya.com`: converted to a support
   ticket and generated admin notifications
+- Final Craftora logo prepared as a safe SVG Tiny PS BIMI asset
 - Final test records were removed after verification
 
 ## Deferred Outside Backend Closure
 
 - Real payment provider credentials, webhooks, refunds, and settlement behavior
 - Real Android FCM delivery test using an actual app-generated device token
-- Gmail sender avatar/BIMI after the final approved Craftora logo is available
+- Gmail BIMI certificate issuance and final DNS enforcement
 
-The Android FCM and Gmail avatar items do not block backend closure. They belong
-to the mobile-release and brand/domain rollout phases respectively.
+The Android FCM and BIMI certificate items do not block backend closure. They
+belong to the mobile-release and brand/domain rollout phases respectively.

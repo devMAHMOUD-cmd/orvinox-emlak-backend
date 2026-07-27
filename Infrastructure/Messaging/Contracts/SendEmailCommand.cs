@@ -4,4 +4,5 @@ public sealed record SendEmailCommand(
     string To,
     string Subject,
     string Body,
-    bool IsHtml);
+    bool IsHtml,
+    string? ReplyTo = null);

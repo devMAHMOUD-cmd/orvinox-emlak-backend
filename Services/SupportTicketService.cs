@@ -2,6 +2,8 @@ using System.Text.Json;
 using CraftoraApi.Data;
 using CraftoraApi.DTOs.Notification;
 using CraftoraApi.DTOs.Support;
+using CraftoraApi.Infrastructure.Messaging;
+using CraftoraApi.Infrastructure.Messaging.Contracts;
 using CraftoraApi.Infrastructure.Security;
 using CraftoraApi.Middleware;
 using CraftoraApi.Models.Entities;
@@ -24,15 +26,18 @@ public sealed class SupportTicketService : ISupportTicketService
 
     private readonly AppDbContext _dbContext;
     private readonly INotificationService _notificationService;
+    private readonly IRabbitMqPublisher _rabbitMqPublisher;
     private readonly ILogger<SupportTicketService> _logger;
 
     public SupportTicketService(
         AppDbContext dbContext,
         INotificationService notificationService,
+        IRabbitMqPublisher rabbitMqPublisher,
         ILogger<SupportTicketService> logger)
     {
         _dbContext = dbContext ?? throw new ArgumentNullException(nameof(dbContext));
         _notificationService = notificationService ?? throw new ArgumentNullException(nameof(notificationService));
+        _rabbitMqPublisher = rabbitMqPublisher ?? throw new ArgumentNullException(nameof(rabbitMqPublisher));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
 
@@ -349,6 +354,7 @@ public sealed class SupportTicketService : ISupportTicketService
 
         AdminTicketMessageDto result;
         Guid ticketOwnerId;
+        string ticketSubject;
 
         await using (var transaction = await _dbContext.Database.BeginTransactionAsync())
         {
@@ -384,6 +390,7 @@ public sealed class SupportTicketService : ISupportTicketService
             await transaction.CommitAsync();
 
             ticketOwnerId = ticket.UserId;
+            ticketSubject = ticket.Subject;
             result = new AdminTicketMessageDto(
                 message.Id,
                 message.SenderId,
@@ -399,6 +406,11 @@ public sealed class SupportTicketService : ISupportTicketService
             ticketId,
             "Destek talebinize yanit verildi",
             "Destek talebinize bir admin yaniti eklendi.");
+        await TrySendSupportReplyEmailAsync(
+            ticketOwnerId,
+            ticketId,
+            ticketSubject,
+            messageText);
 
         return result;
     }
@@ -529,6 +541,58 @@ public sealed class SupportTicketService : ISupportTicketService
             _logger.LogWarning(
                 exception,
                 "Support ticket notification could not be sent. TicketId: {TicketId}, UserId: {UserId}",
+                ticketId,
+                userId);
+        }
+    }
+
+    private async Task TrySendSupportReplyEmailAsync(
+        Guid userId,
+        Guid ticketId,
+        string ticketSubject,
+        string reply)
+    {
+        try
+        {
+            var recipient = await _dbContext.Users
+                .AsNoTracking()
+                .Where(item =>
+                    item.Id == userId &&
+                    item.IsActive == true &&
+                    item.IsEmailVerified == true &&
+                    item.DeletedAt == null)
+                .Select(item => new
+                {
+                    item.Email,
+                    item.FullName
+                })
+                .FirstOrDefaultAsync();
+
+            if (recipient is null)
+            {
+                _logger.LogWarning(
+                    "Support reply email skipped because recipient is unavailable. TicketId: {TicketId}, UserId: {UserId}",
+                    ticketId,
+                    userId);
+                return;
+            }
+
+            await _rabbitMqPublisher.PublishSendEmailCommand(
+                new SendEmailCommand(
+                    recipient.Email,
+                    $"Craftora destek yaniti: {ticketSubject}",
+                    SupportReplyEmailTemplate.Build(
+                        recipient.FullName,
+                        ticketSubject,
+                        reply),
+                    true,
+                    $"support+{ticketId:D}@craftoramedya.com"));
+        }
+        catch (Exception exception)
+        {
+            _logger.LogWarning(
+                exception,
+                "Support reply email could not be queued. TicketId: {TicketId}, UserId: {UserId}",
                 ticketId,
                 userId);
         }

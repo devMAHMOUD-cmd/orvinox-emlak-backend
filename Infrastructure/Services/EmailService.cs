@@ -27,7 +27,8 @@ public sealed class EmailService : IEmailService
         string subject,
         string body,
         bool isHtml,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        string? replyTo = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(to);
         ArgumentException.ThrowIfNullOrWhiteSpace(subject);
@@ -37,7 +38,13 @@ public sealed class EmailService : IEmailService
             to,
             subject);
 
-        await SendWithResendAsync(to, subject, body, isHtml, cancellationToken);
+        await SendWithResendAsync(
+            to,
+            subject,
+            body,
+            isHtml,
+            replyTo,
+            cancellationToken);
     }
 
     private async Task SendWithResendAsync(
@@ -45,6 +52,7 @@ public sealed class EmailService : IEmailService
         string subject,
         string body,
         bool isHtml,
+        string? replyTo,
         CancellationToken cancellationToken)
     {
         var apiKey = _settings.Resend.ApiKey ?? _settings.ApiKey;
@@ -68,9 +76,12 @@ public sealed class EmailService : IEmailService
             [isHtml ? "html" : "text"] = body
         };
 
-        if (!string.IsNullOrWhiteSpace(_settings.ReplyTo))
+        var resolvedReplyTo = string.IsNullOrWhiteSpace(replyTo)
+            ? _settings.ReplyTo
+            : replyTo;
+        if (!string.IsNullOrWhiteSpace(resolvedReplyTo))
         {
-            payload["reply_to"] = _settings.ReplyTo.Trim();
+            payload["reply_to"] = resolvedReplyTo.Trim();
         }
 
         using var request = new HttpRequestMessage(HttpMethod.Post, "emails");

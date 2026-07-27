@@ -6,6 +6,7 @@ using System.Text.RegularExpressions;
 using CraftoraApi.Configuration;
 using CraftoraApi.Data;
 using CraftoraApi.DTOs.Notification;
+using CraftoraApi.Infrastructure.Security;
 using CraftoraApi.Models.Enums;
 using CraftoraApi.Services.Interfaces;
 using Microsoft.EntityFrameworkCore;
@@ -51,9 +52,10 @@ public sealed partial class ResendInboundService : IResendInboundService
         var supportAddress = string.IsNullOrWhiteSpace(_settings.SupportAddress)
             ? SupportAddressDefault
             : _settings.SupportAddress.Trim();
-        var recipients = webhook.To.Concat(webhook.ReceivedFor);
-        if (!recipients.Any(address =>
-                string.Equals(address.Trim(), supportAddress, StringComparison.OrdinalIgnoreCase)))
+        var supportRecipient = SupportAddressResolver.Resolve(
+            webhook.To.Concat(webhook.ReceivedFor),
+            supportAddress);
+        if (supportRecipient is null)
         {
             return new ResendInboundResult("ignored");
         }
@@ -61,7 +63,7 @@ public sealed partial class ResendInboundService : IResendInboundService
         var claimed = await ClaimEventAsync(
             svixId,
             webhook,
-            supportAddress,
+            supportRecipient.Address,
             cancellationToken);
         if (!claimed)
         {
@@ -101,20 +103,29 @@ public sealed partial class ResendInboundService : IResendInboundService
                 cancellationToken);
             var subject = NormalizeSubject(receivedEmail.Subject ?? webhook.Subject);
             var message = NormalizeMessage(receivedEmail.Text, receivedEmail.Html);
-            var ticketId = await CreateTicketAsync(
+            var ticketId = supportRecipient.TicketId.HasValue
+                ? await AppendTicketAsync(
+                    webhook.EmailId,
+                    user.Id,
+                    supportRecipient.TicketId.Value,
+                    message,
+                    cancellationToken)
+                : null;
+            ticketId ??= await CreateTicketAsync(
                 webhook.EmailId,
                 user.Id,
                 subject,
                 message,
                 cancellationToken);
+            var resolvedTicketId = ticketId.Value;
 
-            await NotifyAdminsAsync(ticketId);
+            await NotifyAdminsAsync(resolvedTicketId);
             _logger.LogInformation(
                 "Inbound support email converted to ticket. EmailId: {EmailId}, TicketId: {TicketId}, UserId: {UserId}",
                 webhook.EmailId,
-                ticketId,
+                resolvedTicketId,
                 user.Id);
-            return new ResendInboundResult("processed", ticketId);
+            return new ResendInboundResult("processed", resolvedTicketId);
         }
         catch (Exception exception)
         {
@@ -209,6 +220,25 @@ public sealed partial class ResendInboundService : IResendInboundService
         command.Parameters.AddWithValue("message", message);
         return (Guid)(await command.ExecuteScalarAsync(cancellationToken)
             ?? throw new InvalidOperationException("Inbound support ticket could not be created."));
+    }
+
+    private async Task<Guid?> AppendTicketAsync(
+        Guid emailId,
+        Guid userId,
+        Guid ticketId,
+        string message,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
+        await using var command = new NpgsqlCommand(
+            "SELECT public.append_resend_inbound_support(@email_id, @user_id, @ticket_id, @message)",
+            connection);
+        command.Parameters.AddWithValue("email_id", emailId);
+        command.Parameters.AddWithValue("user_id", userId);
+        command.Parameters.AddWithValue("ticket_id", ticketId);
+        command.Parameters.AddWithValue("message", message);
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return result is null or DBNull ? null : (Guid)result;
     }
 
     private async Task SetEventStatusAsync(
@@ -347,4 +377,5 @@ public sealed partial class ResendInboundService : IResendInboundService
         string? Html,
         string? Text,
         [property: JsonPropertyName("message_id")] string? MessageId);
+
 }
