@@ -1791,7 +1791,7 @@ public partial class AppDbContext : DbContext
 
             entity.HasIndex(e => e.UserId, "idx_device_tokens_user").HasFilter("(is_active = true)");
 
-            entity.HasIndex(e => new { e.UserId, e.DeviceId }, "user_device_tokens_user_id_device_id_key").IsUnique();
+            entity.HasIndex(e => e.Token, "user_device_tokens_token_key").IsUnique();
 
             entity.Property(e => e.Id)
                 .HasDefaultValueSql("uuid_generate_v4()")

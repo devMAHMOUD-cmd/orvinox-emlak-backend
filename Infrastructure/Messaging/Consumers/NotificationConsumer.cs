@@ -22,6 +22,7 @@ public sealed class NotificationConsumer : IConsumer<SendPushNotificationCommand
         var message = context.Message;
 
         await _pushNotificationService.SendPushNotificationAsync(
+            message.NotificationId,
             message.UserId,
             message.Title,
             message.Body,

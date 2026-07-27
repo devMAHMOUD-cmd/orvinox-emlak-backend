@@ -1,3 +1,5 @@
+using System.Data;
+using System.Data.Common;
 using CraftoraApi.Data;
 using FirebaseAdmin;
 using FirebaseAdmin.Messaging;
@@ -23,6 +25,7 @@ public sealed class PushNotificationService : IPushNotificationService
     }
 
     public async Task SendPushNotificationAsync(
+        Guid notificationId,
         Guid userId,
         string title,
         string body,
@@ -37,12 +40,24 @@ public sealed class PushNotificationService : IPushNotificationService
 
         if (tokens.Count == 0)
         {
+            await RecordDeliveryAsync(
+                notificationId,
+                "skipped",
+                "firebase",
+                "No active device token.",
+                cancellationToken);
             _logger.LogInformation("No active device token found. UserId: {UserId}", userId);
             return;
         }
 
         if (!EnsureFirebaseApp())
         {
+            await RecordDeliveryAsync(
+                notificationId,
+                "mocked",
+                "firebase",
+                null,
+                cancellationToken);
             _logger.LogInformation(
                 "Firebase app is not configured. Push notification mocked. UserId: {UserId}, Title: {Title}",
                 userId,
@@ -61,8 +76,36 @@ public sealed class PushNotificationService : IPushNotificationService
             Data = data
         };
 
-        var response = await FirebaseMessaging.DefaultInstance.SendEachForMulticastAsync(
-            message,
+        BatchResponse response;
+        try
+        {
+            response = await FirebaseMessaging.DefaultInstance.SendEachForMulticastAsync(
+                message,
+                cancellationToken);
+        }
+        catch (Exception exception)
+        {
+            await RecordDeliveryAsync(
+                notificationId,
+                "failed",
+                "firebase",
+                exception.Message,
+                cancellationToken);
+            throw;
+        }
+
+        var status = response.FailureCount == 0
+            ? "sent"
+            : response.SuccessCount == 0
+                ? "failed"
+                : "partial";
+        await RecordDeliveryAsync(
+            notificationId,
+            status,
+            "firebase",
+            response.FailureCount == 0
+                ? null
+                : $"{response.FailureCount} device delivery failed.",
             cancellationToken);
 
         _logger.LogInformation(
@@ -70,6 +113,53 @@ public sealed class PushNotificationService : IPushNotificationService
             userId,
             response.SuccessCount,
             response.FailureCount);
+    }
+
+    private async Task RecordDeliveryAsync(
+        Guid notificationId,
+        string status,
+        string provider,
+        string? errorMessage,
+        CancellationToken cancellationToken)
+    {
+        var connection = _dbContext.Database.GetDbConnection();
+        var openedHere = connection.State != ConnectionState.Open;
+        if (openedHere)
+        {
+            await _dbContext.Database.OpenConnectionAsync(cancellationToken);
+        }
+
+        try
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText = """
+                SELECT public.record_notification_delivery(
+                    CAST(@notification_id AS uuid),
+                    CAST(@status AS varchar),
+                    CAST(@provider AS varchar),
+                    CAST(@error_message AS text))
+                """;
+            AddParameter(command, "notification_id", notificationId);
+            AddParameter(command, "status", status);
+            AddParameter(command, "provider", provider);
+            AddParameter(command, "error_message", errorMessage);
+            await command.ExecuteScalarAsync(cancellationToken);
+        }
+        finally
+        {
+            if (openedHere)
+            {
+                await _dbContext.Database.CloseConnectionAsync();
+            }
+        }
+    }
+
+    private static void AddParameter(DbCommand command, string name, object? value)
+    {
+        var parameter = command.CreateParameter();
+        parameter.ParameterName = name;
+        parameter.Value = value ?? DBNull.Value;
+        command.Parameters.Add(parameter);
     }
 
     private bool EnsureFirebaseApp()

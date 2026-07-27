@@ -121,30 +121,7 @@ public sealed class NotificationService : INotificationService
         var normalizedDeviceType = dto.DeviceType.Trim().ToLowerInvariant();
         var deviceToken = dto.DeviceToken.Trim();
 
-        var existingToken = await _dbContext.UserDeviceTokens.FirstOrDefaultAsync(token =>
-            token.UserId == userId &&
-            token.Token == deviceToken);
-
-        if (existingToken is null)
-        {
-            _dbContext.UserDeviceTokens.Add(new UserDeviceToken
-            {
-                UserId = userId,
-                Token = deviceToken,
-                DeviceType = normalizedDeviceType,
-                IsActive = true,
-                LastUsedAt = DateTime.UtcNow,
-                CreatedAt = DateTime.UtcNow
-            });
-        }
-        else
-        {
-            existingToken.DeviceType = normalizedDeviceType;
-            existingToken.IsActive = true;
-            existingToken.LastUsedAt = DateTime.UtcNow;
-        }
-
-        await _dbContext.SaveChangesAsync();
+        await UpsertDeviceTokenAsync(userId, deviceToken, normalizedDeviceType);
     }
 
     public async Task SendNotificationAsync(
@@ -183,6 +160,7 @@ public sealed class NotificationService : INotificationService
         await TryPublishRealtimeNotificationAsync(userId, notificationDto);
 
         await TryPublishPushNotificationAsync(new SendPushNotificationCommand(
+            NotificationId: notification.Id,
             UserId: userId,
             Title: notification.Title,
             Body: notification.Body,
@@ -236,6 +214,7 @@ public sealed class NotificationService : INotificationService
         await TryPublishRealtimeNotificationAsync(userId, notificationDto);
 
         await TryPublishPushNotificationAsync(new SendPushNotificationCommand(
+            NotificationId: notification.Id,
             UserId: userId,
             Title: notification.Title,
             Body: notification.Body,
@@ -296,6 +275,7 @@ public sealed class NotificationService : INotificationService
         await TryPublishRealtimeNotificationAsync(userId, notificationDto);
 
         await TryPublishPushNotificationAsync(new SendPushNotificationCommand(
+            NotificationId: notification.Id,
             UserId: userId,
             Title: notification.Title,
             Body: notification.Body,
@@ -440,6 +420,41 @@ public sealed class NotificationService : INotificationService
             notification.Id = result is Guid id
                 ? id
                 : throw new InvalidOperationException("Bildirim kaydi olusturulamadi.");
+        }
+        finally
+        {
+            if (openedHere)
+            {
+                await _dbContext.Database.CloseConnectionAsync();
+            }
+        }
+    }
+
+    private async Task UpsertDeviceTokenAsync(
+        Guid userId,
+        string deviceToken,
+        string deviceType)
+    {
+        var connection = _dbContext.Database.GetDbConnection();
+        var openedHere = connection.State != ConnectionState.Open;
+        if (openedHere)
+        {
+            await _dbContext.Database.OpenConnectionAsync();
+        }
+
+        try
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText = """
+                SELECT public.upsert_user_device_token(
+                    CAST(@user_id AS uuid),
+                    CAST(@token AS text),
+                    CAST(@device_type AS varchar))
+                """;
+            AddParameter(command, "user_id", userId);
+            AddParameter(command, "token", deviceToken);
+            AddParameter(command, "device_type", deviceType);
+            await command.ExecuteScalarAsync();
         }
         finally
         {

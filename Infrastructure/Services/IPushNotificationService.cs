@@ -3,6 +3,7 @@ namespace CraftoraApi.Infrastructure.Services;
 public interface IPushNotificationService
 {
     Task SendPushNotificationAsync(
+        Guid notificationId,
         Guid userId,
         string title,
         string body,
