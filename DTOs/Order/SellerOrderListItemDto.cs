@@ -20,4 +20,5 @@ public sealed record SellerOrderListItemDto(
     DateTime? PaidAt,
     bool HasProductFile,
     string? ProductFileName,
-    string? InvoicePdfUrl);
+    string? InvoicePdfUrl,
+    DateTime? RefundedAt);

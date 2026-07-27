@@ -123,4 +123,32 @@ public sealed class CommerceContractTests
         Assert.False(result.IsSuccess);
         Assert.Equal("Gecersiz mock odeme karti.", result.ErrorMessage);
     }
+
+    [Fact]
+    public async Task Mock_payment_refunds_a_valid_mock_transaction()
+    {
+        var service = new MockPaymentService();
+
+        var result = await service.RefundPaymentAsync(
+            "txn_mock_1234567890",
+            40m,
+            "USD");
+
+        Assert.True(result.IsSuccess);
+        Assert.StartsWith("rfnd_mock_", result.RefundId);
+    }
+
+    [Fact]
+    public async Task Mock_payment_rejects_an_unknown_refund_transaction()
+    {
+        var service = new MockPaymentService();
+
+        var result = await service.RefundPaymentAsync(
+            "stripe_unknown",
+            40m,
+            "USD");
+
+        Assert.False(result.IsSuccess);
+        Assert.NotEmpty(result.ErrorMessage);
+    }
 }

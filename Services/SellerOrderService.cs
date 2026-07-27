@@ -1,5 +1,7 @@
 using CraftoraApi.Data;
+using CraftoraApi.DTOs.Notification;
 using CraftoraApi.DTOs.Order;
+using CraftoraApi.Infrastructure.Security;
 using CraftoraApi.Middleware;
 using CraftoraApi.Models.Entities;
 using CraftoraApi.Models.Enums;
@@ -15,13 +17,22 @@ public sealed class SellerOrderService : ISellerOrderService
 
     private readonly AppDbContext _dbContext;
     private readonly IStorageService _storageService;
+    private readonly IPaymentService _paymentService;
+    private readonly INotificationService _notificationService;
+    private readonly ILogger<SellerOrderService> _logger;
 
     public SellerOrderService(
         AppDbContext dbContext,
-        IStorageService storageService)
+        IStorageService storageService,
+        IPaymentService paymentService,
+        INotificationService notificationService,
+        ILogger<SellerOrderService> logger)
     {
         _dbContext = dbContext ?? throw new ArgumentNullException(nameof(dbContext));
         _storageService = storageService ?? throw new ArgumentNullException(nameof(storageService));
+        _paymentService = paymentService ?? throw new ArgumentNullException(nameof(paymentService));
+        _notificationService = notificationService ?? throw new ArgumentNullException(nameof(notificationService));
+        _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
 
     public async Task<SellerOrderListResponseDto> GetSellerOrdersAsync(
@@ -124,6 +135,105 @@ public sealed class SellerOrderService : ISellerOrderService
             AverageOrderValue: averageOrderValue);
     }
 
+    public async Task<RefundOrderResponseDto> RefundOrderAsync(
+        Guid userId,
+        Guid orderId,
+        RefundOrderRequestDto request,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        var reason = PlainTextInputValidator.Require(request.Reason, "Iade nedeni", 500);
+
+        await using var transaction = await _dbContext.Database
+            .BeginTransactionAsync(cancellationToken);
+
+        var order = await _dbContext.Orders
+            .FromSqlInterpolated($"""
+                SELECT *
+                FROM public.lock_seller_refundable_order({orderId})
+                """)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if (order is null)
+        {
+            throw new BadRequestException(
+                "Siparis bulunamadi, size ait degil veya iade edilebilir durumda degil.");
+        }
+
+        var payment = await _dbContext.Payments
+            .AsNoTracking()
+            .FirstOrDefaultAsync(
+                item => item.OrderId == order.Id,
+                cancellationToken);
+
+        if (payment is null ||
+            payment.Status != PaymentStatusType.Succeeded ||
+            string.IsNullOrWhiteSpace(payment.ProviderTransactionId))
+        {
+            throw new ConflictException("Siparisin iade edilebilir basarili odemesi bulunamadi.");
+        }
+
+        if (!string.Equals(payment.PaymentProvider, "mock", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ConflictException(
+                "Bu odeme saglayicisi icin iade entegrasyonu henuz yapilandirilmadi.");
+        }
+
+        var currency = string.IsNullOrWhiteSpace(order.Currency) ? "USD" : order.Currency;
+        var refundResult = await _paymentService.RefundPaymentAsync(
+            payment.ProviderTransactionId,
+            order.Amount,
+            currency);
+
+        if (!refundResult.IsSuccess)
+        {
+            throw new BadRequestException(
+                string.IsNullOrWhiteSpace(refundResult.ErrorMessage)
+                    ? "Odeme iadesi tamamlanamadi."
+                    : refundResult.ErrorMessage);
+        }
+
+        var finalized = await _dbContext.Database
+            .SqlQuery<bool>($"""
+                SELECT public.complete_seller_order_refund(
+                    {order.Id},
+                    {reason},
+                    {refundResult.RefundId}) AS "Value"
+                """)
+            .SingleAsync(cancellationToken);
+
+        if (!finalized)
+        {
+            throw new ConflictException("Siparis iadesi veritabaninda tamamlanamadi.");
+        }
+
+        await transaction.CommitAsync(cancellationToken);
+
+        try
+        {
+            await _notificationService.SendNotificationAsync(
+                order.BuyerId,
+                "Siparisiniz iade edildi",
+                $"{order.OrderNumber} numarali siparisinizin {order.Amount:0.00} {currency} tutarindaki odemesi iade edildi.",
+                NotificationType.System,
+                order.Id);
+        }
+        catch (Exception exception)
+        {
+            _logger.LogWarning(
+                exception,
+                "Refund completed but buyer notification failed. OrderId: {OrderId}",
+                order.Id);
+        }
+
+        return new RefundOrderResponseDto(
+            OrderId: order.Id,
+            Status: "refunded",
+            RefundedAmount: order.Amount,
+            ProviderRefundId: refundResult.RefundId,
+            RefundedAt: DateTime.UtcNow);
+    }
+
     private IQueryable<Order> BuildSellerOrdersQuery(
         Guid shopId,
         string? status,
@@ -207,10 +317,13 @@ public sealed class SellerOrderService : ISellerOrderService
             PaymentStatus: order.Payment is null ? null : ToPaymentStatusName(order.Payment.Status),
             OrderStatus: ToOrderStatusName(order.Status),
             CreatedAt: order.CreatedAt,
-            PaidAt: order.Payment?.Status == PaymentStatusType.Succeeded ? order.Payment.CreatedAt : null,
+            PaidAt: order.Payment?.Status is PaymentStatusType.Succeeded or PaymentStatusType.Refunded
+                ? order.Payment.CreatedAt
+                : null,
             HasProductFile: !string.IsNullOrWhiteSpace(order.Product.FileUrl),
             ProductFileName: GetFileName(order.Product.FileUrl),
-            InvoicePdfUrl: order.InvoicePdfUrl);
+            InvoicePdfUrl: order.InvoicePdfUrl,
+            RefundedAt: order.RefundedAt);
     }
 
     private SellerOrderDetailDto MapToDetail(Order order, bool hasLibraryAccess)
@@ -232,13 +345,17 @@ public sealed class SellerOrderService : ISellerOrderService
             PaymentStatus: order.Payment is null ? null : ToPaymentStatusName(order.Payment.Status),
             OrderStatus: ToOrderStatusName(order.Status),
             CreatedAt: order.CreatedAt,
-            PaidAt: order.Payment?.Status == PaymentStatusType.Succeeded ? order.Payment.CreatedAt : null,
+            PaidAt: order.Payment?.Status is PaymentStatusType.Succeeded or PaymentStatusType.Refunded
+                ? order.Payment.CreatedAt
+                : null,
             HasProductFile: !string.IsNullOrWhiteSpace(order.Product.FileUrl),
             ProductFileName: GetFileName(order.Product.FileUrl),
             InvoicePdfUrl: order.InvoicePdfUrl,
             PaymentProvider: order.Payment?.PaymentProvider,
             ProviderTransactionId: order.Payment?.ProviderTransactionId,
             PaymentErrorMessage: order.Payment?.ErrorMessage,
+            RefundedAt: order.RefundedAt,
+            RefundReason: order.RefundReason,
             AccessStatus: hasLibraryAccess ? "delivered" : "pending",
             CourseEnrollmentStatus: order.Product.Type == ProductType.Course
                 ? hasLibraryAccess ? "enrolled" : "not_enrolled"

@@ -1027,6 +1027,9 @@ public partial class AppDbContext : DbContext
                 .HasDefaultValueSql("'USD'::character varying")
                 .HasColumnName("currency");
             entity.Property(e => e.InvoicePdfUrl).HasColumnName("invoice_pdf_url");
+            entity.Property(e => e.RefundedAt).HasColumnName("refunded_at");
+            entity.Property(e => e.RefundReason).HasColumnName("refund_reason");
+            entity.Property(e => e.RefundedBy).HasColumnName("refunded_by");
             entity.Property(e => e.OrderNumber)
                 .HasMaxLength(50)
                 .HasColumnName("order_number");
@@ -1111,6 +1114,10 @@ public partial class AppDbContext : DbContext
             entity.Property(e => e.ProviderTransactionId)
                 .HasMaxLength(255)
                 .HasColumnName("provider_transaction_id");
+            entity.Property(e => e.ProviderRefundId)
+                .HasMaxLength(255)
+                .HasColumnName("provider_refund_id");
+            entity.Property(e => e.RefundedAt).HasColumnName("refunded_at");
             entity.Property(e => e.Status)
                 .HasColumnType("payment_status_type")
                 .HasDefaultValue(PaymentStatusType.Processing)

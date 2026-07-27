@@ -24,5 +24,7 @@ public sealed record SellerOrderDetailDto(
     string? PaymentProvider,
     string? ProviderTransactionId,
     string? PaymentErrorMessage,
+    DateTime? RefundedAt,
+    string? RefundReason,
     string AccessStatus,
     string? CourseEnrollmentStatus);

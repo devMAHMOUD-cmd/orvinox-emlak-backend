@@ -23,4 +23,10 @@ public interface ISellerOrderService
         DateTime? startDate,
         DateTime? endDate,
         CancellationToken cancellationToken = default);
+
+    Task<RefundOrderResponseDto> RefundOrderAsync(
+        Guid userId,
+        Guid orderId,
+        RefundOrderRequestDto request,
+        CancellationToken cancellationToken = default);
 }

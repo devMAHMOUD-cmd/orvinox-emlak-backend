@@ -42,4 +42,28 @@ public sealed class MockPaymentService : IPaymentService
             TransactionId: $"txn_mock_{Guid.NewGuid():N}",
             ErrorMessage: string.Empty);
     }
+
+    public async Task<(bool IsSuccess, string RefundId, string ErrorMessage)> RefundPaymentAsync(
+        string providerTransactionId,
+        decimal amount,
+        string currency)
+    {
+        await Task.Delay(250);
+
+        if (string.IsNullOrWhiteSpace(providerTransactionId) ||
+            !providerTransactionId.StartsWith("txn_mock_", StringComparison.Ordinal) ||
+            amount < 0 ||
+            string.IsNullOrWhiteSpace(currency))
+        {
+            return (
+                IsSuccess: false,
+                RefundId: string.Empty,
+                ErrorMessage: "Mock odeme iade istegi gecersiz.");
+        }
+
+        return (
+            IsSuccess: true,
+            RefundId: $"rfnd_mock_{Guid.NewGuid():N}",
+            ErrorMessage: string.Empty);
+    }
 }

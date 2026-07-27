@@ -6,4 +6,9 @@ public interface IPaymentService
         decimal amount,
         string currency,
         string cardNumber);
+
+    Task<(bool IsSuccess, string RefundId, string ErrorMessage)> RefundPaymentAsync(
+        string providerTransactionId,
+        decimal amount,
+        string currency);
 }

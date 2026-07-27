@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using CraftoraApi.DTOs.Order;
 using CraftoraApi.Middleware;
 using CraftoraApi.Services.Interfaces;
 using Microsoft.AspNetCore.Authorization;
@@ -64,6 +65,21 @@ public sealed class SellerOrdersController : ControllerBase
         var result = await _sellerOrderService.GetSellerOrderDetailAsync(
             GetCurrentUserId(),
             orderId,
+            cancellationToken);
+
+        return Ok(result);
+    }
+
+    [HttpPost("{orderId:guid}/refund")]
+    public async Task<IActionResult> RefundOrderAsync(
+        [FromRoute] Guid orderId,
+        [FromBody] RefundOrderRequestDto request,
+        CancellationToken cancellationToken = default)
+    {
+        var result = await _sellerOrderService.RefundOrderAsync(
+            GetCurrentUserId(),
+            orderId,
+            request,
             cancellationToken);
 
         return Ok(result);

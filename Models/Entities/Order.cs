@@ -38,6 +38,12 @@ public partial class Order
 
     public string? InvoicePdfUrl { get; set; }
 
+    public DateTime? RefundedAt { get; set; }
+
+    public string? RefundReason { get; set; }
+
+    public Guid? RefundedBy { get; set; }
+
     public DateTime? CreatedAt { get; set; }
 
     public DateTime? UpdatedAt { get; set; }

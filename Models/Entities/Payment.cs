@@ -14,6 +14,10 @@ public partial class Payment
 
     public string? ProviderTransactionId { get; set; }
 
+    public string? ProviderRefundId { get; set; }
+
+    public DateTime? RefundedAt { get; set; }
+
     public decimal GrossAmount { get; set; }
 
     public decimal PlatformFeeAmount { get; set; }
