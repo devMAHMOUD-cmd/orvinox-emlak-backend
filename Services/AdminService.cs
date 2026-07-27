@@ -759,6 +759,7 @@ public sealed class AdminService : IAdminService
         var title = PlainTextInputValidator.Require(dto.Title, "Uyari basligi", 200);
         var message = PlainTextInputValidator.Require(dto.Message, "Uyari mesaji", 1000);
         var report = await GetReportRecordAsync(reportId, cancellationToken);
+        EnsureReportIsActionable(report);
         var owner = await ResolveReportOwnerAsync(report.Type, report.TargetId, cancellationToken);
 
         if (owner.UserId is null)
@@ -796,6 +797,7 @@ public sealed class AdminService : IAdminService
         ArgumentNullException.ThrowIfNull(dto);
         var reason = PlainTextInputValidator.Require(dto.Reason, "Engelleme nedeni", 1000);
         var report = await GetReportRecordAsync(reportId, cancellationToken);
+        EnsureReportIsActionable(report);
         var normalizedType = report.Type.Trim().ToLowerInvariant();
         Guid? searchIndexTargetId = null;
         string? searchIndexType = null;
@@ -2171,6 +2173,14 @@ public sealed class AdminService : IAdminService
     private static bool IsFinalReportStatus(string status) =>
         string.Equals(status, "resolved", StringComparison.OrdinalIgnoreCase)
         || string.Equals(status, "rejected", StringComparison.OrdinalIgnoreCase);
+
+    private static void EnsureReportIsActionable(AdminReportRecord report)
+    {
+        if (IsFinalReportStatus(report.Status))
+        {
+            throw new ConflictException("Bu rapor zaten sonuclandirildi.");
+        }
+    }
 
     private async Task SendSystemNotificationToAllUsersAsync(string title, string message, Guid referenceId, CancellationToken cancellationToken)
     {
