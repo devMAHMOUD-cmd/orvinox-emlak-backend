@@ -32,11 +32,7 @@ public sealed class PushNotificationService : IPushNotificationService
         Dictionary<string, string> data,
         CancellationToken cancellationToken = default)
     {
-        var tokens = await _dbContext.UserDeviceTokens
-            .AsNoTracking()
-            .Where(token => token.UserId == userId && token.IsActive == true)
-            .Select(token => token.Token)
-            .ToListAsync(cancellationToken);
+        var tokens = await GetActiveDeviceTokensAsync(userId, cancellationToken);
 
         if (tokens.Count == 0)
         {
@@ -144,6 +140,44 @@ public sealed class PushNotificationService : IPushNotificationService
             AddParameter(command, "provider", provider);
             AddParameter(command, "error_message", errorMessage);
             await command.ExecuteScalarAsync(cancellationToken);
+        }
+        finally
+        {
+            if (openedHere)
+            {
+                await _dbContext.Database.CloseConnectionAsync();
+            }
+        }
+    }
+
+    private async Task<List<string>> GetActiveDeviceTokensAsync(
+        Guid userId,
+        CancellationToken cancellationToken)
+    {
+        var connection = _dbContext.Database.GetDbConnection();
+        var openedHere = connection.State != ConnectionState.Open;
+        if (openedHere)
+        {
+            await _dbContext.Database.OpenConnectionAsync(cancellationToken);
+        }
+
+        try
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText = """
+                SELECT device_token
+                FROM public.get_active_user_device_tokens(CAST(@user_id AS uuid))
+                """;
+            AddParameter(command, "user_id", userId);
+
+            var tokens = new List<string>();
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                tokens.Add(reader.GetString(0));
+            }
+
+            return tokens;
         }
         finally
         {

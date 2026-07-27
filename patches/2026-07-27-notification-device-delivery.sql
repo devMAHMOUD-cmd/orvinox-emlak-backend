@@ -140,8 +140,25 @@ BEGIN
 END;
 $function$;
 
+CREATE OR REPLACE FUNCTION public.get_active_user_device_tokens(
+    p_user_id uuid
+)
+RETURNS TABLE(device_token text)
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $function$
+    SELECT token.token
+    FROM public.user_device_tokens AS token
+    WHERE token.user_id = p_user_id
+      AND token.is_active = true
+    ORDER BY token.last_used_at DESC NULLS LAST, token.created_at DESC;
+$function$;
+
 REVOKE ALL ON FUNCTION public.upsert_user_device_token(uuid, text, varchar) FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.record_notification_delivery(uuid, varchar, varchar, text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.get_active_user_device_tokens(uuid) FROM PUBLIC;
 
 DO $$
 BEGIN
@@ -151,6 +168,9 @@ BEGIN
             TO craftora_app;
         GRANT EXECUTE
             ON FUNCTION public.record_notification_delivery(uuid, varchar, varchar, text)
+            TO craftora_app;
+        GRANT EXECUTE
+            ON FUNCTION public.get_active_user_device_tokens(uuid)
             TO craftora_app;
     END IF;
 END
