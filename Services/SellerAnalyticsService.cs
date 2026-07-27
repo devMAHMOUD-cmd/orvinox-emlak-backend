@@ -11,6 +11,7 @@ namespace CraftoraApi.Services;
 public sealed class SellerAnalyticsService : ISellerAnalyticsService
 {
     private static readonly TimeSpan DefaultRange = TimeSpan.FromDays(30);
+    private static readonly TimeSpan MaxTimeseriesRange = TimeSpan.FromDays(366);
 
     private readonly AppDbContext _dbContext;
 
@@ -82,7 +83,9 @@ public sealed class SellerAnalyticsService : ISellerAnalyticsService
             TotalRevenue: totalRevenue,
             UniqueVisitors: uniqueVisitors,
             UniqueCustomers: uniqueCustomers,
-            PurchaseConversionRate: CalculateRate(purchaseCompletedCount, productViews),
+            PurchaseConversionRate: CalculateRate(
+                purchaseCompletedCount,
+                productViews + courseViews),
             AverageCourseCompletionRate: averageCourseCompletionRate);
     }
 
@@ -162,7 +165,10 @@ public sealed class SellerAnalyticsService : ISellerAnalyticsService
     {
         var shop = await GetSellerShopAsync(userId, cancellationToken);
         var range = NormalizeRange(startDate, endDate);
-        var safeLimit = Math.Clamp(limit, 1, 50);
+        if (limit is < 1 or > 50)
+        {
+            throw new BadRequestException("Top urun limiti 1 ile 50 arasinda olmalidir.");
+        }
 
         var products = await _dbContext.Products
             .AsNoTracking()
@@ -213,7 +219,7 @@ public sealed class SellerAnalyticsService : ISellerAnalyticsService
             .OrderByDescending(item => item.Revenue)
             .ThenByDescending(item => item.Sales)
             .ThenByDescending(item => item.Views)
-            .Take(safeLimit)
+            .Take(limit)
             .ToList();
     }
 
@@ -642,6 +648,11 @@ public sealed class SellerAnalyticsService : ISellerAnalyticsService
         var normalized = NormalizeRange(startDate, endDate);
         var start = normalized.Start.Date;
         var end = normalized.End.Date.AddDays(1).AddTicks(-1);
+
+        if (end - start > MaxTimeseriesRange)
+        {
+            throw new BadRequestException("Gunluk analytics tarih araligi en fazla 366 gun olabilir.");
+        }
 
         return new DateRange(start, end);
     }

@@ -34,6 +34,11 @@ public sealed class AnalyticsController : ControllerBase
     [EnableRateLimiting("general")]
     public async Task<IActionResult> TrackEvent([FromBody] TrackAnalyticsEventDto dto, CancellationToken cancellationToken)
     {
+        if (string.IsNullOrWhiteSpace(dto.EventType))
+        {
+            throw new BadRequestException("Analytics eventType zorunludur.");
+        }
+
         if (!PublicAllowedEventTypes.Contains(dto.EventType.Trim()))
         {
             throw new BadRequestException("Bu event tipi bu endpoint uzerinden gonderilemez.");

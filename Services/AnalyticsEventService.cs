@@ -12,6 +12,8 @@ namespace CraftoraApi.Services;
 
 public sealed class AnalyticsEventService : IAnalyticsEventService
 {
+    private const int MaxMetadataLength = 8192;
+
     private readonly AppDbContext _dbContext;
     private readonly ILogger<AnalyticsEventService> _logger;
 
@@ -35,6 +37,11 @@ public sealed class AnalyticsEventService : IAnalyticsEventService
 
         var eventType = ParseEventType(dto.EventType);
         ValidatePayload(eventType, dto.ProductId, dto.MediaId, dto.OrderId, dto.ShopId);
+        var metadata = SerializeMetadata(dto.Metadata);
+        if (metadata.Length > MaxMetadataLength)
+        {
+            throw new BadRequestException("Analytics metadata en fazla 8192 karakter olabilir.");
+        }
 
         var analyticsEvent = await CreateEventAsync(
             eventType,
@@ -52,7 +59,7 @@ public sealed class AnalyticsEventService : IAnalyticsEventService
             dto.DeviceType,
             ipAddress,
             userAgent,
-            SerializeMetadata(dto.Metadata),
+            metadata,
             cancellationToken);
 
         if (analyticsEvent is null)
@@ -335,6 +342,11 @@ public sealed class AnalyticsEventService : IAnalyticsEventService
 
     private static AnalyticsEventType ParseEventType(string eventType)
     {
+        if (string.IsNullOrWhiteSpace(eventType))
+        {
+            throw new BadRequestException("Analytics eventType zorunludur.");
+        }
+
         return eventType.Trim().ToLowerInvariant() switch
         {
             "shop_visit" or "shopvisit" => AnalyticsEventType.ShopVisit,
