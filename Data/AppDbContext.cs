@@ -21,6 +21,10 @@ public partial class AppDbContext : DbContext
 
     public virtual DbSet<AdminCompetitionReward> AdminCompetitionRewards { get; set; }
 
+    public virtual DbSet<AdminEmailCampaign> AdminEmailCampaigns { get; set; }
+
+    public virtual DbSet<AdminEmailCampaignRecipient> AdminEmailCampaignRecipients { get; set; }
+
     public virtual DbSet<Category> Categories { get; set; }
 
     public virtual DbSet<Contest> Contests { get; set; }
@@ -110,6 +114,57 @@ public partial class AppDbContext : DbContext
         modelBuilder
             .HasPostgresExtension("citext")
             .HasPostgresExtension("uuid-ossp");
+
+        modelBuilder.Entity<AdminEmailCampaign>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("admin_email_campaigns_pkey");
+            entity.ToTable("admin_email_campaigns");
+            entity.HasIndex(
+                    e => new { e.AdminUserId, e.IdempotencyKey },
+                    "admin_email_campaigns_admin_idempotency_key")
+                .IsUnique();
+            entity.Property(e => e.Id).HasDefaultValueSql("uuid_generate_v4()").HasColumnName("id");
+            entity.Property(e => e.AdminUserId).HasColumnName("admin_user_id");
+            entity.Property(e => e.IdempotencyKey).HasMaxLength(100).HasColumnName("idempotency_key");
+            entity.Property(e => e.Audience).HasMaxLength(20).HasColumnName("audience");
+            entity.Property(e => e.Subject).HasMaxLength(160).HasColumnName("subject");
+            entity.Property(e => e.Message).HasMaxLength(10000).HasColumnName("message");
+            entity.Property(e => e.Status).HasMaxLength(20).HasDefaultValue("queued").HasColumnName("status");
+            entity.Property(e => e.RecipientCount).HasColumnName("recipient_count");
+            entity.Property(e => e.SentCount).HasColumnName("sent_count");
+            entity.Property(e => e.FailedCount).HasColumnName("failed_count");
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("CURRENT_TIMESTAMP").HasColumnName("created_at");
+            entity.Property(e => e.StartedAt).HasColumnName("started_at");
+            entity.Property(e => e.CompletedAt).HasColumnName("completed_at");
+        });
+
+        modelBuilder.Entity<AdminEmailCampaignRecipient>(entity =>
+        {
+            entity.HasKey(e => e.Id).HasName("admin_email_campaign_recipients_pkey");
+            entity.ToTable("admin_email_campaign_recipients");
+            entity.HasIndex(
+                    e => new { e.CampaignId, e.UserId },
+                    "admin_email_campaign_recipients_campaign_user_key")
+                .IsUnique();
+            entity.HasIndex(
+                e => new { e.CampaignId, e.Status },
+                "idx_admin_email_campaign_recipients_status");
+            entity.Property(e => e.Id).HasDefaultValueSql("uuid_generate_v4()").HasColumnName("id");
+            entity.Property(e => e.CampaignId).HasColumnName("campaign_id");
+            entity.Property(e => e.UserId).HasColumnName("user_id");
+            entity.Property(e => e.Email).HasMaxLength(255).HasColumnName("email");
+            entity.Property(e => e.FullName).HasMaxLength(150).HasColumnName("full_name");
+            entity.Property(e => e.Status).HasMaxLength(20).HasDefaultValue("pending").HasColumnName("status");
+            entity.Property(e => e.AttemptCount).HasColumnName("attempt_count");
+            entity.Property(e => e.ErrorMessage).HasMaxLength(1000).HasColumnName("error_message");
+            entity.Property(e => e.CreatedAt).HasDefaultValueSql("CURRENT_TIMESTAMP").HasColumnName("created_at");
+            entity.Property(e => e.SentAt).HasColumnName("sent_at");
+            entity.HasOne(e => e.Campaign)
+                .WithMany(e => e.Recipients)
+                .HasForeignKey(e => e.CampaignId)
+                .OnDelete(DeleteBehavior.Cascade)
+                .HasConstraintName("admin_email_campaign_recipients_campaign_id_fkey");
+        });
 
         modelBuilder.Entity<AdminCompetitionReward>(entity =>
         {

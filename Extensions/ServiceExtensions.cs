@@ -276,6 +276,8 @@ public static class ServiceExtensions
         services.AddScoped<IGamificationService, GamificationService>();
         services.AddScoped<ISearchService, SearchService>();
         services.AddScoped<IAdminService, AdminService>();
+        services.AddScoped<IAdminEmailCampaignService, AdminEmailCampaignService>();
+        services.AddScoped<IAdminCampaignEmailDeliveryService, AdminCampaignEmailDeliveryService>();
         services.AddScoped<ISupportTicketService, SupportTicketService>();
         services.AddScoped<IAnalyticsEventService, AnalyticsEventService>();
         services.AddScoped<ICompetitionService, CompetitionService>();
