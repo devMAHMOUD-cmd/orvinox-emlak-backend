@@ -356,9 +356,13 @@ public sealed class SellerOrderService : ISellerOrderService
             PaymentErrorMessage: order.Payment?.ErrorMessage,
             RefundedAt: order.RefundedAt,
             RefundReason: order.RefundReason,
-            AccessStatus: hasLibraryAccess ? "delivered" : "pending",
+            AccessStatus: order.Status == OrderStatus.Refunded
+                ? "revoked"
+                : hasLibraryAccess ? "delivered" : "pending",
             CourseEnrollmentStatus: order.Product.Type == ProductType.Course
-                ? hasLibraryAccess ? "enrolled" : "not_enrolled"
+                ? order.Status == OrderStatus.Refunded
+                    ? "revoked"
+                    : hasLibraryAccess ? "enrolled" : "not_enrolled"
                 : null);
     }
 
