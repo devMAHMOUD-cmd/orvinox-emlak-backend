@@ -28,6 +28,14 @@ public sealed class AdminService : IAdminService
     private const int CompetitionCertificateUrlExpiryMinutes = 60 * 24 * 7;
     private const int ExpiringSubscriptionWindowDays = 7;
     private static readonly TimeSpan ProductReindexLockTtl = TimeSpan.FromMinutes(10);
+    private static readonly HashSet<string> ReportStatuses = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "open", "pending", "reviewing", "resolved", "rejected"
+    };
+    private static readonly HashSet<string> ReportTypes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "user", "shop", "product", "media", "course", "comment"
+    };
 
     private readonly AppDbContext _dbContext;
     private readonly INotificationService _notificationService;
@@ -664,8 +672,23 @@ public sealed class AdminService : IAdminService
         int pageSize,
         CancellationToken cancellationToken = default)
     {
-        var normalizedPage = Math.Max(page, 1);
-        var normalizedPageSize = Math.Clamp(pageSize, 1, 100);
+        if (page < 1 || pageSize is < 1 or > 100)
+        {
+            throw new BadRequestException("Rapor sayfalama degerleri gecersiz.");
+        }
+
+        if (!string.IsNullOrWhiteSpace(status) && !ReportStatuses.Contains(status.Trim()))
+        {
+            throw new BadRequestException("Gecersiz rapor durumu.");
+        }
+
+        if (!string.IsNullOrWhiteSpace(type) && !ReportTypes.Contains(type.Trim()))
+        {
+            throw new BadRequestException("Gecersiz rapor hedef tipi.");
+        }
+
+        var normalizedPage = page;
+        var normalizedPageSize = pageSize;
         var filters = new List<string>();
         var parameters = new List<object?>();
 

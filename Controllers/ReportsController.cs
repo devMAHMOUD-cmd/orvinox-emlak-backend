@@ -5,7 +5,9 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.RateLimiting;
 using CraftoraApi.Data;
+using CraftoraApi.Infrastructure.Security;
 using CraftoraApi.Middleware;
+using CraftoraApi.Models.Enums;
 
 namespace CraftoraApi.Controllers;
 
@@ -46,8 +48,23 @@ public sealed class ReportsController : ControllerBase
         [FromBody] CreateReportDto dto,
         CancellationToken cancellationToken = default)
     {
+        if (string.IsNullOrWhiteSpace(dto.TargetType) ||
+            string.IsNullOrWhiteSpace(dto.Reason))
+        {
+            throw new BadRequestException("Sikayet hedef tipi ve sebebi zorunludur.");
+        }
+
+        if (dto.TargetId == Guid.Empty)
+        {
+            throw new BadRequestException("Gecerli bir sikayet hedefi zorunludur.");
+        }
+
         var targetType = Normalize(dto.TargetType);
         var reason = Normalize(dto.Reason);
+        var description = PlainTextInputValidator.Optional(
+            dto.Description,
+            "Sikayet aciklamasi",
+            5000);
 
         if (!AllowedTargetTypes.Contains(targetType))
         {
@@ -62,6 +79,16 @@ public sealed class ReportsController : ControllerBase
         var reportId = Guid.NewGuid();
         var reportedByUserId = GetCurrentUserId();
         var createdAt = DateTime.UtcNow;
+        var target = await ResolveTargetAsync(targetType, dto.TargetId, cancellationToken);
+        if (!target.Exists)
+        {
+            throw new NotFoundException("Sikayet hedefi bulunamadi.");
+        }
+
+        if (target.OwnerUserId == reportedByUserId)
+        {
+            throw new BadRequestException("Kendi hesabinizi veya iceriginizi sikayet edemezsiniz.");
+        }
 
         var hasOpenReport = await _dbContext.Database
             .SqlQueryRaw<int>(
@@ -84,11 +111,12 @@ public sealed class ReportsController : ControllerBase
             return Conflict(new { message = "Bu icerik icin zaten acik bir sikayetiniz var." });
         }
 
-        await _dbContext.Database.ExecuteSqlInterpolatedAsync($"""
+        var insertedRows = await _dbContext.Database.ExecuteSqlInterpolatedAsync($"""
             INSERT INTO admin_reports (
                 id,
                 type,
                 target_id,
+                target_title,
                 reported_by_user_id,
                 reason,
                 description,
@@ -100,14 +128,23 @@ public sealed class ReportsController : ControllerBase
                 {reportId},
                 {targetType},
                 {dto.TargetId},
+                {target.Title},
                 {reportedByUserId},
                 {reason},
-                {dto.Description},
+                {description},
                 {"open"},
                 {createdAt},
                 {createdAt}
             )
+            ON CONFLICT (reported_by_user_id, type, target_id)
+                WHERE status IN ('open', 'pending', 'reviewing')
+                DO NOTHING
             """, cancellationToken);
+
+        if (insertedRows == 0)
+        {
+            return Conflict(new { message = "Bu icerik icin zaten acik bir sikayetiniz var." });
+        }
 
         return Ok(new ReportCreatedDto(reportId, "open", createdAt));
     }
@@ -128,5 +165,106 @@ public sealed class ReportsController : ControllerBase
     private static string Normalize(string value)
     {
         return value.Trim().ToLowerInvariant();
+    }
+
+    private async Task<ReportTarget> ResolveTargetAsync(
+        string targetType,
+        Guid targetId,
+        CancellationToken cancellationToken)
+    {
+        switch (targetType)
+        {
+            case "product":
+            {
+                var target = await _dbContext.Products
+                    .AsNoTracking()
+                    .Where(item => item.Id == targetId)
+                    .Select(item => new { item.Title, OwnerUserId = item.Shop.UserId })
+                    .SingleOrDefaultAsync(cancellationToken);
+                return target is null
+                    ? ReportTarget.Missing
+                    : new(true, target.OwnerUserId, target.Title);
+            }
+            case "course":
+            {
+                var course = await _dbContext.Courses
+                    .AsNoTracking()
+                    .Where(item => item.Id == targetId)
+                    .Select(item => new
+                    {
+                        item.Product.Title,
+                        OwnerUserId = item.Product.Shop.UserId
+                    })
+                    .SingleOrDefaultAsync(cancellationToken);
+                if (course is not null)
+                {
+                    return new(true, course.OwnerUserId, course.Title);
+                }
+
+                var product = await _dbContext.Products
+                    .AsNoTracking()
+                    .Where(item => item.Id == targetId && item.Type == ProductType.Course)
+                    .Select(item => new { item.Title, OwnerUserId = item.Shop.UserId })
+                    .SingleOrDefaultAsync(cancellationToken);
+                return product is null
+                    ? ReportTarget.Missing
+                    : new(true, product.OwnerUserId, product.Title);
+            }
+            case "media":
+            {
+                var target = await _dbContext.Media
+                    .AsNoTracking()
+                    .Where(item => item.Id == targetId)
+                    .Select(item => new
+                    {
+                        Title = item.Caption,
+                        OwnerUserId = item.Shop.UserId
+                    })
+                    .SingleOrDefaultAsync(cancellationToken);
+                return target is null
+                    ? ReportTarget.Missing
+                    : new(true, target.OwnerUserId, target.Title);
+            }
+            case "shop":
+            {
+                var target = await _dbContext.Shops
+                    .AsNoTracking()
+                    .Where(item => item.Id == targetId)
+                    .Select(item => new { Title = item.ShopName, OwnerUserId = item.UserId })
+                    .SingleOrDefaultAsync(cancellationToken);
+                return target is null
+                    ? ReportTarget.Missing
+                    : new(true, target.OwnerUserId, target.Title);
+            }
+            case "user":
+            {
+                var target = await _dbContext.Users
+                    .AsNoTracking()
+                    .Where(item => item.Id == targetId)
+                    .Select(item => new { Title = item.FullName ?? item.Email, OwnerUserId = item.Id })
+                    .SingleOrDefaultAsync(cancellationToken);
+                return target is null
+                    ? ReportTarget.Missing
+                    : new(true, target.OwnerUserId, target.Title);
+            }
+            case "comment":
+            {
+                var target = await _dbContext.MediaComments
+                    .AsNoTracking()
+                    .Where(item => item.Id == targetId)
+                    .Select(item => new { Title = item.CommentText, OwnerUserId = item.UserId })
+                    .SingleOrDefaultAsync(cancellationToken);
+                return target is null
+                    ? ReportTarget.Missing
+                    : new(true, target.OwnerUserId, target.Title);
+            }
+            default:
+                return ReportTarget.Missing;
+        }
+    }
+
+    private sealed record ReportTarget(bool Exists, Guid OwnerUserId, string? Title)
+    {
+        public static ReportTarget Missing { get; } = new(false, Guid.Empty, null);
     }
 }
