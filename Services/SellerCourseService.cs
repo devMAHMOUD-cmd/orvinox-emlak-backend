@@ -1,4 +1,5 @@
 using System.Text.Json;
+using CraftoraApi.Infrastructure.Security;
 using CraftoraApi.Data;
 using CraftoraApi.DTOs.Course;
 using CraftoraApi.Infrastructure.Messaging;
@@ -1091,7 +1092,12 @@ public sealed class SellerCourseService : ISellerCourseService
 
         try
         {
-            using var _ = JsonDocument.Parse(metadata);
+            using var document = JsonDocument.Parse(metadata);
+            if (JsonInputSafetyValidator.ContainsProhibitedContent(document.RootElement))
+            {
+                throw new BadRequestException(
+                    "Metadata guvensiz HTML, URL veya kontrol karakteri iceremez.");
+            }
         }
         catch (JsonException)
         {

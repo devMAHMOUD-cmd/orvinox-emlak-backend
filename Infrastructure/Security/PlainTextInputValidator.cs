@@ -12,6 +12,16 @@ public static class PlainTextInputValidator
         @"<\s*(?:script|iframe|embed|object)\b|javascript\s*:|\bon(?:error|load|click|dblclick|mouseover|mouseout|mouseenter|mouseleave|mousedown|mouseup|mousemove|focus|blur|submit|change|input|keydown|keyup|keypress|touchstart|touchend|touchmove|pointerdown|pointerup|pointermove|pointerenter|pointerleave)\s*=",
         RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
 
+    private static readonly Regex ProhibitedControlCharacterPattern = new(
+        @"[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+    public static bool ContainsProhibitedContent(string value)
+    {
+        return DangerousContentPattern.IsMatch(value)
+            || ProhibitedControlCharacterPattern.IsMatch(value);
+    }
+
     public static string Require(string? value, string fieldName, int maxLength)
     {
         var normalized = Normalize(value, fieldName, maxLength);
@@ -43,9 +53,10 @@ public static class PlainTextInputValidator
             throw new BadRequestException($"{fieldName} en fazla {maxLength} karakter olabilir.");
         }
 
-        if (DangerousContentPattern.IsMatch(normalized))
+        if (ContainsProhibitedContent(normalized))
         {
-            throw new BadRequestException($"{fieldName} guvensiz HTML veya URL kalibi iceremez.");
+            throw new BadRequestException(
+                $"{fieldName} guvensiz HTML, URL veya kontrol karakteri iceremez.");
         }
 
         return normalized;

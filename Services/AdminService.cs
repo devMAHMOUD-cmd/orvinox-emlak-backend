@@ -603,6 +603,7 @@ public sealed class AdminService : IAdminService
             throw new BadRequestException("Kilit bitis tarihi gecmis bir tarih olamaz.");
         }
 
+        var reason = PlainTextInputValidator.Require(dto.Reason, "Kilitleme nedeni", 1000);
         var user = await GetUserForUpdateAsync(userId, cancellationToken);
         await EnsureUserCanBeRestrictedAsync(
             adminUserId,
@@ -611,9 +612,9 @@ public sealed class AdminService : IAdminService
             cancellationToken);
 
         user.LockedUntil = dto.Until;
-        user.LockReason = dto.Reason;
+        user.LockReason = reason;
         await _dbContext.SaveChangesAsync(cancellationToken);
-        await AddAuditAsync(adminUserId, "lock_user", "user", userId, new { dto.Reason, dto.Until }, cancellationToken);
+        await AddAuditAsync(adminUserId, "lock_user", "user", userId, new { Reason = reason, dto.Until }, cancellationToken);
     }
 
     public async Task UnlockUserAsync(Guid adminUserId, Guid userId, CancellationToken cancellationToken = default)

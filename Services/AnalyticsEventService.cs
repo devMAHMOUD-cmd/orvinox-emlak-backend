@@ -2,6 +2,7 @@ using System.Net;
 using System.Text.Json;
 using CraftoraApi.Data;
 using CraftoraApi.DTOs.Analytics;
+using CraftoraApi.Infrastructure.Security;
 using CraftoraApi.Middleware;
 using CraftoraApi.Models.Entities;
 using CraftoraApi.Models.Enums;
@@ -37,6 +38,7 @@ public sealed class AnalyticsEventService : IAnalyticsEventService
 
         var eventType = ParseEventType(dto.EventType);
         ValidatePayload(eventType, dto.ProductId, dto.MediaId, dto.OrderId, dto.ShopId);
+        ValidateMetadata(dto.Metadata);
         var metadata = SerializeMetadata(dto.Metadata);
         if (metadata.Length > MaxMetadataLength)
         {
@@ -365,6 +367,22 @@ public sealed class AnalyticsEventService : IAnalyticsEventService
         return metadata is null || metadata.Count == 0
             ? "{}"
             : JsonSerializer.Serialize(metadata);
+    }
+
+    private static void ValidateMetadata(Dictionary<string, JsonElement>? metadata)
+    {
+        if (metadata is null)
+        {
+            return;
+        }
+
+        if (metadata.Any(item =>
+            PlainTextInputValidator.ContainsProhibitedContent(item.Key)
+            || JsonInputSafetyValidator.ContainsProhibitedContent(item.Value)))
+        {
+            throw new BadRequestException(
+                "Analytics metadata guvensiz HTML, URL veya kontrol karakteri iceremez.");
+        }
     }
 
     private static AnalyticsEventResponseDto MapToResponse(AnalyticsEvent analyticsEvent)

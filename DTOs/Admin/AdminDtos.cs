@@ -148,7 +148,11 @@ public sealed record AdminWarnUserRequestDto(
     [property: MinLength(2, ErrorMessage = "Uyari mesaji en az 2 karakter olmalidir.")]
     string Message);
 
-public sealed record AdminLockUserRequestDto(string Reason, DateTime Until);
+public sealed record AdminLockUserRequestDto(
+    [property: Required(ErrorMessage = "Kilitleme nedeni zorunludur.")]
+    [property: StringLength(1000, MinimumLength = 2, ErrorMessage = "Kilitleme nedeni 2 ile 1000 karakter arasinda olmalidir.")]
+    string Reason,
+    DateTime Until);
 
 public sealed record AdminSuspendUserRequestDto(
     [property: Required(ErrorMessage = "Askiya alma nedeni zorunludur.")]

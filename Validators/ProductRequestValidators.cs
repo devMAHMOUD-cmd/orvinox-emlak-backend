@@ -1,6 +1,7 @@
 using System.Linq.Expressions;
 using System.Text.Json;
 using CraftoraApi.DTOs.Product;
+using CraftoraApi.Infrastructure.Security;
 using CraftoraApi.Models.Enums;
 using FluentValidation;
 
@@ -71,8 +72,9 @@ internal static class ProductRequestValidationRules
             .WithMessage("Urun basligi 3 ile 255 karakter arasinda olmalidir.");
 
         validator.RuleFor(description)
-            .Must(value => !string.IsNullOrWhiteSpace(value))
-            .WithMessage("Urun aciklamasi zorunludur.");
+            .Must(value => !string.IsNullOrWhiteSpace(value) &&
+                           value.Length <= 20_000)
+            .WithMessage("Urun aciklamasi zorunludur ve en fazla 20000 karakter olabilir.");
 
         validator.RuleFor(price)
             .InclusiveBetween(0m, MaximumPrice)
@@ -116,8 +118,9 @@ internal static class ProductRequestValidationRules
     {
         try
         {
-            using var _ = JsonDocument.Parse(value);
-            return true;
+            using var document = JsonDocument.Parse(value);
+            return !JsonInputSafetyValidator.ContainsProhibitedContent(
+                document.RootElement);
         }
         catch (JsonException)
         {

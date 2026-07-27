@@ -158,6 +158,10 @@ public sealed class ProductRequestValidatorTests
     public void Product_rejects_invalid_json_metadata_and_oversized_tags()
     {
         var invalidMetadata = Create() with { Metadata = "{invalid-json" };
+        var prohibitedMetadata = Create() with
+        {
+            Metadata = """{"value":"null\u0000byte"}"""
+        };
         var oversizedTags = Create() with
         {
             Tags = Enumerable.Range(0, 21)
@@ -169,8 +173,24 @@ public sealed class ProductRequestValidatorTests
             _createValidator.Validate(invalidMetadata).Errors,
             error => error.PropertyName == nameof(CreateProductDto.Metadata));
         Assert.Contains(
+            _createValidator.Validate(prohibitedMetadata).Errors,
+            error => error.PropertyName == nameof(CreateProductDto.Metadata));
+        Assert.Contains(
             _createValidator.Validate(oversizedTags).Errors,
             error => error.PropertyName == nameof(CreateProductDto.Tags));
+    }
+
+    [Fact]
+    public void Product_rejects_description_above_twenty_thousand_characters()
+    {
+        var request = Create() with
+        {
+            Description = new string('x', 20_001)
+        };
+
+        Assert.Contains(
+            _createValidator.Validate(request).Errors,
+            error => error.PropertyName == nameof(CreateProductDto.Description));
     }
 
     private static CreateProductDto Create(

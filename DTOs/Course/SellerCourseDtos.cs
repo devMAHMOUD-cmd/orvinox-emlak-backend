@@ -106,6 +106,7 @@ public sealed record SellerCourseQuizDto(
 public sealed record CreateSellerCourseDto
 {
     [Required]
+    [StringLength(255)]
     public string CategoryId { get; init; } = null!;
 
     [Required]
@@ -124,10 +125,13 @@ public sealed record CreateSellerCourseDto
 
     public ProductStatus Status { get; init; } = ProductStatus.Draft;
 
+    [MaxLength(20)]
     public List<string> Tags { get; init; } = new();
 
+    [StringLength(1024)]
     public string? CoverImageUrl { get; init; }
 
+    [StringLength(1024)]
     public string? PreviewVideoUrl { get; init; }
 
     [StringLength(20000)]
@@ -142,12 +146,14 @@ public sealed record CreateSellerCourseDto
 
     public bool IsCertificateIncluded { get; init; }
 
+    [MaxLength(100)]
     public List<CreateSellerCourseSectionDto> Sections { get; init; } = new();
 }
 
 public sealed record UpdateSellerCourseDto
 {
     [Required]
+    [StringLength(255)]
     public string CategoryId { get; init; } = null!;
 
     [Required]
@@ -166,10 +172,13 @@ public sealed record UpdateSellerCourseDto
 
     public ProductStatus Status { get; init; } = ProductStatus.Draft;
 
+    [MaxLength(20)]
     public List<string> Tags { get; init; } = new();
 
+    [StringLength(1024)]
     public string? CoverImageUrl { get; init; }
 
+    [StringLength(1024)]
     public string? PreviewVideoUrl { get; init; }
 
     [StringLength(20000)]
@@ -191,10 +200,12 @@ public sealed record CreateSellerCourseSectionDto
     [StringLength(255)]
     public string Title { get; init; } = null!;
 
+    [Range(0, int.MaxValue)]
     public int SortOrder { get; init; }
 
     public bool IsActive { get; init; } = true;
 
+    [MaxLength(200)]
     public List<CreateSellerCourseLessonDto> Lessons { get; init; } = new();
 }
 
@@ -204,6 +215,7 @@ public sealed record UpdateSellerCourseSectionDto
     [StringLength(255)]
     public string Title { get; init; } = null!;
 
+    [Range(0, int.MaxValue)]
     public int SortOrder { get; init; }
 
     public bool IsActive { get; init; } = true;
@@ -215,17 +227,20 @@ public sealed record CreateSellerCourseLessonDto
     [StringLength(255)]
     public string Title { get; init; } = null!;
 
+    [StringLength(1024)]
     public string? VideoUrl { get; init; }
 
     [Range(0, int.MaxValue)]
     public int DurationInSeconds { get; init; }
 
+    [Range(0, int.MaxValue)]
     public int SortOrder { get; init; }
 
     public bool IsFreePreview { get; init; }
 
     public bool IsActive { get; init; } = true;
 
+    [MaxLength(50)]
     public List<UpsertSellerCourseResourceDto> Resources { get; init; } = new();
 }
 
@@ -235,17 +250,20 @@ public sealed record UpdateSellerCourseLessonDto
     [StringLength(255)]
     public string Title { get; init; } = null!;
 
+    [StringLength(1024)]
     public string? VideoUrl { get; init; }
 
     [Range(0, int.MaxValue)]
     public int DurationInSeconds { get; init; }
 
+    [Range(0, int.MaxValue)]
     public int SortOrder { get; init; }
 
     public bool IsFreePreview { get; init; }
 
     public bool IsActive { get; init; } = true;
 
+    [MaxLength(50)]
     public List<UpsertSellerCourseResourceDto> Resources { get; init; } = new();
 }
 
@@ -256,6 +274,7 @@ public sealed record UpsertSellerCourseResourceDto
     public string Title { get; init; } = null!;
 
     [Required]
+    [StringLength(1024)]
     public string FileUrl { get; init; } = null!;
 
     [Required]

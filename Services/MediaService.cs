@@ -993,13 +993,20 @@ public sealed class MediaService : IMediaService
 
     private static List<string> NormalizeHashtags(IEnumerable<string>? hashtags)
     {
-        return hashtags?
+        var normalized = hashtags?
             .Where(hashtag => !string.IsNullOrWhiteSpace(hashtag))
             .Select(hashtag => hashtag.Trim().TrimStart('#').ToLowerInvariant())
             .Where(hashtag => hashtag.Length > 0)
             .Distinct(StringComparer.OrdinalIgnoreCase)
-            .Take(20)
             .ToList() ?? new List<string>();
+
+        if (normalized.Count > 20 || normalized.Any(hashtag => hashtag.Length > 50))
+        {
+            throw new BadRequestException(
+                "En fazla 20 adet ve 50 karakterlik hashtag kullanilabilir.");
+        }
+
+        return normalized;
     }
 
     private static string GetViewCountCacheKey(Guid mediaId)

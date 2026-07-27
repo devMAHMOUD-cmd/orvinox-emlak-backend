@@ -34,6 +34,7 @@ using CraftoraApi.Services.Interfaces;
 using CraftoraApi.Validators;
 using FluentValidation;
 using CraftoraApi.Data.Interceptors;
+using CraftoraApi.Infrastructure.Security;
 
 namespace CraftoraApi.Extensions;
 
@@ -121,6 +122,8 @@ public static class ServiceExtensions
         services.AddControllers()
             .AddJsonOptions(options =>
             {
+                options.JsonSerializerOptions.Converters.Add(
+                    new SafeStringJsonConverter());
                 options.JsonSerializerOptions.Converters.Add(
                     new JsonStringEnumConverter(JsonNamingPolicy.CamelCase));
             });

@@ -5,6 +5,7 @@ namespace CraftoraApi.DTOs.Product;
 
 public sealed record CreateProductDto(
     [property: Required(ErrorMessage = "Kategori zorunludur.")]
+    [property: StringLength(255, ErrorMessage = "Kategori kimligi en fazla 255 karakter olabilir.")]
     string CategoryId,
 
     [property: Required(ErrorMessage = "Ürün başlığı zorunludur.")]
@@ -12,6 +13,7 @@ public sealed record CreateProductDto(
     string Title,
 
     [property: Required(ErrorMessage = "Ürün açıklaması zorunludur.")]
+    [property: StringLength(20000, ErrorMessage = "Ürün açıklaması en fazla 20000 karakter olabilir.")]
     string Description,
 
     [property: Range(0d, 99999999.99d, ErrorMessage = "Fiyat 0 ile 99999999.99 arasinda olmalidir.")]
@@ -24,12 +26,16 @@ public sealed record CreateProductDto(
 
     List<string> Tags,
 
+    [property: StringLength(1024, ErrorMessage = "Kapak görseli anahtarı en fazla 1024 karakter olabilir.")]
     string? CoverImageUrl,
 
+    [property: StringLength(1024, ErrorMessage = "Önizleme videosu anahtarı en fazla 1024 karakter olabilir.")]
     string? PreviewVideoUrl,
 
+    [property: StringLength(1024, ErrorMessage = "Ürün dosyası anahtarı en fazla 1024 karakter olabilir.")]
     string? FileUrl,
 
+    [property: StringLength(20000, ErrorMessage = "Metadata en fazla 20000 karakter olabilir.")]
     string? Metadata,
 
     ProductType? Type = null,

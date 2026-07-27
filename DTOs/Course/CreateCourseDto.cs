@@ -16,6 +16,7 @@ public sealed record CreateCourseDto
 
     public bool IsCertificateIncluded { get; init; }
 
+    [MaxLength(100)]
     public List<CreateCourseSectionDto> Sections { get; init; } = new();
 }
 
@@ -27,12 +28,15 @@ public sealed record CreateCourseSectionDto
     [StringLength(255)]
     public string Title { get; init; } = null!;
 
+    [Range(0, int.MaxValue)]
     public int SortOrder { get; init; }
 
     public bool IsActive { get; init; } = true;
 
+    [MaxLength(200)]
     public List<CreateCourseLessonDto> Lessons { get; init; } = new();
 
+    [MaxLength(50)]
     public List<CreateCourseQuizDto> Quizzes { get; init; } = new();
 }
 
@@ -44,17 +48,20 @@ public sealed record CreateCourseLessonDto
     [StringLength(255)]
     public string Title { get; init; } = null!;
 
+    [StringLength(1024)]
     public string? VideoUrl { get; init; }
 
     [Range(0, int.MaxValue)]
     public int DurationInSeconds { get; init; }
 
+    [Range(0, int.MaxValue)]
     public int SortOrder { get; init; }
 
     public bool IsFreePreview { get; init; }
 
     public bool IsActive { get; init; } = true;
 
+    [MaxLength(50)]
     public List<CreateLessonResourceDto> Resources { get; init; } = new();
 }
 
@@ -67,6 +74,7 @@ public sealed record CreateLessonResourceDto
     public string Title { get; init; } = null!;
 
     [Required]
+    [StringLength(1024)]
     public string FileUrl { get; init; } = null!;
 
     [Required]
