@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS public.admin_email_campaigns (
     CONSTRAINT admin_email_campaigns_admin_idempotency_key
         UNIQUE (admin_user_id, idempotency_key),
     CONSTRAINT admin_email_campaigns_audience_check
-        CHECK (audience IN ('all', 'users', 'sellers')),
+        CHECK (audience IN ('all', 'users', 'sellers', 'selected')),
     CONSTRAINT admin_email_campaigns_status_check
         CHECK (status IN ('queued', 'sending', 'completed', 'completed_with_failures')),
     CONSTRAINT admin_email_campaigns_counts_check

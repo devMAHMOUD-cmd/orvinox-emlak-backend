@@ -3,13 +3,15 @@ namespace CraftoraApi.DTOs.Admin;
 public sealed record AdminEmailCampaignPreviewRequestDto(
     string Audience,
     string Subject,
-    string Message);
+    string Message,
+    IReadOnlyList<Guid>? UserIds = null);
 
 public sealed record AdminEmailCampaignSendRequestDto(
     string Audience,
     string Subject,
     string Message,
-    string IdempotencyKey);
+    string IdempotencyKey,
+    IReadOnlyList<Guid>? UserIds = null);
 
 public sealed record AdminEmailCampaignPreviewDto(
     string Audience,

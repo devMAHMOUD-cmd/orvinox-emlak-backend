@@ -23,6 +23,7 @@ public sealed class AdminEmailCampaignTests
     [InlineData("all")]
     [InlineData("users")]
     [InlineData("sellers")]
+    [InlineData("selected")]
     public void Send_validator_accepts_supported_audiences(string audience)
     {
         var validator = new AdminEmailCampaignSendRequestValidator();
@@ -30,9 +31,26 @@ public sealed class AdminEmailCampaignTests
             audience,
             "Craftora duyurusu",
             "Yeni bir platform duyurusu.",
-            "release-2026-07-27"));
+            "release-2026-07-27",
+            audience == "selected" ? [Guid.NewGuid()] : null));
 
         Assert.True(result.IsValid);
+    }
+
+    [Fact]
+    public void Send_validator_requires_unique_user_ids_for_selected_audience()
+    {
+        var userId = Guid.NewGuid();
+        var validator = new AdminEmailCampaignSendRequestValidator();
+        var result = validator.Validate(new AdminEmailCampaignSendRequestDto(
+            "selected",
+            "Craftora duyurusu",
+            "Yeni bir platform duyurusu.",
+            "selected-2026-07-27",
+            [userId, userId]));
+
+        Assert.False(result.IsValid);
+        Assert.Contains(result.Errors, error => error.PropertyName == "UserIds");
     }
 
     [Fact]

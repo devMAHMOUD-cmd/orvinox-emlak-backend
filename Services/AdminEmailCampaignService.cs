@@ -33,7 +33,7 @@ public sealed class AdminEmailCampaignService : IAdminEmailCampaignService
         CancellationToken cancellationToken = default)
     {
         var audience = NormalizeAudience(request.Audience);
-        var query = BuildRecipientQuery(audience);
+        var query = BuildRecipientQuery(audience, request.UserIds);
         var count = await query.CountAsync(cancellationToken);
         var sample = await query
             .OrderBy(user => user.CreatedAt)
@@ -76,7 +76,7 @@ public sealed class AdminEmailCampaignService : IAdminEmailCampaignService
             return Map(existing);
         }
 
-        var recipients = await BuildRecipientQuery(audience)
+        var recipients = await BuildRecipientQuery(audience, request.UserIds)
             .OrderBy(user => user.Id)
             .Select(user => new
             {
@@ -220,7 +220,9 @@ public sealed class AdminEmailCampaignService : IAdminEmailCampaignService
         return Map(campaign);
     }
 
-    private IQueryable<User> BuildRecipientQuery(string audience)
+    private IQueryable<User> BuildRecipientQuery(
+        string audience,
+        IReadOnlyList<Guid>? selectedUserIds)
     {
         var query = _dbContext.Users
             .AsNoTracking()
@@ -234,6 +236,8 @@ public sealed class AdminEmailCampaignService : IAdminEmailCampaignService
         {
             "users" => query.Where(user => user.Role == UserRole.User),
             "sellers" => query.Where(user => user.Role == UserRole.Seller),
+            "selected" => query.Where(user =>
+                selectedUserIds != null && selectedUserIds.Contains(user.Id)),
             _ => query
         };
     }
@@ -265,7 +269,7 @@ public sealed class AdminEmailCampaignService : IAdminEmailCampaignService
     private static string NormalizeAudience(string audience)
     {
         var normalized = audience.Trim().ToLowerInvariant();
-        return normalized is "all" or "users" or "sellers"
+        return normalized is "all" or "users" or "sellers" or "selected"
             ? normalized
             : throw new BadRequestException("Gecersiz hedef kitle.");
     }
