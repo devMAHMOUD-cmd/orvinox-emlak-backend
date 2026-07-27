@@ -1,3 +1,5 @@
+using System.Data;
+using System.Data.Common;
 using CraftoraApi.Data;
 using CraftoraApi.DTOs.Analytics;
 using CraftoraApi.Middleware;
@@ -54,9 +56,7 @@ public sealed class SellerAnalyticsService : ISellerAnalyticsService
         var checkoutStartedCount = await events.CountAsync(
             item => item.EventType == AnalyticsEventType.CheckoutStarted,
             cancellationToken);
-        var purchaseCompletedCount = await events.CountAsync(
-            item => item.EventType == AnalyticsEventType.PurchaseCompleted,
-            cancellationToken);
+        var purchaseCompletedCount = await orders.CountAsync(cancellationToken);
         var totalRevenue = await orders.SumAsync(order => order.Amount, cancellationToken);
         var uniqueCustomers = await orders
             .Select(order => order.BuyerId)
@@ -98,6 +98,7 @@ public sealed class SellerAnalyticsService : ISellerAnalyticsService
         var shop = await GetSellerShopAsync(userId, cancellationToken);
         var range = NormalizeRange(startDate, endDate);
         var events = AnalyticsEventsForShop(shop.Id, range);
+        var orders = CompletedOrdersForShop(shop.Id, range);
 
         var views = await events.CountAsync(
             item => item.EventType == AnalyticsEventType.ProductView,
@@ -108,9 +109,7 @@ public sealed class SellerAnalyticsService : ISellerAnalyticsService
         var checkout = await events.CountAsync(
             item => item.EventType == AnalyticsEventType.CheckoutStarted,
             cancellationToken);
-        var purchase = await events.CountAsync(
-            item => item.EventType == AnalyticsEventType.PurchaseCompleted,
-            cancellationToken);
+        var purchase = await orders.CountAsync(cancellationToken);
 
         var steps = new List<FunnelStepDto>
         {
@@ -247,8 +246,7 @@ public sealed class SellerAnalyticsService : ISellerAnalyticsService
                 item.EventType == AnalyticsEventType.ShopVisit ||
                 item.EventType == AnalyticsEventType.MediaView ||
                 item.EventType == AnalyticsEventType.AddToCart ||
-                item.EventType == AnalyticsEventType.CheckoutStarted ||
-                item.EventType == AnalyticsEventType.PurchaseCompleted)
+                item.EventType == AnalyticsEventType.CheckoutStarted)
             .Select(item => new
                 TimeseriesEventRow(
                 item.CreatedAt!.Value,
@@ -275,6 +273,9 @@ public sealed class SellerAnalyticsService : ISellerAnalyticsService
         var revenueByDate = orderRows
             .GroupBy(item => DateOnly.FromDateTime(item.CreatedAt.Date))
             .ToDictionary(group => group.Key, group => group.Sum(item => item.Amount));
+        var ordersByDate = orderRows
+            .GroupBy(item => DateOnly.FromDateTime(item.CreatedAt.Date))
+            .ToDictionary(group => group.Key, group => group.Count());
 
         var points = new List<SellerAnalyticsTimeseriesPointDto>();
         for (var date = DateOnly.FromDateTime(range.Start.Date);
@@ -284,6 +285,7 @@ public sealed class SellerAnalyticsService : ISellerAnalyticsService
             eventsByDate.TryGetValue(date, out var dayEvents);
             dayEvents ??= [];
             revenueByDate.TryGetValue(date, out var revenue);
+            ordersByDate.TryGetValue(date, out var completedOrders);
 
             var courseViews = dayEvents.Count(item =>
                 item.EventType == AnalyticsEventType.ProductView &&
@@ -303,7 +305,7 @@ public sealed class SellerAnalyticsService : ISellerAnalyticsService
                 TotalViews: shopVisits + productViews + courseViews + mediaViews,
                 AddToCartCount: dayEvents.Count(item => item.EventType == AnalyticsEventType.AddToCart),
                 CheckoutStartedCount: dayEvents.Count(item => item.EventType == AnalyticsEventType.CheckoutStarted),
-                PurchaseCompletedCount: dayEvents.Count(item => item.EventType == AnalyticsEventType.PurchaseCompleted),
+                PurchaseCompletedCount: completedOrders,
                 Revenue: revenue,
                 UniqueVisitors: CountUniqueVisitors(dayEvents)));
         }
@@ -387,21 +389,26 @@ public sealed class SellerAnalyticsService : ISellerAnalyticsService
             .ToList();
 
         var lessonIds = lessons.Select(lesson => lesson.Id).ToList();
-        var lessonProgress = await _dbContext.UserLessonProgresses
-            .AsNoTracking()
-            .Where(progress => lessonIds.Contains(progress.CourseLessonId))
-            .GroupBy(progress => progress.CourseLessonId)
-            .Select(group => new
-            {
-                LessonId = group.Key,
-                StartedStudents = group.Select(progress => progress.UserId).Distinct().Count(),
-                CompletedStudents = group
-                    .Where(progress => progress.IsCompleted)
-                    .Select(progress => progress.UserId)
-                    .Distinct()
-                    .Count()
-            })
-            .ToDictionaryAsync(item => item.LessonId, cancellationToken);
+        var progressRows = await GetCourseProgressRowsAsync(shop.Id, cancellationToken);
+        var lessonProgress = progressRows
+            .Where(progress =>
+                progress.CourseId == course.Id &&
+                lessonIds.Contains(progress.LessonId))
+            .GroupBy(progress => progress.LessonId)
+            .ToDictionary(
+                group => group.Key,
+                group => new
+                {
+                    StartedStudents = group
+                        .Select(progress => progress.UserId)
+                        .Distinct()
+                        .Count(),
+                    CompletedStudents = group
+                        .Where(progress => progress.IsCompleted)
+                        .Select(progress => progress.UserId)
+                        .Distinct()
+                        .Count()
+                });
 
         var lessonDtos = lessons
             .Select(lesson =>
@@ -557,13 +564,11 @@ public sealed class SellerAnalyticsService : ISellerAnalyticsService
             .ToDictionaryAsync(item => item.ProductId, item => new { item.Sales, item.Revenue }, cancellationToken);
 
         var courseIds = courses.Select(course => course.CourseId).ToList();
-        var progressRows = await _dbContext.UserLessonProgresses
-            .AsNoTracking()
-            .Where(progress =>
-                courseIds.Contains(progress.CourseLesson.CourseSection.CourseId))
+        var progressRows = (await GetCourseProgressRowsAsync(shopId, cancellationToken))
+            .Where(progress => courseIds.Contains(progress.CourseId))
             .GroupBy(progress => new
             {
-                progress.CourseLesson.CourseSection.CourseId,
+                progress.CourseId,
                 progress.UserId
             })
             .Select(group => new
@@ -572,7 +577,7 @@ public sealed class SellerAnalyticsService : ISellerAnalyticsService
                 group.Key.UserId,
                 CompletedLessons = group.Count(progress => progress.IsCompleted)
             })
-            .ToListAsync(cancellationToken);
+            .ToList();
 
         return courses.ToDictionary(
             course => course.CourseId,
@@ -623,6 +628,56 @@ public sealed class SellerAnalyticsService : ISellerAnalyticsService
         return coursesWithStudents.Count == 0
             ? 0
             : Math.Round(coursesWithStudents.Average(stats => stats.AverageCompletionRate), 2);
+    }
+
+    private async Task<List<CourseProgressRow>> GetCourseProgressRowsAsync(
+        Guid shopId,
+        CancellationToken cancellationToken)
+    {
+        var connection = _dbContext.Database.GetDbConnection();
+        var openedHere = connection.State != ConnectionState.Open;
+        if (openedHere)
+        {
+            await _dbContext.Database.OpenConnectionAsync(cancellationToken);
+        }
+
+        try
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText = """
+                SELECT course_id, lesson_id, student_user_id, is_completed
+                FROM public.get_seller_course_lesson_progress(CAST(@shop_id AS uuid))
+                """;
+            AddParameter(command, "shop_id", shopId);
+
+            var rows = new List<CourseProgressRow>();
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                rows.Add(new CourseProgressRow(
+                    reader.GetGuid(0),
+                    reader.GetGuid(1),
+                    reader.GetGuid(2),
+                    reader.GetBoolean(3)));
+            }
+
+            return rows;
+        }
+        finally
+        {
+            if (openedHere)
+            {
+                await _dbContext.Database.CloseConnectionAsync();
+            }
+        }
+    }
+
+    private static void AddParameter(DbCommand command, string name, object value)
+    {
+        var parameter = command.CreateParameter();
+        parameter.ParameterName = name;
+        parameter.Value = value;
+        command.Parameters.Add(parameter);
     }
 
     private static DateRange NormalizeRange(DateTime? startDate, DateTime? endDate)
@@ -715,6 +770,12 @@ public sealed class SellerAnalyticsService : ISellerAnalyticsService
         Guid? UserId,
         string? SessionId,
         string? IpAddress);
+
+    private sealed record CourseProgressRow(
+        Guid CourseId,
+        Guid LessonId,
+        Guid UserId,
+        bool IsCompleted);
 
     private sealed record CourseBasic(
         Guid CourseId,
