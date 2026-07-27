@@ -251,7 +251,28 @@ public static class ServiceExtensions
 
         services.Configure<EmailSettings>(configuration.GetSection("Email"));
         services.PostConfigure<EmailSettings>(ApplyEmailEnvironmentFallbacks);
+        services.Configure<ResendInboundSettings>(
+            configuration.GetSection("ResendInbound"));
+        services.PostConfigure<ResendInboundSettings>(settings =>
+        {
+            settings.ApiKey = GetFirstNonWhiteSpace(
+                Environment.GetEnvironmentVariable("RESEND_INBOUND_API_KEY"),
+                settings.ApiKey);
+            settings.WebhookSecret = GetFirstNonWhiteSpace(
+                Environment.GetEnvironmentVariable("RESEND_WEBHOOK_SECRET"),
+                settings.WebhookSecret);
+            settings.SupportAddress = GetFirstNonWhiteSpace(
+                    Environment.GetEnvironmentVariable("RESEND_SUPPORT_ADDRESS"),
+                    settings.SupportAddress,
+                    "support@craftoramedya.com")
+                ?? "support@craftoramedya.com";
+        });
         services.AddHttpClient("Resend", client =>
+        {
+            client.BaseAddress = new Uri("https://api.resend.com/");
+            client.Timeout = TimeSpan.FromSeconds(30);
+        });
+        services.AddHttpClient("ResendInbound", client =>
         {
             client.BaseAddress = new Uri("https://api.resend.com/");
             client.Timeout = TimeSpan.FromSeconds(30);
@@ -278,6 +299,7 @@ public static class ServiceExtensions
         services.AddScoped<IAdminService, AdminService>();
         services.AddScoped<IAdminEmailCampaignService, AdminEmailCampaignService>();
         services.AddScoped<IAdminCampaignEmailDeliveryService, AdminCampaignEmailDeliveryService>();
+        services.AddScoped<IResendInboundService, ResendInboundService>();
         services.AddScoped<ISupportTicketService, SupportTicketService>();
         services.AddScoped<IAnalyticsEventService, AnalyticsEventService>();
         services.AddScoped<ICompetitionService, CompetitionService>();
