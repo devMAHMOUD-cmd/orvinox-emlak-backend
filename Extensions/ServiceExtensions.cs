@@ -929,28 +929,32 @@ public static class ServiceExtensions
         settings.Provider = "resend";
 
         settings.ApiKey = GetValueOrFallback(
-            settings.ApiKey,
             Environment.GetEnvironmentVariable("RESEND_API_KEY"),
             Environment.GetEnvironmentVariable("Email__Resend__ApiKey"),
-            Environment.GetEnvironmentVariable("Resend__ApiKey"));
+            Environment.GetEnvironmentVariable("Resend__ApiKey"),
+            settings.ApiKey);
 
         settings.Resend.ApiKey = GetValueOrFallback(
-            settings.Resend.ApiKey,
-            settings.ApiKey,
             Environment.GetEnvironmentVariable("RESEND_API_KEY"),
             Environment.GetEnvironmentVariable("Email__Resend__ApiKey"),
-            Environment.GetEnvironmentVariable("Resend__ApiKey"));
+            Environment.GetEnvironmentVariable("Resend__ApiKey"),
+            settings.Resend.ApiKey,
+            settings.ApiKey);
 
         settings.FromEmail = GetValueOrFallback(
-            settings.FromEmail,
             Environment.GetEnvironmentVariable("EMAIL_FROM"),
+            settings.FromEmail,
             "onboarding@resend.dev");
 
         settings.FromName = GetValueOrFallback(
-            settings.FromName,
             Environment.GetEnvironmentVariable("EMAIL_FROM_NAME"),
+            settings.FromName,
             "Craftora");
 
+        settings.ReplyTo = GetFirstNonWhiteSpace(
+            Environment.GetEnvironmentVariable("EMAIL_REPLY_TO"),
+            Environment.GetEnvironmentVariable("Email__ReplyTo"),
+            settings.ReplyTo);
     }
 
     private static string GetValueOrFallback(params string?[] values)

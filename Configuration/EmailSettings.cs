@@ -6,6 +6,7 @@ public sealed class EmailSettings
     public string? ApiKey { get; set; }
     public string FromEmail { get; set; } = "onboarding@resend.dev";
     public string FromName { get; set; } = "Craftora";
+    public string? ReplyTo { get; set; }
     public ResendEmailSettings Resend { get; set; } = new();
 }
 

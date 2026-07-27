@@ -68,6 +68,11 @@ public sealed class EmailService : IEmailService
             [isHtml ? "html" : "text"] = body
         };
 
+        if (!string.IsNullOrWhiteSpace(_settings.ReplyTo))
+        {
+            payload["reply_to"] = _settings.ReplyTo.Trim();
+        }
+
         using var request = new HttpRequestMessage(HttpMethod.Post, "emails");
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
         request.Content = new StringContent(

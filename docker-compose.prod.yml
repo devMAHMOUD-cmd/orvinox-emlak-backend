@@ -158,6 +158,7 @@ services:
       Email__Resend__ApiKey: "${RESEND_API_KEY}"
       Email__FromEmail: "${EMAIL_FROM}"
       Email__FromName: "${EMAIL_FROM_NAME:-Craftora}"
+      Email__ReplyTo: "${EMAIL_REPLY_TO:-}"
       Stripe__PublishableKey: "${STRIPE_PUBLISHABLE_KEY}"
       Stripe__SecretKey: "${STRIPE_SECRET_KEY}"
       Stripe__WebhookSecret: "${STRIPE_WEBHOOK_SECRET}"
