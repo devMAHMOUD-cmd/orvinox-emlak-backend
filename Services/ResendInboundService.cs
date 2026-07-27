@@ -322,6 +322,7 @@ public sealed partial class ResendInboundService : IResendInboundService
             ? text
             : HtmlToText(html);
         value = ProhibitedControlCharactersRegex().Replace(value ?? string.Empty, string.Empty);
+        value = EmailReplyTextNormalizer.TrimQuotedHistory(value);
         value = ExcessiveBlankLinesRegex().Replace(value.Trim(), "\n\n");
         if (string.IsNullOrWhiteSpace(value))
         {
