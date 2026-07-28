@@ -7,6 +7,7 @@ using CraftoraApi.Middleware;
 using CraftoraApi.Models.Entities;
 using CraftoraApi.Models.Enums;
 using CraftoraApi.Redis;
+using CraftoraApi.Services.Discovery;
 using CraftoraApi.Services.Interfaces;
 using Microsoft.EntityFrameworkCore;
 using System.Data;
@@ -492,6 +493,17 @@ public sealed class OrderService : IOrderService
             order.Id,
             "analytics",
             () => _analyticsEventService.TrackPurchaseCompletedAsync(order.Id, buyer.Id));
+
+        await TryRunPostCheckoutActionAsync(
+            order.Id,
+            "discovery-cache",
+            () => Task.WhenAll(
+                _cacheService.RemoveAsync(DiscoveryCacheKeys.ReelsSnapshot(buyer.Id)),
+                _cacheService.RemoveAsync(
+                    DiscoveryCacheKeys.ProductSnapshot(buyer.Id, "product")),
+                _cacheService.RemoveAsync(
+                    DiscoveryCacheKeys.ProductSnapshot(buyer.Id, "course")),
+                _cacheService.RemoveAsync(DiscoveryCacheKeys.MixedSnapshot(buyer.Id))));
 
         await TryRunPostCheckoutActionAsync(
             order.Id,

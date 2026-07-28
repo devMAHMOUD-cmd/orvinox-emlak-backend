@@ -14,11 +14,30 @@ namespace CraftoraApi.Controllers;
 public sealed class DiscoveryController : ControllerBase
 {
     private readonly IDiscoveryEventService _discoveryEventService;
+    private readonly IDiscoveryFeedService _discoveryFeedService;
 
-    public DiscoveryController(IDiscoveryEventService discoveryEventService)
+    public DiscoveryController(
+        IDiscoveryEventService discoveryEventService,
+        IDiscoveryFeedService discoveryFeedService)
     {
         _discoveryEventService = discoveryEventService
             ?? throw new ArgumentNullException(nameof(discoveryEventService));
+        _discoveryFeedService = discoveryFeedService
+            ?? throw new ArgumentNullException(nameof(discoveryFeedService));
+    }
+
+    [HttpGet("feed")]
+    [EnableRateLimiting("general")]
+    public async Task<IActionResult> GetFeedAsync(
+        [FromQuery] string? cursor = null,
+        [FromQuery] int pageSize = 10,
+        CancellationToken cancellationToken = default)
+    {
+        return Ok(await _discoveryFeedService.GetFeedAsync(
+            GetCurrentUserId(),
+            cursor,
+            pageSize,
+            cancellationToken));
     }
 
     [HttpPost("events")]

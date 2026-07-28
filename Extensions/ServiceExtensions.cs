@@ -313,8 +313,10 @@ public static class ServiceExtensions
         services.AddScoped<ISellerNotificationPreferenceService, SellerNotificationPreferenceService>();
         services.AddScoped<IWeeklySellerReportService, WeeklySellerReportService>();
         services.AddSingleton<IDiscoveryTrackingTokenService, DiscoveryTrackingTokenService>();
+        services.AddSingleton<IDiscoveryFeedCursorService, DiscoveryFeedCursorService>();
         services.AddScoped<IDiscoveryEventService, DiscoveryEventService>();
         services.AddScoped<IDiscoveryRankingService, DiscoveryRankingService>();
+        services.AddScoped<IDiscoveryFeedService, DiscoveryFeedService>();
         services.AddScoped<IMediaService, MediaService>();
         services.AddScoped<INotificationService, NotificationService>();
         services.AddScoped<ICacheService, CacheService>();

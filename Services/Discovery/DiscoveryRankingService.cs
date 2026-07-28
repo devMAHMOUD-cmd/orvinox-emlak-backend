@@ -8,7 +8,7 @@ namespace CraftoraApi.Services.Discovery;
 
 public sealed class DiscoveryRankingService : IDiscoveryRankingService
 {
-    public const string CurrentRankingVersion = "reels-organic-v1";
+    public const string CurrentRankingVersion = DiscoveryCacheKeys.ReelsRankingVersion;
     private const int CandidateLimit = 500;
     private static readonly TimeSpan SnapshotTtl = TimeSpan.FromMinutes(10);
 
@@ -90,12 +90,17 @@ public sealed class DiscoveryRankingService : IDiscoveryRankingService
         }
 
         return Task.WhenAll(
-            _cacheService.RemoveAsync(GetSnapshotCacheKey(userId), cancellationToken),
             _cacheService.RemoveAsync(
-                GetProductSnapshotCacheKey(userId, "product"),
+                DiscoveryCacheKeys.ReelsSnapshot(userId),
                 cancellationToken),
             _cacheService.RemoveAsync(
-                GetProductSnapshotCacheKey(userId, "course"),
+                DiscoveryCacheKeys.ProductSnapshot(userId, "product"),
+                cancellationToken),
+            _cacheService.RemoveAsync(
+                DiscoveryCacheKeys.ProductSnapshot(userId, "course"),
+                cancellationToken),
+            _cacheService.RemoveAsync(
+                DiscoveryCacheKeys.MixedSnapshot(userId),
                 cancellationToken));
     }
 
@@ -199,12 +204,12 @@ public sealed class DiscoveryRankingService : IDiscoveryRankingService
 
     private static string GetSnapshotCacheKey(Guid userId)
     {
-        return $"discovery:reels:snapshot:{CurrentRankingVersion}:user:{userId:D}";
+        return DiscoveryCacheKeys.ReelsSnapshot(userId);
     }
 
     private static string GetProductSnapshotCacheKey(Guid userId, string contentType)
     {
-        return $"discovery:{contentType}:snapshot:organic-v1:user:{userId:D}";
+        return DiscoveryCacheKeys.ProductSnapshot(userId, contentType);
     }
 
     private static void AddParameter(
