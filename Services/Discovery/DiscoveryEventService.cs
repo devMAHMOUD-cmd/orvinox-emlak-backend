@@ -153,7 +153,7 @@ public sealed class DiscoveryEventService : IDiscoveryEventService
             cancellationToken);
 
         await transaction.CommitAsync(cancellationToken);
-        await _rankingService.InvalidateMediaSnapshotAsync(userId, cancellationToken);
+        await _rankingService.InvalidateSnapshotsAsync(userId, cancellationToken);
         return feedback;
     }
 
@@ -224,7 +224,7 @@ public sealed class DiscoveryEventService : IDiscoveryEventService
             throw new NotFoundException("Discovery geri bildirimi bulunamadi.");
         }
 
-        await _rankingService.InvalidateMediaSnapshotAsync(userId, cancellationToken);
+        await _rankingService.InvalidateSnapshotsAsync(userId, cancellationToken);
     }
 
     private ValidatedEvent ValidateEvent(Guid userId, DiscoveryEventRequestDto request)

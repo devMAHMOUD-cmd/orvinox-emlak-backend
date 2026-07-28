@@ -22,16 +22,20 @@ public sealed class HomeController : ControllerBase
     private readonly AppDbContext _dbContext;
     private readonly IStorageService _storageService;
     private readonly IDiscoveryTrackingTokenService _discoveryTrackingTokenService;
+    private readonly IDiscoveryRankingService _discoveryRankingService;
 
     public HomeController(
         AppDbContext dbContext,
         IStorageService storageService,
-        IDiscoveryTrackingTokenService discoveryTrackingTokenService)
+        IDiscoveryTrackingTokenService discoveryTrackingTokenService,
+        IDiscoveryRankingService discoveryRankingService)
     {
         _dbContext = dbContext ?? throw new ArgumentNullException(nameof(dbContext));
         _storageService = storageService ?? throw new ArgumentNullException(nameof(storageService));
         _discoveryTrackingTokenService = discoveryTrackingTokenService
             ?? throw new ArgumentNullException(nameof(discoveryTrackingTokenService));
+        _discoveryRankingService = discoveryRankingService
+            ?? throw new ArgumentNullException(nameof(discoveryRankingService));
     }
 
     [HttpGet("trending-products")]
@@ -42,6 +46,16 @@ public sealed class HomeController : ControllerBase
     {
         var normalizedPage = Math.Max(page, 1);
         var normalizedPageSize = Math.Clamp(pageSize, 1, 30);
+        var currentUserId = GetOptionalCurrentUserId();
+        if (currentUserId.HasValue)
+        {
+            return Ok(await GetPersonalizedProductsAsync(
+                currentUserId.Value,
+                normalizedPage,
+                normalizedPageSize,
+                cancellationToken));
+        }
+
         var since = DateTime.UtcNow.AddDays(-7);
 
         var products = await _dbContext.Products
@@ -68,7 +82,9 @@ public sealed class HomeController : ControllerBase
             .Take(normalizedPageSize)
             .ToListAsync(cancellationToken);
 
-        return Ok(products.Select(item => new HomeTrendingProductDto(
+        var feedSessionId = Guid.NewGuid();
+        var startPosition = (normalizedPage - 1) * normalizedPageSize;
+        return Ok(products.Select((item, index) => new HomeTrendingProductDto(
             Id: item.Product.Id,
             Title: item.Product.Title,
             Description: item.Product.Description ?? string.Empty,
@@ -82,7 +98,14 @@ public sealed class HomeController : ControllerBase
             ViewCount: item.RecentViews,
             ShopId: item.Product.ShopId,
             ShopName: item.Product.Shop.ShopName,
-            ShopSlug: item.Product.Shop.Slug)));
+            ShopSlug: item.Product.Shop.Slug,
+            TrackingToken: _discoveryTrackingTokenService.Issue(
+                null,
+                "product",
+                item.Product.Id,
+                item.Product.ShopId,
+                feedSessionId,
+                startPosition + index))));
     }
 
     [HttpGet("trending-shops")]
@@ -147,6 +170,15 @@ public sealed class HomeController : ControllerBase
     {
         var normalizedPage = Math.Max(page, 1);
         var normalizedPageSize = Math.Clamp(pageSize, 1, 30);
+        var currentUserId = GetOptionalCurrentUserId();
+        if (currentUserId.HasValue)
+        {
+            return Ok(await GetPersonalizedCoursesAsync(
+                currentUserId.Value,
+                normalizedPage,
+                normalizedPageSize,
+                cancellationToken));
+        }
 
         var courses = await _dbContext.Courses
             .AsNoTracking()
@@ -166,7 +198,9 @@ public sealed class HomeController : ControllerBase
             .Take(normalizedPageSize)
             .ToListAsync(cancellationToken);
 
-        return Ok(courses.Select(course =>
+        var feedSessionId = Guid.NewGuid();
+        var startPosition = (normalizedPage - 1) * normalizedPageSize;
+        return Ok(courses.Select((course, index) =>
         {
             var activeSections = course.CourseSections.Where(section => section.IsActive).ToList();
             var activeLessons = activeSections
@@ -193,7 +227,14 @@ public sealed class HomeController : ControllerBase
                 ShopId: course.Product.ShopId,
                 ShopName: course.Product.Shop.ShopName,
                 ShopSlug: course.Product.Shop.Slug,
-                ShopLogoPublicUrl: GeneratePublicAssetUrl(course.Product.Shop.LogoUrl));
+                ShopLogoPublicUrl: GeneratePublicAssetUrl(course.Product.Shop.LogoUrl),
+                TrackingToken: _discoveryTrackingTokenService.Issue(
+                    null,
+                    "course",
+                    course.Id,
+                    course.Product.ShopId,
+                    feedSessionId,
+                    startPosition + index));
         }));
     }
 
@@ -247,6 +288,144 @@ public sealed class HomeController : ControllerBase
                 item.ShopId,
                 feedSessionId,
                 startPosition + index))));
+    }
+
+    private async Task<List<HomeTrendingProductDto>> GetPersonalizedProductsAsync(
+        Guid userId,
+        int page,
+        int pageSize,
+        CancellationToken cancellationToken)
+    {
+        var rankedIds = await _discoveryRankingService.GetPersonalizedProductIdsAsync(
+            userId,
+            "product",
+            cancellationToken);
+        var pageIds = rankedIds.Skip((page - 1) * pageSize).Take(pageSize).ToList();
+        if (pageIds.Count == 0)
+        {
+            return [];
+        }
+
+        var products = await _dbContext.Products
+            .AsNoTracking()
+            .Include(item => item.Shop)
+            .Where(item => pageIds.Contains(item.Id))
+            .ToListAsync(cancellationToken);
+        var productsById = products.ToDictionary(item => item.Id);
+        var since = DateTime.UtcNow.AddDays(-7);
+        var viewCounts = await _dbContext.AnalyticsEvents
+            .AsNoTracking()
+            .Where(item =>
+                item.ProductId.HasValue &&
+                pageIds.Contains(item.ProductId.Value) &&
+                item.EventType == AnalyticsEventType.ProductView &&
+                item.CreatedAt >= since)
+            .GroupBy(item => item.ProductId!.Value)
+            .Select(group => new { ProductId = group.Key, Count = group.Count() })
+            .ToDictionaryAsync(item => item.ProductId, item => item.Count, cancellationToken);
+        var feedSessionId = Guid.NewGuid();
+        var startPosition = (page - 1) * pageSize;
+
+        return pageIds
+            .Where(productsById.ContainsKey)
+            .Select((productId, index) =>
+            {
+                var product = productsById[productId];
+                return new HomeTrendingProductDto(
+                    Id: product.Id,
+                    Title: product.Title,
+                    Description: product.Description ?? string.Empty,
+                    Price: product.Price,
+                    OriginalPrice: product.OriginalPrice,
+                    Currency: product.Currency ?? "USD",
+                    CoverImagePublicUrl: GeneratePublicAssetUrl(product.CoverImageUrl),
+                    RatingAverage: product.RatingAverage,
+                    ReviewCount: product.ReviewCount ?? 0,
+                    SalesCount: product.SalesCount ?? 0,
+                    ViewCount: viewCounts.GetValueOrDefault(product.Id),
+                    ShopId: product.ShopId,
+                    ShopName: product.Shop.ShopName,
+                    ShopSlug: product.Shop.Slug,
+                    TrackingToken: _discoveryTrackingTokenService.Issue(
+                        userId,
+                        "product",
+                        product.Id,
+                        product.ShopId,
+                        feedSessionId,
+                        startPosition + index));
+            })
+            .ToList();
+    }
+
+    private async Task<List<HomeFeaturedCourseDto>> GetPersonalizedCoursesAsync(
+        Guid userId,
+        int page,
+        int pageSize,
+        CancellationToken cancellationToken)
+    {
+        var rankedIds = await _discoveryRankingService.GetPersonalizedProductIdsAsync(
+            userId,
+            "course",
+            cancellationToken);
+        var pageIds = rankedIds.Skip((page - 1) * pageSize).Take(pageSize).ToList();
+        if (pageIds.Count == 0)
+        {
+            return [];
+        }
+
+        var courses = await _dbContext.Courses
+            .AsNoTracking()
+            .Include(item => item.Product)
+                .ThenInclude(product => product.Shop)
+            .Include(item => item.CourseSections)
+                .ThenInclude(section => section.CourseLessons)
+            .Where(item => pageIds.Contains(item.Id))
+            .ToListAsync(cancellationToken);
+        var coursesById = courses.ToDictionary(item => item.Id);
+        var feedSessionId = Guid.NewGuid();
+        var startPosition = (page - 1) * pageSize;
+
+        return pageIds
+            .Where(coursesById.ContainsKey)
+            .Select((courseId, index) =>
+            {
+                var course = coursesById[courseId];
+                var activeSections = course.CourseSections
+                    .Where(section => section.IsActive)
+                    .ToList();
+                var activeLessons = activeSections
+                    .SelectMany(section => section.CourseLessons)
+                    .Count(lesson => lesson.IsActive);
+
+                return new HomeFeaturedCourseDto(
+                    CourseId: course.Id,
+                    ProductId: course.ProductId,
+                    Title: course.Product.Title,
+                    Description: course.Product.Description ?? string.Empty,
+                    Price: course.Product.Price,
+                    OriginalPrice: course.Product.OriginalPrice,
+                    Currency: course.Product.Currency ?? "USD",
+                    CoverImagePublicUrl: GeneratePublicAssetUrl(course.Product.CoverImageUrl),
+                    Level: course.Level,
+                    TotalDurationInMinutes: course.TotalDurationInMinutes,
+                    LessonCount: activeLessons,
+                    SectionCount: activeSections.Count,
+                    RatingAverage: course.Product.RatingAverage,
+                    ReviewCount: course.Product.ReviewCount ?? 0,
+                    SalesCount: course.Product.SalesCount ?? 0,
+                    ShopId: course.Product.ShopId,
+                    ShopName: course.Product.Shop.ShopName,
+                    ShopSlug: course.Product.Shop.Slug,
+                    ShopLogoPublicUrl: GeneratePublicAssetUrl(course.Product.Shop.LogoUrl),
+                    TrackingToken: _discoveryTrackingTokenService.Issue(
+                        userId,
+                        "course",
+                        course.Id,
+                        course.Product.ShopId,
+                        feedSessionId,
+                        startPosition + index));
+            })
+            .ToList();
     }
 
     private Guid? GetOptionalCurrentUserId()

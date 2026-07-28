@@ -14,7 +14,8 @@ public sealed record HomeTrendingProductDto(
     int ViewCount,
     Guid ShopId,
     string ShopName,
-    string ShopSlug);
+    string ShopSlug,
+    string? TrackingToken = null);
 
 public sealed record HomeTrendingShopDto(
     Guid Id,
@@ -48,7 +49,8 @@ public sealed record HomeFeaturedCourseDto(
     Guid ShopId,
     string ShopName,
     string ShopSlug,
-    string? ShopLogoPublicUrl);
+    string? ShopLogoPublicUrl,
+    string? TrackingToken = null);
 
 public sealed record HomeReelDto(
     Guid Id,

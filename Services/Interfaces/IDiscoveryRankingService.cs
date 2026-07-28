@@ -6,7 +6,12 @@ public interface IDiscoveryRankingService
         Guid userId,
         CancellationToken cancellationToken = default);
 
-    Task InvalidateMediaSnapshotAsync(
+    Task<IReadOnlyList<Guid>> GetPersonalizedProductIdsAsync(
+        Guid userId,
+        string contentType,
+        CancellationToken cancellationToken = default);
+
+    Task InvalidateSnapshotsAsync(
         Guid userId,
         CancellationToken cancellationToken = default);
 }

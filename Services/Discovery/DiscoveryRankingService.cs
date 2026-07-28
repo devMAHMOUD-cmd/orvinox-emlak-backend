@@ -54,7 +54,33 @@ public sealed class DiscoveryRankingService : IDiscoveryRankingService
         return rankedIds;
     }
 
-    public Task InvalidateMediaSnapshotAsync(
+    public async Task<IReadOnlyList<Guid>> GetPersonalizedProductIdsAsync(
+        Guid userId,
+        string contentType,
+        CancellationToken cancellationToken = default)
+    {
+        var normalizedType = contentType?.Trim().ToLowerInvariant();
+        if (userId == Guid.Empty || normalizedType is not ("product" or "course"))
+        {
+            throw new ArgumentException("Discovery product ranking request is invalid.");
+        }
+
+        var cacheKey = GetProductSnapshotCacheKey(userId, normalizedType);
+        var cachedIds = await _cacheService.GetAsync<List<Guid>>(cacheKey, cancellationToken);
+        if (cachedIds is not null)
+        {
+            return cachedIds;
+        }
+
+        var ids = await LoadProductCandidatesAsync(
+            userId,
+            normalizedType,
+            cancellationToken);
+        await _cacheService.SetAsync(cacheKey, ids, SnapshotTtl, cancellationToken);
+        return ids;
+    }
+
+    public Task InvalidateSnapshotsAsync(
         Guid userId,
         CancellationToken cancellationToken = default)
     {
@@ -63,9 +89,14 @@ public sealed class DiscoveryRankingService : IDiscoveryRankingService
             throw new ArgumentException("Discovery user id cannot be empty.", nameof(userId));
         }
 
-        return _cacheService.RemoveAsync(
-            GetSnapshotCacheKey(userId),
-            cancellationToken);
+        return Task.WhenAll(
+            _cacheService.RemoveAsync(GetSnapshotCacheKey(userId), cancellationToken),
+            _cacheService.RemoveAsync(
+                GetProductSnapshotCacheKey(userId, "product"),
+                cancellationToken),
+            _cacheService.RemoveAsync(
+                GetProductSnapshotCacheKey(userId, "course"),
+                cancellationToken));
     }
 
     private async Task<List<DiscoveryRankedMediaCandidate>> LoadCandidatesAsync(
@@ -121,8 +152,69 @@ public sealed class DiscoveryRankingService : IDiscoveryRankingService
         }
     }
 
+    private async Task<List<Guid>> LoadProductCandidatesAsync(
+        Guid userId,
+        string contentType,
+        CancellationToken cancellationToken)
+    {
+        var connection = _dbContext.Database.GetDbConnection();
+        var openedHere = connection.State != ConnectionState.Open;
+        if (openedHere)
+        {
+            await _dbContext.Database.OpenConnectionAsync(cancellationToken);
+        }
+
+        try
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText = """
+                SELECT content_id
+                FROM public.get_personalized_product_candidates(
+                    CAST(@user_id AS uuid),
+                    CAST(@content_type AS text),
+                    CAST(@candidate_limit AS integer))
+                """;
+
+            AddParameter(command, "user_id", userId);
+            AddParameter(command, "content_type", contentType);
+            AddParameter(command, "candidate_limit", CandidateLimit);
+
+            var ids = new List<Guid>();
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                ids.Add(reader.GetGuid(0));
+            }
+
+            return ids;
+        }
+        finally
+        {
+            if (openedHere)
+            {
+                await _dbContext.Database.CloseConnectionAsync();
+            }
+        }
+    }
+
     private static string GetSnapshotCacheKey(Guid userId)
     {
         return $"discovery:reels:snapshot:{CurrentRankingVersion}:user:{userId:D}";
+    }
+
+    private static string GetProductSnapshotCacheKey(Guid userId, string contentType)
+    {
+        return $"discovery:{contentType}:snapshot:organic-v1:user:{userId:D}";
+    }
+
+    private static void AddParameter(
+        System.Data.Common.DbCommand command,
+        string name,
+        object value)
+    {
+        var parameter = command.CreateParameter();
+        parameter.ParameterName = name;
+        parameter.Value = value;
+        command.Parameters.Add(parameter);
     }
 }
