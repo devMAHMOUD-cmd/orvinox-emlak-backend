@@ -389,8 +389,9 @@ public static class ServiceExtensions
             {
                 OnMessageReceived = context =>
                 {
-                    // WebSocket handshake'de access_token query parameter'ından token oku
-                    if (context.Request.Query.TryGetValue("access_token", out var token))
+                    // SignalR WebSocket/SSE clients cannot always send an Authorization header.
+                    if (context.Request.Path.StartsWithSegments("/hubs/notifications") &&
+                        context.Request.Query.TryGetValue("access_token", out var token))
                     {
                         context.Token = token.ToString();
                     }

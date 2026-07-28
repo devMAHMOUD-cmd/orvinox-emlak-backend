@@ -719,12 +719,12 @@ public sealed class MediaService : IMediaService
 
         if (media is null)
         {
-            throw new NotFoundException("Medya bulunamadÄ±.");
+            throw new NotFoundException("Medya bulunamadı.");
         }
 
         if (media.Shop.UserId != userId)
         {
-            throw new ForbiddenException("Bu medyayÄ± silme yetkiniz yok.");
+            throw new ForbiddenException("Bu medyayı silme yetkiniz yok.");
         }
 
         media.IsActive = false;

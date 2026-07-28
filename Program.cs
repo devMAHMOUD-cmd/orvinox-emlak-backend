@@ -55,9 +55,7 @@ class Program
                 restrictedToMinimumLevel: LogEventLevel.Error,
                 retainedFileCountLimit: 90,
                 fileSizeLimitBytes: 104857600)
-
             .CreateLogger();
-
             Log.Information("════════════════════════════════════════════════════════════════════════════════════");
             Log.Information("🚀 Craftora API başlatılıyor...");
             Log.Information("════════════════════════════════════════════════════════════════════════════════════");
@@ -67,8 +65,6 @@ class Program
             // ──────────────────────────────────────────────────────────────────────────────
             DotNetEnv.Env.Load(); // .env dosyasını bulup sistem değişkenlerine yükler
             var builder = WebApplication.CreateBuilder(args);
-
-            // Serilog'u Host'a bağla
             builder.Host.UseSerilog();
             builder.WebHost.UseSentry(options =>
             {
@@ -96,7 +92,6 @@ class Program
             // Kestrel server yapılandırması
             builder.WebHost.ConfigureKestrel(options =>
             {
-                // Server header'ını gizle (security)
                 options.AddServerHeader = false;
 
                 // Max request body size: 10MB (presigned URL ve file upload için)
@@ -126,26 +121,38 @@ class Program
                     var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
                     Log.Information("🔍 Veritabanı durumu kontrol ediliyor...");
 
-                    var pendingMigrations = await dbContext.Database.GetPendingMigrationsAsync();
-
-                    if (pendingMigrations.Any())
+                    var migrations = dbContext.Database.GetMigrations();
+                    if (migrations.Any())
                     {
-                        Log.Information("⏳ {Count} adet migration uygulanıyor...", pendingMigrations.Count());
-                        await dbContext.Database.MigrateAsync();
-                        Log.Information("✅ Veritabanı migration'ları başarıyla uygulandı.");
+                        var pendingMigrations = await dbContext.Database.GetPendingMigrationsAsync();
+                        if (pendingMigrations.Any())
+                        {
+                            Log.Information("⏳ {Count} adet migration uygulanıyor...", pendingMigrations.Count());
+                            await dbContext.Database.MigrateAsync();
+                            Log.Information("✅ Veritabanı migration'ları başarıyla uygulandı.");
+                        }
+                        else
+                        {
+                            Log.Information("✅ Veritabanı migration'ları güncel.");
+                        }
                     }
                     else
                     {
-                        // Eğer projede hiç Migration dosyası yoksa tabloları direkt DbContext modellerinden oluştur
                         Log.Information("🔨 Migration bulunamadı, tablolar modellerden direkt oluşturuluyor...");
                         await dbContext.Database.EnsureCreatedAsync();
                         Log.Information("✅ Veritabanı tabloları başarıyla oluşturuldu.");
                     }
-
                 }
                 catch (Exception ex)
                 {
-                    Log.Error(ex, "❌ Veritabanı tabloları oluşturulurken HATA meydana geldi!");
+                    Log.Fatal(ex, "❌ Veritabanı migration işlemi başarısız oldu.");
+                    throw;
+                }
+
+                if (args.Contains("--migrate-only", StringComparer.OrdinalIgnoreCase))
+                {
+                    Log.Information("✅ Migration-only işlemi tamamlandı.");
+                    return;
                 }
 
                 // 2. STORAGE (MinIO) BUCKET'LARINI HAZIRLA

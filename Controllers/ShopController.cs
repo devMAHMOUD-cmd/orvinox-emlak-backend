@@ -116,7 +116,7 @@ public sealed class ShopController : ControllerBase
         var userId = GetCurrentUserId();
         await _shopService.DeleteShopAsync(id, userId);
 
-        return Ok(new { message = "MaÄŸaza baÅŸarÄ±yla pasife alÄ±ndÄ±." });
+        return Ok(new { message = "Mağaza başarıyla pasife alındı." });
     }
 
     private Guid GetCurrentUserId()

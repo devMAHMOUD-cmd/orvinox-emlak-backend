@@ -4,11 +4,13 @@ using CraftoraApi.Middleware;
 using CraftoraApi.Services.Interfaces;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 
 namespace CraftoraApi.Controllers;
 
 [ApiController]
 [Authorize]
+[EnableRateLimiting("general")]
 [Route("api/orders")]
 public sealed class OrderController : ControllerBase
 {
