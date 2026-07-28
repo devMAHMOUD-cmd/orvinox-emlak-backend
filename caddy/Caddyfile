@@ -1,0 +1,23 @@
+{
+	email adminmmcfcraftora@gmail.com
+}
+
+api.craftoramedya.com {
+	encode gzip
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		-Server
+	}
+	reverse_proxy craftora_api:5000
+}
+
+storage.craftoramedya.com {
+	encode gzip
+	reverse_proxy minio:9000
+}
+
+craftoramedya.com {
+	respond "Craftora" 200
+}
