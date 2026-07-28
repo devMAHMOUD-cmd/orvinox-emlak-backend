@@ -26,4 +26,5 @@ public sealed record MediaResponseDto(
     string Status,
     DateTime? CreatedAt,
     bool IsLiked = false,
-    bool IsSaved = false);
+    bool IsSaved = false,
+    string? TrackingToken = null);

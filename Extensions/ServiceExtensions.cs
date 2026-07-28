@@ -30,6 +30,7 @@ using CraftoraApi.Infrastructure.Services;
 using CraftoraApi.Models.Enums;
 using CraftoraApi.Redis;
 using CraftoraApi.Services;
+using CraftoraApi.Services.Discovery;
 using CraftoraApi.Services.Interfaces;
 using CraftoraApi.Validators;
 using FluentValidation;
@@ -311,6 +312,8 @@ public static class ServiceExtensions
         services.AddScoped<ISellerOrderService, SellerOrderService>();
         services.AddScoped<ISellerNotificationPreferenceService, SellerNotificationPreferenceService>();
         services.AddScoped<IWeeklySellerReportService, WeeklySellerReportService>();
+        services.AddSingleton<IDiscoveryTrackingTokenService, DiscoveryTrackingTokenService>();
+        services.AddScoped<IDiscoveryEventService, DiscoveryEventService>();
         services.AddScoped<IMediaService, MediaService>();
         services.AddScoped<INotificationService, NotificationService>();
         services.AddScoped<ICacheService, CacheService>();

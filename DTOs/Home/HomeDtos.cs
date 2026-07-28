@@ -67,4 +67,5 @@ public sealed record HomeReelDto(
     int ShareCount,
     int CommentCount,
     IReadOnlyList<string> Hashtags,
-    DateTime? CreatedAt);
+    DateTime? CreatedAt,
+    string? TrackingToken = null);

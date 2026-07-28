@@ -35,6 +35,7 @@ public sealed class MediaService : IMediaService
     private readonly IUploadService _uploadService;
     private readonly INotificationService _notificationService;
     private readonly IAnalyticsEventService _analyticsEventService;
+    private readonly IDiscoveryTrackingTokenService _discoveryTrackingTokenService;
 
     public MediaService(
         AppDbContext dbContext,
@@ -43,7 +44,8 @@ public sealed class MediaService : IMediaService
         IStorageService storageService,
         IUploadService uploadService,
         INotificationService notificationService,
-        IAnalyticsEventService analyticsEventService)
+        IAnalyticsEventService analyticsEventService,
+        IDiscoveryTrackingTokenService discoveryTrackingTokenService)
     {
         _dbContext = dbContext ?? throw new ArgumentNullException(nameof(dbContext));
         _rabbitMqPublisher = rabbitMqPublisher ?? throw new ArgumentNullException(nameof(rabbitMqPublisher));
@@ -52,6 +54,8 @@ public sealed class MediaService : IMediaService
         _uploadService = uploadService ?? throw new ArgumentNullException(nameof(uploadService));
         _notificationService = notificationService ?? throw new ArgumentNullException(nameof(notificationService));
         _analyticsEventService = analyticsEventService ?? throw new ArgumentNullException(nameof(analyticsEventService));
+        _discoveryTrackingTokenService = discoveryTrackingTokenService
+            ?? throw new ArgumentNullException(nameof(discoveryTrackingTokenService));
     }
 
     public async Task<List<MediaResponseDto>> GetFeedAsync(Guid? currentUserId, int page = 1, int pageSize = 10)
@@ -69,7 +73,12 @@ public sealed class MediaService : IMediaService
                 await _cacheService.RemoveAsync(cacheKey);
             }
 
-            return await ApplyUserMediaStateAsync(activeShopFeed, currentUserId);
+            var feedWithState = await ApplyUserMediaStateAsync(activeShopFeed, currentUserId);
+            return ApplyDiscoveryTrackingTokens(
+                feedWithState,
+                currentUserId,
+                normalizedPage,
+                normalizedPageSize);
         }
 
         var media = await _dbContext.Media
@@ -88,7 +97,12 @@ public sealed class MediaService : IMediaService
         var anonymousFeed = media.Select(MapToResponse).ToList();
         await _cacheService.SetAsync(cacheKey, anonymousFeed, FeedCacheTtl);
 
-        return await ApplyUserMediaStateAsync(anonymousFeed, currentUserId);
+        var response = await ApplyUserMediaStateAsync(anonymousFeed, currentUserId);
+        return ApplyDiscoveryTrackingTokens(
+            response,
+            currentUserId,
+            normalizedPage,
+            normalizedPageSize);
     }
 
     public async Task<MediaResponseDto> GetMediaByIdAsync(Guid mediaId, Guid? currentUserId)
@@ -807,6 +821,34 @@ public sealed class MediaService : IMediaService
             {
                 IsLiked = likedSet.Contains(item.Id),
                 IsSaved = savedSet.Contains(item.Id)
+            })
+            .ToList();
+    }
+
+    private List<MediaResponseDto> ApplyDiscoveryTrackingTokens(
+        List<MediaResponseDto> feed,
+        Guid? currentUserId,
+        int page,
+        int pageSize)
+    {
+        if (feed.Count == 0)
+        {
+            return feed;
+        }
+
+        var feedSessionId = Guid.NewGuid();
+        var startPosition = (page - 1) * pageSize;
+
+        return feed
+            .Select((item, index) => item with
+            {
+                TrackingToken = _discoveryTrackingTokenService.Issue(
+                    currentUserId,
+                    "media",
+                    item.Id,
+                    item.ShopId,
+                    feedSessionId,
+                    startPosition + index)
             })
             .ToList();
     }

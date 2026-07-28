@@ -21,11 +21,17 @@ public sealed class HomeController : ControllerBase
 
     private readonly AppDbContext _dbContext;
     private readonly IStorageService _storageService;
+    private readonly IDiscoveryTrackingTokenService _discoveryTrackingTokenService;
 
-    public HomeController(AppDbContext dbContext, IStorageService storageService)
+    public HomeController(
+        AppDbContext dbContext,
+        IStorageService storageService,
+        IDiscoveryTrackingTokenService discoveryTrackingTokenService)
     {
         _dbContext = dbContext ?? throw new ArgumentNullException(nameof(dbContext));
         _storageService = storageService ?? throw new ArgumentNullException(nameof(storageService));
+        _discoveryTrackingTokenService = discoveryTrackingTokenService
+            ?? throw new ArgumentNullException(nameof(discoveryTrackingTokenService));
     }
 
     [HttpGet("trending-products")]
@@ -212,7 +218,11 @@ public sealed class HomeController : ControllerBase
             .Take(normalizedPageSize)
             .ToListAsync(cancellationToken);
 
-        return Ok(media.Select(item => new HomeReelDto(
+        var currentUserId = GetOptionalCurrentUserId();
+        var feedSessionId = Guid.NewGuid();
+        var startPosition = (normalizedPage - 1) * normalizedPageSize;
+
+        return Ok(media.Select((item, index) => new HomeReelDto(
             Id: item.Id,
             ShopId: item.ShopId,
             ShopName: item.Shop.ShopName,
@@ -229,7 +239,14 @@ public sealed class HomeController : ControllerBase
             ShareCount: item.ShareCount ?? 0,
             CommentCount: item.CommentCount ?? 0,
             Hashtags: item.Hashtags ?? new List<string>(),
-            CreatedAt: item.CreatedAt)));
+            CreatedAt: item.CreatedAt,
+            TrackingToken: _discoveryTrackingTokenService.Issue(
+                currentUserId,
+                "media",
+                item.Id,
+                item.ShopId,
+                feedSessionId,
+                startPosition + index))));
     }
 
     private Guid? GetOptionalCurrentUserId()
