@@ -697,12 +697,13 @@ public static class ServiceExtensions
 
         services.AddRateLimiter(options =>
         {
-            options.AddPolicy("GlobalLimit", context =>
+            options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(
+                context =>
                 RateLimitPartition.GetFixedWindowLimiter(
                     GetRateLimitPartitionKey(context),
                     _ => new FixedWindowRateLimiterOptions
                     {
-                        PermitLimit = 100,
+                        PermitLimit = generalLimit,
                         Window = TimeSpan.FromMinutes(1),
                         QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
                         QueueLimit = 0,

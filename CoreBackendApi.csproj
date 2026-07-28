@@ -4,11 +4,14 @@
     <TargetFramework>net9.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <DefaultItemExcludes>$(DefaultItemExcludes);$(MSBuildProjectDirectory)\Tests\**</DefaultItemExcludes>
+    <DefaultItemExcludes>$(DefaultItemExcludes);Tests\**;Tests/**</DefaultItemExcludes>
   </PropertyGroup>
 
   <ItemGroup>
     <Compile Remove="Tests\**\*.cs" />
+    <Content Remove="Tests\**" />
+    <EmbeddedResource Remove="Tests\**" />
+    <None Remove="Tests\**" />
   </ItemGroup>
 
   <ItemGroup>

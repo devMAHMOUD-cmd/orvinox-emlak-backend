@@ -2,6 +2,7 @@ using CraftoraApi.Middleware;
 using CraftoraApi.Hubs;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.HttpOverrides;
+using Microsoft.AspNetCore.RateLimiting;
 using Serilog;
 
 namespace CraftoraApi.Extensions;
@@ -101,20 +102,26 @@ public static class MiddlewareExtensions
             });
         }
 
-        app.MapHealthChecks("/health", new HealthCheckOptions
-        {
-            ResponseWriter = environment.IsDevelopment()
-                ? WriteHealthCheckResponseAsync
-                : WritePublicHealthCheckResponseAsync
-        });
+        app.MapHealthChecks(
+                "/health",
+                new HealthCheckOptions
+                {
+                    ResponseWriter = environment.IsDevelopment()
+                        ? WriteHealthCheckResponseAsync
+                        : WritePublicHealthCheckResponseAsync
+                })
+            .DisableRateLimiting();
 
         if (environment.IsDevelopment())
         {
-            app.MapHealthChecks("/health/detailed", new HealthCheckOptions
-            {
-                Predicate = _ => true,
-                ResponseWriter = WriteHealthCheckResponseAsync
-            });
+            app.MapHealthChecks(
+                    "/health/detailed",
+                    new HealthCheckOptions
+                    {
+                        Predicate = _ => true,
+                        ResponseWriter = WriteHealthCheckResponseAsync
+                    })
+                .DisableRateLimiting();
         }
 
         app.MapControllers();
