@@ -314,6 +314,7 @@ public static class ServiceExtensions
         services.AddScoped<IWeeklySellerReportService, WeeklySellerReportService>();
         services.AddSingleton<IDiscoveryTrackingTokenService, DiscoveryTrackingTokenService>();
         services.AddScoped<IDiscoveryEventService, DiscoveryEventService>();
+        services.AddScoped<IDiscoveryRankingService, DiscoveryRankingService>();
         services.AddScoped<IMediaService, MediaService>();
         services.AddScoped<INotificationService, NotificationService>();
         services.AddScoped<ICacheService, CacheService>();

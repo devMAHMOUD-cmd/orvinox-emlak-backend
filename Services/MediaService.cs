@@ -36,6 +36,7 @@ public sealed class MediaService : IMediaService
     private readonly INotificationService _notificationService;
     private readonly IAnalyticsEventService _analyticsEventService;
     private readonly IDiscoveryTrackingTokenService _discoveryTrackingTokenService;
+    private readonly IDiscoveryRankingService _discoveryRankingService;
 
     public MediaService(
         AppDbContext dbContext,
@@ -45,7 +46,8 @@ public sealed class MediaService : IMediaService
         IUploadService uploadService,
         INotificationService notificationService,
         IAnalyticsEventService analyticsEventService,
-        IDiscoveryTrackingTokenService discoveryTrackingTokenService)
+        IDiscoveryTrackingTokenService discoveryTrackingTokenService,
+        IDiscoveryRankingService discoveryRankingService)
     {
         _dbContext = dbContext ?? throw new ArgumentNullException(nameof(dbContext));
         _rabbitMqPublisher = rabbitMqPublisher ?? throw new ArgumentNullException(nameof(rabbitMqPublisher));
@@ -56,12 +58,23 @@ public sealed class MediaService : IMediaService
         _analyticsEventService = analyticsEventService ?? throw new ArgumentNullException(nameof(analyticsEventService));
         _discoveryTrackingTokenService = discoveryTrackingTokenService
             ?? throw new ArgumentNullException(nameof(discoveryTrackingTokenService));
+        _discoveryRankingService = discoveryRankingService
+            ?? throw new ArgumentNullException(nameof(discoveryRankingService));
     }
 
     public async Task<List<MediaResponseDto>> GetFeedAsync(Guid? currentUserId, int page = 1, int pageSize = 10)
     {
         var normalizedPage = Math.Max(page, 1);
         var normalizedPageSize = Math.Clamp(pageSize, 1, 50);
+
+        if (currentUserId.HasValue)
+        {
+            return await GetPersonalizedFeedAsync(
+                currentUserId.Value,
+                normalizedPage,
+                normalizedPageSize);
+        }
+
         var cacheKey = await GetFeedCacheKeyAsync(normalizedPage, normalizedPageSize);
 
         var cachedFeed = await _cacheService.GetAsync<List<MediaResponseDto>>(cacheKey);
@@ -103,6 +116,42 @@ public sealed class MediaService : IMediaService
             currentUserId,
             normalizedPage,
             normalizedPageSize);
+    }
+
+    private async Task<List<MediaResponseDto>> GetPersonalizedFeedAsync(
+        Guid userId,
+        int page,
+        int pageSize)
+    {
+        var rankedIds = await _discoveryRankingService
+            .GetPersonalizedMediaIdsAsync(userId);
+        var pageIds = rankedIds
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
+            .ToList();
+        if (pageIds.Count == 0)
+        {
+            return [];
+        }
+
+        var media = await _dbContext.Media
+            .AsNoTracking()
+            .Include(item => item.Shop)
+            .Include(item => item.Product)
+            .Where(item => pageIds.Contains(item.Id))
+            .ToListAsync();
+        var mediaById = media.ToDictionary(item => item.Id);
+        var response = pageIds
+            .Where(mediaById.ContainsKey)
+            .Select(mediaId => MapToResponse(mediaById[mediaId]))
+            .ToList();
+        var responseWithState = await ApplyUserMediaStateAsync(response, userId);
+
+        return ApplyDiscoveryTrackingTokens(
+            responseWithState,
+            userId,
+            page,
+            pageSize);
     }
 
     public async Task<MediaResponseDto> GetMediaByIdAsync(Guid mediaId, Guid? currentUserId)
