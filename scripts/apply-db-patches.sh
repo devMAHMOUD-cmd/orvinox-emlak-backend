@@ -5,6 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENV_FILE="${ENV_FILE:-${ROOT_DIR}/.env.production}"
 COMPOSE_FILE="${COMPOSE_FILE:-${ROOT_DIR}/docker-compose.prod.yml}"
 POSTGRES_SERVICE="${POSTGRES_SERVICE:-postgres}"
+PATCH_POSTGRES_USER="${PATCH_POSTGRES_USER:-postgres}"
 MODE="${1:-apply}"
 LOCK_DIR="${ROOT_DIR}/.db-patch-lock"
 
@@ -43,7 +44,7 @@ trap 'rmdir "${LOCK_DIR}" 2>/dev/null || true' EXIT
 
 compose=(docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}")
 psql=("${compose[@]}" exec -T "${POSTGRES_SERVICE}" psql
-  -U "${POSTGRES_USER:-postgres}"
+  -U "${PATCH_POSTGRES_USER}"
   -d "${POSTGRES_DB:-craftora_db}"
   -v ON_ERROR_STOP=1
   -P pager=off)

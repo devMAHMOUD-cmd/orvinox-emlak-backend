@@ -17,6 +17,7 @@ set +a
 
 BACKUP_DIR="${BACKUP_DIR:-/backups}"
 POSTGRES_CONTAINER="${POSTGRES_CONTAINER:-postgres_server}"
+BACKUP_POSTGRES_USER="${BACKUP_POSTGRES_USER:-postgres}"
 HEALTH_URL="${HEALTH_URL:-https://api.craftoramedya.com/health}"
 TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
 BACKUP_PATH="${BACKUP_DIR}/craftora_pre_deploy_${TIMESTAMP}.dump"
@@ -28,7 +29,7 @@ umask 077
 
 echo "Creating PostgreSQL backup: ${BACKUP_PATH}"
 docker exec "${POSTGRES_CONTAINER}" pg_dump \
-  -U "${POSTGRES_USER:-postgres}" \
+  -U "${BACKUP_POSTGRES_USER}" \
   -d "${POSTGRES_DB:-craftora_db}" \
   --format=custom > "${BACKUP_PATH}"
 test -s "${BACKUP_PATH}"
