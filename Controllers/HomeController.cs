@@ -1,6 +1,7 @@
 using CraftoraApi.Data;
 using CraftoraApi.DTOs.Home;
 using CraftoraApi.Models.Enums;
+using CraftoraApi.Services.Discovery;
 using CraftoraApi.Services.Interfaces;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -203,7 +204,7 @@ public sealed class HomeController : ControllerBase
             .AsNoTracking()
             .Include(item => item.Shop)
             .Include(item => item.Product)
-            .Where(item => item.IsActive == true && item.Shop.IsActive == true)
+            .Where(DiscoveryEligibility.ReadyMedia)
             .OrderByDescending(item => item.ViewCount ?? 0)
             .ThenByDescending(item => item.LikeCount ?? 0)
             .ThenByDescending(item => item.CreatedAt)
