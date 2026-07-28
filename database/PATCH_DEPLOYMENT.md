@@ -36,8 +36,7 @@ Database administration defaults to the container-local `postgres` role.
 Override it with `PATCH_POSTGRES_USER` or `BACKUP_POSTGRES_USER` when needed.
 
 For a new database, start PostgreSQL first and run the normal deployment
-without baseline mode. Because the legacy EF migration sequence predates the
-current baseline, the API creates an empty database from the current EF model
-and records the existing migrations as its baseline. The SQL patch runner then
-applies every dated patch in order. Databases that already contain tables
-continue to use normal pending EF migrations.
+without baseline mode. The deploy script loads `database/production-seed.sql`
+only when the `public` schema has no tables. It then applies pending EF
+migrations and every dated SQL patch in order. A non-empty database without EF
+migration history is rejected instead of being modified ambiguously.

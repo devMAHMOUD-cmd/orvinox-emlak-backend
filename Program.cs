@@ -121,30 +121,26 @@ class Program
                     var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
                     Log.Information("🔍 Veritabanı durumu kontrol ediliyor...");
 
-                    var bootstrapResult = await DatabaseBootstrapper.InitializeAsync(
-                        dbContext);
-                    if (bootstrapResult.CreatedFromCurrentModel)
+                    var migrations = dbContext.Database.GetMigrations();
+                    if (migrations.Any())
                     {
-                        if (bootstrapResult.AppliedMigrationCount > 0)
+                        var pendingMigrations = await dbContext.Database.GetPendingMigrationsAsync();
+                        if (pendingMigrations.Any())
                         {
-                            Log.Information(
-                                "✅ Boş veritabanı güncel modelden oluşturuldu ve {Count} migration kaydı baseline edildi.",
-                                bootstrapResult.AppliedMigrationCount);
+                            Log.Information("⏳ {Count} adet migration uygulanıyor...", pendingMigrations.Count());
+                            await dbContext.Database.MigrateAsync();
+                            Log.Information("✅ Veritabanı migration'ları başarıyla uygulandı.");
                         }
                         else
                         {
-                            Log.Information("✅ Veritabanı tabloları güncel modelden oluşturuldu.");
+                            Log.Information("✅ Veritabanı migration'ları güncel.");
                         }
-                    }
-                    else if (bootstrapResult.AppliedMigrationCount > 0)
-                    {
-                        Log.Information(
-                            "✅ {Count} adet migration başarıyla uygulandı.",
-                            bootstrapResult.AppliedMigrationCount);
                     }
                     else
                     {
-                        Log.Information("✅ Veritabanı migration'ları güncel.");
+                        Log.Information("🔨 Migration bulunamadı, tablolar modellerden direkt oluşturuluyor...");
+                        await dbContext.Database.EnsureCreatedAsync();
+                        Log.Information("✅ Veritabanı tabloları başarıyla oluşturuldu.");
                     }
                 }
                 catch (Exception ex)

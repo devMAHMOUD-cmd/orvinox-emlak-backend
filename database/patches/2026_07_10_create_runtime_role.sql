@@ -22,7 +22,6 @@ BEGIN
         CREATE ROLE craftora_app
             WITH
             LOGIN
-            PASSWORD 'Craftora_App_2026_xK9mP2vL'
             NOSUPERUSER
             NOBYPASSRLS
             NOCREATEDB

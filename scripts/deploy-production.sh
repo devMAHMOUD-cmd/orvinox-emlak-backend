@@ -36,6 +36,10 @@ test -s "${BACKUP_PATH}"
 docker exec -i "${POSTGRES_CONTAINER}" pg_restore --list \
   < "${BACKUP_PATH}" >/dev/null
 
+echo "Checking whether the database needs its canonical base schema."
+ENV_FILE="${ENV_FILE}" COMPOSE_FILE="${COMPOSE_FILE}" \
+  bash "${ROOT_DIR}/scripts/bootstrap-production-db.sh"
+
 echo "Building API image."
 "${compose[@]}" build craftora_api
 
