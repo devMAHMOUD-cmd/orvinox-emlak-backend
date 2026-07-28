@@ -26,14 +26,18 @@ public sealed class DiscoveryEventService : IDiscoveryEventService
 
     private readonly AppDbContext _dbContext;
     private readonly IDiscoveryTrackingTokenService _trackingTokenService;
+    private readonly IDiscoveryRankingService _rankingService;
 
     public DiscoveryEventService(
         AppDbContext dbContext,
-        IDiscoveryTrackingTokenService trackingTokenService)
+        IDiscoveryTrackingTokenService trackingTokenService,
+        IDiscoveryRankingService rankingService)
     {
         _dbContext = dbContext ?? throw new ArgumentNullException(nameof(dbContext));
         _trackingTokenService = trackingTokenService
             ?? throw new ArgumentNullException(nameof(trackingTokenService));
+        _rankingService = rankingService
+            ?? throw new ArgumentNullException(nameof(rankingService));
     }
 
     public async Task<DiscoveryEventBatchResponseDto> RecordBatchAsync(
@@ -149,6 +153,7 @@ public sealed class DiscoveryEventService : IDiscoveryEventService
             cancellationToken);
 
         await transaction.CommitAsync(cancellationToken);
+        await _rankingService.InvalidateMediaSnapshotAsync(userId, cancellationToken);
         return feedback;
     }
 
@@ -218,6 +223,8 @@ public sealed class DiscoveryEventService : IDiscoveryEventService
         {
             throw new NotFoundException("Discovery geri bildirimi bulunamadi.");
         }
+
+        await _rankingService.InvalidateMediaSnapshotAsync(userId, cancellationToken);
     }
 
     private ValidatedEvent ValidateEvent(Guid userId, DiscoveryEventRequestDto request)

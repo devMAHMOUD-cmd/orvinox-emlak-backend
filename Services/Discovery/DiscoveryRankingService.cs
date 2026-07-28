@@ -54,6 +54,20 @@ public sealed class DiscoveryRankingService : IDiscoveryRankingService
         return rankedIds;
     }
 
+    public Task InvalidateMediaSnapshotAsync(
+        Guid userId,
+        CancellationToken cancellationToken = default)
+    {
+        if (userId == Guid.Empty)
+        {
+            throw new ArgumentException("Discovery user id cannot be empty.", nameof(userId));
+        }
+
+        return _cacheService.RemoveAsync(
+            GetSnapshotCacheKey(userId),
+            cancellationToken);
+    }
+
     private async Task<List<DiscoveryRankedMediaCandidate>> LoadCandidatesAsync(
         Guid userId,
         CancellationToken cancellationToken)
