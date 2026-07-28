@@ -93,9 +93,12 @@ for patch_file in "${patch_files[@]}"; do
   patch_name="$(basename "${patch_file}")"
   checksum="$(sha256sum "${patch_file}" | awk '{print $1}')"
   recorded_checksum="$("${psql[@]}" -At \
-    --set=patch_name="${patch_name}" \
-    -c "SELECT checksum_sha256 FROM public.schema_patch_history
-        WHERE patch_name = :'patch_name';")"
+    --set=patch_name="${patch_name}" <<'SQL'
+SELECT checksum_sha256
+FROM public.schema_patch_history
+WHERE patch_name = :'patch_name';
+SQL
+)"
 
   if [[ -n "${recorded_checksum}" ]]; then
     if [[ "${recorded_checksum}" != "${checksum}" ]]; then
