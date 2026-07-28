@@ -46,7 +46,9 @@ public sealed class DiscoveryTrackingTokenService : IDiscoveryTrackingTokenServi
         Guid contentId,
         Guid shopId,
         Guid feedSessionId,
-        int position)
+        int position,
+        bool isSponsored = false,
+        Guid? boostId = null)
     {
         if (contentId == Guid.Empty || shopId == Guid.Empty || feedSessionId == Guid.Empty)
         {
@@ -56,6 +58,11 @@ public sealed class DiscoveryTrackingTokenService : IDiscoveryTrackingTokenServi
         if (position < 0)
         {
             throw new ArgumentOutOfRangeException(nameof(position));
+        }
+
+        if (isSponsored != boostId.HasValue || boostId == Guid.Empty)
+        {
+            throw new ArgumentException("Discovery sponsorship context is invalid.");
         }
 
         var normalizedContentType = NormalizeContentType(contentType);
@@ -78,7 +85,9 @@ public sealed class DiscoveryTrackingTokenService : IDiscoveryTrackingTokenServi
             Position: position,
             AlgorithmVersion: CurrentAlgorithmVersion,
             IssuedAtUnixSeconds: now.ToUnixTimeSeconds(),
-            ExpiresAtUnixSeconds: now.Add(TokenLifetime).ToUnixTimeSeconds());
+            ExpiresAtUnixSeconds: now.Add(TokenLifetime).ToUnixTimeSeconds(),
+            IsSponsored: isSponsored,
+            BoostId: boostId);
         var payloadBytes = JsonSerializer.SerializeToUtf8Bytes(payload, SerializerOptions);
         var signature = HMACSHA256.HashData(_signingKey, payloadBytes);
 
@@ -130,6 +139,8 @@ public sealed class DiscoveryTrackingTokenService : IDiscoveryTrackingTokenServi
             payload.ShopId == Guid.Empty ||
             payload.FeedSessionId == Guid.Empty ||
             payload.Position < 0 ||
+            payload.IsSponsored != payload.BoostId.HasValue ||
+            payload.BoostId == Guid.Empty ||
             payload.UserId.HasValue && payload.UserId.Value != currentUserId ||
             !string.Equals(
                 payload.ContentType,
@@ -174,7 +185,9 @@ public sealed class DiscoveryTrackingTokenService : IDiscoveryTrackingTokenServi
             payload.Position,
             payload.AlgorithmVersion,
             issuedAt,
-            expiresAt);
+            expiresAt,
+            payload.IsSponsored,
+            payload.BoostId);
         return true;
     }
 
@@ -237,5 +250,7 @@ public sealed class DiscoveryTrackingTokenService : IDiscoveryTrackingTokenServi
         int Position,
         string AlgorithmVersion,
         long IssuedAtUnixSeconds,
-        long ExpiresAtUnixSeconds);
+        long ExpiresAtUnixSeconds,
+        bool IsSponsored,
+        Guid? BoostId);
 }

@@ -56,6 +56,31 @@ public static class DiscoveryFeedMixer
         return result;
     }
 
+    public static IReadOnlyList<DiscoveryFeedCandidate> InsertSponsored(
+        IReadOnlyList<DiscoveryFeedCandidate> organic,
+        IReadOnlyList<DiscoveryFeedCandidate> sponsored)
+    {
+        if (sponsored.Count == 0)
+        {
+            return organic;
+        }
+
+        var sponsoredKeys = sponsored
+            .Select(item => (item.ContentType, item.ContentId))
+            .ToHashSet();
+        var result = organic
+            .Where(item => !sponsoredKeys.Contains((item.ContentType, item.ContentId)))
+            .ToList();
+
+        for (var index = 0; index < sponsored.Count; index++)
+        {
+            var insertionIndex = Math.Min(9 + index * 10, result.Count);
+            result.Insert(insertionIndex, sponsored[index]);
+        }
+
+        return result;
+    }
+
     private static string? FindTypeWithDifferentShop(
         IReadOnlyDictionary<string, List<DiscoveryFeedCandidate>> queues,
         string preferredType,
@@ -91,4 +116,6 @@ public static class DiscoveryFeedMixer
 public sealed record DiscoveryFeedCandidate(
     string ContentType,
     Guid ContentId,
-    Guid ShopId);
+    Guid ShopId,
+    bool IsSponsored = false,
+    Guid? BoostId = null);

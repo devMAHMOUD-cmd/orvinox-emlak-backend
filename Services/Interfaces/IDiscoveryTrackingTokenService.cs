@@ -8,7 +8,9 @@ public interface IDiscoveryTrackingTokenService
         Guid contentId,
         Guid shopId,
         Guid feedSessionId,
-        int position);
+        int position,
+        bool isSponsored = false,
+        Guid? boostId = null);
 
     bool TryValidate(
         string token,
@@ -26,4 +28,6 @@ public sealed record DiscoveryTrackingContext(
     int Position,
     string AlgorithmVersion,
     DateTimeOffset IssuedAt,
-    DateTimeOffset ExpiresAt);
+    DateTimeOffset ExpiresAt,
+    bool IsSponsored,
+    Guid? BoostId);

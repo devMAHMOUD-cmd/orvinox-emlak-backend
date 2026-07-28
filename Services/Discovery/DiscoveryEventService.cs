@@ -4,6 +4,7 @@ using CraftoraApi.Data;
 using CraftoraApi.DTOs.Discovery;
 using CraftoraApi.Infrastructure.Security;
 using CraftoraApi.Middleware;
+using CraftoraApi.Redis;
 using CraftoraApi.Services.Interfaces;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
@@ -27,17 +28,21 @@ public sealed class DiscoveryEventService : IDiscoveryEventService
     private readonly AppDbContext _dbContext;
     private readonly IDiscoveryTrackingTokenService _trackingTokenService;
     private readonly IDiscoveryRankingService _rankingService;
+    private readonly ICacheService _cacheService;
 
     public DiscoveryEventService(
         AppDbContext dbContext,
         IDiscoveryTrackingTokenService trackingTokenService,
-        IDiscoveryRankingService rankingService)
+        IDiscoveryRankingService rankingService,
+        ICacheService cacheService)
     {
         _dbContext = dbContext ?? throw new ArgumentNullException(nameof(dbContext));
         _trackingTokenService = trackingTokenService
             ?? throw new ArgumentNullException(nameof(trackingTokenService));
         _rankingService = rankingService
             ?? throw new ArgumentNullException(nameof(rankingService));
+        _cacheService = cacheService
+            ?? throw new ArgumentNullException(nameof(cacheService));
     }
 
     public async Task<DiscoveryEventBatchResponseDto> RecordBatchAsync(
@@ -67,6 +72,7 @@ public sealed class DiscoveryEventService : IDiscoveryEventService
         var acceptedCount = 0;
         var duplicateCount = 0;
         var ignoredCount = 0;
+        var sponsoredImpressionRecorded = false;
 
         await using var transaction = await _dbContext.Database.BeginTransactionAsync(cancellationToken);
         foreach (var validatedEvent in validatedEvents)
@@ -86,6 +92,9 @@ public sealed class DiscoveryEventService : IDiscoveryEventService
             if (inserted)
             {
                 acceptedCount++;
+                sponsoredImpressionRecorded |=
+                    validatedEvent.Context.IsSponsored &&
+                    validatedEvent.EventType == "impression";
             }
             else
             {
@@ -94,6 +103,13 @@ public sealed class DiscoveryEventService : IDiscoveryEventService
         }
 
         await transaction.CommitAsync(cancellationToken);
+        if (sponsoredImpressionRecorded)
+        {
+            await _cacheService.IncrementAsync(
+                DiscoveryCacheKeys.BoostVersion,
+                cancellationToken: cancellationToken);
+        }
+
         return new DiscoveryEventBatchResponseDto(
             acceptedCount,
             duplicateCount,
@@ -306,7 +322,9 @@ public sealed class DiscoveryEventService : IDiscoveryEventService
                 CAST(@dwell_ms AS integer),
                 CAST(@completion_rate AS numeric),
                 CAST(@visible_percentage AS integer),
-                CAST(@metadata AS jsonb))
+                CAST(@metadata AS jsonb),
+                CAST(@is_sponsored AS boolean),
+                CAST(@boost_id AS uuid))
             """;
         AddParameter(command, "event_id", request.EventId);
         AddParameter(command, "user_id", userId);
@@ -322,6 +340,8 @@ public sealed class DiscoveryEventService : IDiscoveryEventService
         AddParameter(command, "completion_rate", request.CompletionRate);
         AddParameter(command, "visible_percentage", request.VisiblePercentage);
         AddParameter(command, "metadata", SerializeMetadata(request.Metadata));
+        AddParameter(command, "is_sponsored", context.IsSponsored);
+        AddParameter(command, "boost_id", context.BoostId);
 
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         if (!await reader.ReadAsync(cancellationToken))

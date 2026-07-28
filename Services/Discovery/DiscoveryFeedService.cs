@@ -58,12 +58,18 @@ public sealed class DiscoveryFeedService : IDiscoveryFeedService
         }
 
         var cacheKey = DiscoveryCacheKeys.MixedSnapshot(userId);
+        var boostVersion = await _cacheService.GetAsync<long>(
+            DiscoveryCacheKeys.BoostVersion,
+            cancellationToken);
         DiscoveryFeedSnapshot snapshot;
         var offset = 0;
 
         if (string.IsNullOrWhiteSpace(cursor))
         {
-            snapshot = await CreateSnapshotAsync(userId, cancellationToken);
+            snapshot = await CreateSnapshotAsync(
+                userId,
+                boostVersion,
+                cancellationToken);
             await _cacheService.SetAsync(
                 cacheKey,
                 snapshot,
@@ -84,9 +90,11 @@ public sealed class DiscoveryFeedService : IDiscoveryFeedService
                 ?? throw new BadRequestException(
                     "Discovery oturumu suresi dolmus. Akisi yenileyin.");
             if (snapshot.UserId != userId ||
-                snapshot.FeedSessionId != cursorContext.FeedSessionId)
+                snapshot.FeedSessionId != cursorContext.FeedSessionId ||
+                snapshot.BoostVersion != boostVersion)
             {
-                throw new BadRequestException("Discovery cursor bu oturuma ait degil.");
+                throw new BadRequestException(
+                    "Discovery akisi yenilendi. Akisi bastan acin.");
             }
 
             offset = cursorContext.Offset;
@@ -126,6 +134,7 @@ public sealed class DiscoveryFeedService : IDiscoveryFeedService
 
     private async Task<DiscoveryFeedSnapshot> CreateSnapshotAsync(
         Guid userId,
+        long boostVersion,
         CancellationToken cancellationToken)
     {
         var mediaIds = await _rankingService.GetPersonalizedMediaIdsAsync(
@@ -161,11 +170,21 @@ public sealed class DiscoveryFeedService : IDiscoveryFeedService
         var courses = ToCandidates("course", courseIds, courseShops);
         var expiresAt = DateTimeOffset.UtcNow.Add(SnapshotTtl);
 
+        var organic = DiscoveryFeedMixer.Mix(media, products, courses);
+        var sponsorLimit = organic.Count / 10;
+        var sponsored = sponsorLimit > 0
+            ? await LoadSponsoredCandidatesAsync(
+                userId,
+                sponsorLimit,
+                cancellationToken)
+            : [];
+
         return new DiscoveryFeedSnapshot(
             userId,
             Guid.NewGuid(),
             expiresAt,
-            DiscoveryFeedMixer.Mix(media, products, courses).ToList());
+            boostVersion,
+            DiscoveryFeedMixer.InsertSponsored(organic, sponsored).ToList());
     }
 
     private async Task<List<DiscoveryFeedItemDto>> HydrateAsync(
@@ -233,16 +252,17 @@ public sealed class DiscoveryFeedService : IDiscoveryFeedService
             var item = candidate.ContentType switch
             {
                 "media" when mediaById.TryGetValue(candidate.ContentId, out var medium) =>
-                    MapMedia(userId, feedSessionId, position, medium),
+                    MapMedia(userId, feedSessionId, position, candidate, medium),
                 "product" when productsById.TryGetValue(candidate.ContentId, out var product) =>
                     MapProduct(
                         userId,
                         feedSessionId,
                         position,
+                        candidate,
                         product,
                         productViewCounts.GetValueOrDefault(product.Id)),
                 "course" when coursesById.TryGetValue(candidate.ContentId, out var course) =>
-                    MapCourse(userId, feedSessionId, position, course),
+                    MapCourse(userId, feedSessionId, position, candidate, course),
                 _ => null
             };
 
@@ -259,6 +279,7 @@ public sealed class DiscoveryFeedService : IDiscoveryFeedService
         Guid userId,
         Guid feedSessionId,
         int position,
+        DiscoveryFeedCandidate candidate,
         Models.Entities.Medium medium)
     {
         var dto = new HomeReelDto(
@@ -286,15 +307,26 @@ public sealed class DiscoveryFeedService : IDiscoveryFeedService
                 medium.Id,
                 medium.ShopId,
                 feedSessionId,
-                position));
+                position,
+                candidate.IsSponsored,
+                candidate.BoostId));
 
-        return new DiscoveryFeedItemDto("media", medium.Id, position, dto, null, null);
+        return new DiscoveryFeedItemDto(
+            "media",
+            medium.Id,
+            position,
+            candidate.IsSponsored,
+            candidate.IsSponsored ? "Sponsorlu" : null,
+            dto,
+            null,
+            null);
     }
 
     private DiscoveryFeedItemDto MapProduct(
         Guid userId,
         Guid feedSessionId,
         int position,
+        DiscoveryFeedCandidate candidate,
         Models.Entities.Product product,
         int viewCount)
     {
@@ -319,15 +351,26 @@ public sealed class DiscoveryFeedService : IDiscoveryFeedService
                 product.Id,
                 product.ShopId,
                 feedSessionId,
-                position));
+                position,
+                candidate.IsSponsored,
+                candidate.BoostId));
 
-        return new DiscoveryFeedItemDto("product", product.Id, position, null, dto, null);
+        return new DiscoveryFeedItemDto(
+            "product",
+            product.Id,
+            position,
+            candidate.IsSponsored,
+            candidate.IsSponsored ? "Sponsorlu" : null,
+            null,
+            dto,
+            null);
     }
 
     private DiscoveryFeedItemDto MapCourse(
         Guid userId,
         Guid feedSessionId,
         int position,
+        DiscoveryFeedCandidate candidate,
         Models.Entities.Course course)
     {
         var activeSections = course.CourseSections
@@ -362,9 +405,19 @@ public sealed class DiscoveryFeedService : IDiscoveryFeedService
                 course.Id,
                 course.Product.ShopId,
                 feedSessionId,
-                position));
+                position,
+                candidate.IsSponsored,
+                candidate.BoostId));
 
-        return new DiscoveryFeedItemDto("course", course.Id, position, null, null, dto);
+        return new DiscoveryFeedItemDto(
+            "course",
+            course.Id,
+            position,
+            candidate.IsSponsored,
+            candidate.IsSponsored ? "Sponsorlu" : null,
+            null,
+            null,
+            dto);
     }
 
     private static List<DiscoveryFeedCandidate> ToCandidates(
@@ -376,6 +429,64 @@ public sealed class DiscoveryFeedService : IDiscoveryFeedService
             .Where(shops.ContainsKey)
             .Select(id => new DiscoveryFeedCandidate(contentType, id, shops[id]))
             .ToList();
+    }
+
+    private async Task<List<DiscoveryFeedCandidate>> LoadSponsoredCandidatesAsync(
+        Guid userId,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        var connection = _dbContext.Database.GetDbConnection();
+        var openedHere = connection.State != System.Data.ConnectionState.Open;
+        if (openedHere)
+        {
+            await _dbContext.Database.OpenConnectionAsync(cancellationToken);
+        }
+
+        try
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText = """
+                SELECT boost_id, content_type, content_id, shop_id
+                FROM public.get_sponsored_discovery_candidates(
+                    CAST(@user_id AS uuid),
+                    CAST(@candidate_limit AS integer))
+                """;
+            AddParameter(command, "user_id", userId);
+            AddParameter(command, "candidate_limit", limit);
+
+            var candidates = new List<DiscoveryFeedCandidate>();
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                candidates.Add(new DiscoveryFeedCandidate(
+                    reader.GetString(1),
+                    reader.GetGuid(2),
+                    reader.GetGuid(3),
+                    IsSponsored: true,
+                    BoostId: reader.GetGuid(0)));
+            }
+
+            return candidates;
+        }
+        finally
+        {
+            if (openedHere)
+            {
+                await _dbContext.Database.CloseConnectionAsync();
+            }
+        }
+    }
+
+    private static void AddParameter(
+        System.Data.Common.DbCommand command,
+        string name,
+        object value)
+    {
+        var parameter = command.CreateParameter();
+        parameter.ParameterName = name;
+        parameter.Value = value;
+        command.Parameters.Add(parameter);
     }
 
     private string? GeneratePublicAssetUrl(string? objectKey)
@@ -403,4 +514,5 @@ public sealed record DiscoveryFeedSnapshot(
     Guid UserId,
     Guid FeedSessionId,
     DateTimeOffset ExpiresAt,
+    long BoostVersion,
     List<DiscoveryFeedCandidate> Items);

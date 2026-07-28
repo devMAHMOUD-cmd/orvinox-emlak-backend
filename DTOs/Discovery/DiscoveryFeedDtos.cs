@@ -12,6 +12,8 @@ public sealed record DiscoveryFeedItemDto(
     string ContentType,
     Guid ContentId,
     int Position,
+    bool IsSponsored,
+    string? SponsorLabel,
     HomeReelDto? Media,
     HomeTrendingProductDto? Product,
     HomeFeaturedCourseDto? Course);

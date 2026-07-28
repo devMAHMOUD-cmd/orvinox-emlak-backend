@@ -33,6 +33,56 @@ public sealed class DiscoveryTrackingTokenTests
         Assert.Equal(FeedSessionId, context.FeedSessionId);
         Assert.Equal(7, context.Position);
         Assert.Equal(DiscoveryTrackingTokenService.CurrentAlgorithmVersion, context.AlgorithmVersion);
+        Assert.False(context.IsSponsored);
+        Assert.Null(context.BoostId);
+    }
+
+    [Fact]
+    public void Sponsored_token_round_trips_authoritative_boost_context()
+    {
+        var service = CreateService();
+        var boostId = Guid.NewGuid();
+
+        var token = service.Issue(
+            UserId,
+            "product",
+            ContentId,
+            ShopId,
+            FeedSessionId,
+            position: 9,
+            isSponsored: true,
+            boostId);
+
+        Assert.True(service.TryValidate(token, UserId, out var context));
+        Assert.True(context.IsSponsored);
+        Assert.Equal(boostId, context.BoostId);
+        Assert.Equal(9, context.Position);
+    }
+
+    [Fact]
+    public void Sponsored_token_requires_a_non_empty_boost_id()
+    {
+        var service = CreateService();
+
+        Assert.Throws<ArgumentException>(() => service.Issue(
+            UserId,
+            "product",
+            ContentId,
+            ShopId,
+            FeedSessionId,
+            position: 9,
+            isSponsored: true,
+            boostId: null));
+
+        Assert.Throws<ArgumentException>(() => service.Issue(
+            UserId,
+            "product",
+            ContentId,
+            ShopId,
+            FeedSessionId,
+            position: 9,
+            isSponsored: true,
+            boostId: Guid.Empty));
     }
 
     [Fact]
