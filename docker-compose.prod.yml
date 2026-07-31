@@ -101,11 +101,15 @@ services:
     networks:
       - craftora_network
     healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
-      interval: 30s
-      timeout: 20s
-      retries: 5
-      start_period: 60s
+      test:
+        [
+          "CMD-SHELL",
+          "rabbitmq-diagnostics -q check_running && rabbitmq-diagnostics -q check_port_connectivity",
+        ]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 30s
     mem_limit: 1g
     logging: *default-logging
 
