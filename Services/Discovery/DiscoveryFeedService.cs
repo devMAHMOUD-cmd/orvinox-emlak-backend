@@ -216,17 +216,21 @@ public sealed class DiscoveryFeedService : IDiscoveryFeedService
             .AsNoTracking()
             .Include(item => item.Shop)
             .Include(item => item.Product)
+                .ThenInclude(product => product!.ProductImages)
             .Where(item => mediaIds.Contains(item.Id))
             .ToDictionaryAsync(item => item.Id, cancellationToken);
         var productsById = await _dbContext.Products
             .AsNoTracking()
             .Include(item => item.Shop)
+            .Include(item => item.ProductImages)
             .Where(item => productIds.Contains(item.Id))
             .ToDictionaryAsync(item => item.Id, cancellationToken);
         var coursesById = await _dbContext.Courses
             .AsNoTracking()
             .Include(item => item.Product)
                 .ThenInclude(product => product.Shop)
+            .Include(item => item.Product)
+                .ThenInclude(product => product.ProductImages)
             .Include(item => item.CourseSections)
                 .ThenInclude(section => section.CourseLessons)
             .Where(item => courseIds.Contains(item.Id))
@@ -292,7 +296,7 @@ public sealed class DiscoveryFeedService : IDiscoveryFeedService
             medium.VideoUrl,
             GeneratePrivateProductUrl(medium.VideoUrl),
             GeneratePublicAssetUrl(medium.ThumbnailUrl)
-                ?? GeneratePublicAssetUrl(medium.Product?.CoverImageUrl),
+                ?? GeneratePublicAssetUrl(GetProductCoverObjectKey(medium.Product)),
             medium.Caption,
             medium.ViewCount ?? 0,
             medium.LikeCount ?? 0,
@@ -337,7 +341,7 @@ public sealed class DiscoveryFeedService : IDiscoveryFeedService
             product.Price,
             product.OriginalPrice,
             product.Currency ?? "USD",
-            GeneratePublicAssetUrl(product.CoverImageUrl),
+            GeneratePublicAssetUrl(GetProductCoverObjectKey(product)),
             product.RatingAverage,
             product.ReviewCount ?? 0,
             product.SalesCount ?? 0,
@@ -387,7 +391,7 @@ public sealed class DiscoveryFeedService : IDiscoveryFeedService
             course.Product.Price,
             course.Product.OriginalPrice,
             course.Product.Currency ?? "USD",
-            GeneratePublicAssetUrl(course.Product.CoverImageUrl),
+            GeneratePublicAssetUrl(GetProductCoverObjectKey(course.Product)),
             course.Level,
             course.TotalDurationInMinutes,
             activeLessonCount,
@@ -429,6 +433,16 @@ public sealed class DiscoveryFeedService : IDiscoveryFeedService
             .Where(shops.ContainsKey)
             .Select(id => new DiscoveryFeedCandidate(contentType, id, shops[id]))
             .ToList();
+    }
+
+    private static string? GetProductCoverObjectKey(Models.Entities.Product? product)
+    {
+        return product?.CoverImageUrl
+            ?? product?.ProductImages
+                .OrderBy(image => image.SortOrder)
+                .ThenBy(image => image.CreatedAt)
+                .Select(image => image.ObjectKey)
+                .FirstOrDefault();
     }
 
     private async Task<List<DiscoveryFeedCandidate>> LoadSponsoredCandidatesAsync(

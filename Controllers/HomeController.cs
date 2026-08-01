@@ -46,16 +46,6 @@ public sealed class HomeController : ControllerBase
     {
         var normalizedPage = Math.Max(page, 1);
         var normalizedPageSize = Math.Clamp(pageSize, 1, 30);
-        var currentUserId = GetOptionalCurrentUserId();
-        if (currentUserId.HasValue)
-        {
-            return Ok(await GetPersonalizedProductsAsync(
-                currentUserId.Value,
-                normalizedPage,
-                normalizedPageSize,
-                cancellationToken));
-        }
-
         var since = DateTime.UtcNow.AddDays(-7);
 
         var products = await _dbContext.Products
@@ -72,9 +62,28 @@ public sealed class HomeController : ControllerBase
                 RecentViews = _dbContext.AnalyticsEvents.Count(evt =>
                     evt.ProductId == item.Id &&
                     evt.EventType == AnalyticsEventType.ProductView &&
-                    evt.CreatedAt >= since)
+                    evt.CreatedAt >= since),
+                RecentCartAdds = _dbContext.AnalyticsEvents.Count(evt =>
+                    evt.ProductId == item.Id &&
+                    evt.EventType == AnalyticsEventType.AddToCart &&
+                    evt.CreatedAt >= since),
+                RecentPurchases = _dbContext.Orders.Count(order =>
+                    order.ProductId == item.Id &&
+                    order.Status == OrderStatus.Completed &&
+                    order.CreatedAt >= since),
+                FirstImageObjectKey = item.ProductImages
+                    .OrderBy(image => image.SortOrder)
+                    .ThenBy(image => image.CreatedAt)
+                    .Select(image => image.ObjectKey)
+                    .FirstOrDefault()
             })
-            .OrderByDescending(item => item.RecentViews)
+            .OrderByDescending(item =>
+                item.RecentPurchases * 12 +
+                item.RecentCartAdds * 4 +
+                item.RecentViews)
+            .ThenByDescending(item => item.RecentPurchases)
+            .ThenByDescending(item => item.RecentCartAdds)
+            .ThenByDescending(item => item.RecentViews)
             .ThenByDescending(item => item.Product.SalesCount ?? 0)
             .ThenByDescending(item => item.Product.RatingAverage ?? 0)
             .ThenByDescending(item => item.Product.CreatedAt)
@@ -91,7 +100,8 @@ public sealed class HomeController : ControllerBase
             Price: item.Product.Price,
             OriginalPrice: item.Product.OriginalPrice,
             Currency: item.Product.Currency ?? "USD",
-            CoverImagePublicUrl: GeneratePublicAssetUrl(item.Product.CoverImageUrl),
+            CoverImagePublicUrl: GeneratePublicAssetUrl(
+                item.Product.CoverImageUrl ?? item.FirstImageObjectKey),
             RatingAverage: item.Product.RatingAverage,
             ReviewCount: item.Product.ReviewCount ?? 0,
             SalesCount: item.Product.SalesCount ?? 0,
@@ -105,7 +115,10 @@ public sealed class HomeController : ControllerBase
                 item.Product.Id,
                 item.Product.ShopId,
                 feedSessionId,
-                startPosition + index))));
+                startPosition + index),
+            RecentCartCount: item.RecentCartAdds,
+            RecentPurchaseCount: item.RecentPurchases,
+            TrendScore: item.RecentPurchases * 12 + item.RecentCartAdds * 4 + item.RecentViews)));
     }
 
     [HttpGet("trending-shops")]
@@ -127,9 +140,27 @@ public sealed class HomeController : ControllerBase
                 FollowerCount = _dbContext.Subscriptions.Count(subscription => subscription.ShopId == item.Id),
                 RecentVisits = _dbContext.ShopVisits.Count(visit =>
                     visit.ShopId == item.Id &&
-                    visit.VisitedAt >= since)
+                    visit.VisitedAt >= since),
+                RecentFollowers = _dbContext.Subscriptions.Count(subscription =>
+                    subscription.ShopId == item.Id &&
+                    subscription.CreatedAt >= since),
+                RecentProductViews = _dbContext.AnalyticsEvents.Count(evt =>
+                    evt.ShopId == item.Id &&
+                    evt.EventType == AnalyticsEventType.ProductView &&
+                    evt.CreatedAt >= since),
+                RecentPurchases = _dbContext.Orders.Count(order =>
+                    order.ShopId == item.Id &&
+                    order.Status == OrderStatus.Completed &&
+                    order.CreatedAt >= since)
             })
-            .OrderByDescending(item => item.RecentVisits)
+            .OrderByDescending(item =>
+                item.RecentPurchases * 12 +
+                item.RecentFollowers * 6 +
+                item.RecentProductViews * 2 +
+                item.RecentVisits)
+            .ThenByDescending(item => item.RecentPurchases)
+            .ThenByDescending(item => item.RecentFollowers)
+            .ThenByDescending(item => item.RecentVisits)
             .ThenByDescending(item => item.FollowerCount)
             .ThenByDescending(item => item.Shop.Rating ?? 0)
             .ThenByDescending(item => item.Shop.CreatedAt)
@@ -159,7 +190,14 @@ public sealed class HomeController : ControllerBase
             Rating: item.Shop.Rating,
             VisitCount: item.RecentVisits,
             IsVerified: item.Shop.IsVerified == true,
-            IsFollowedByCurrentUser: followedShopIds.Contains(item.Shop.Id))));
+            IsFollowedByCurrentUser: followedShopIds.Contains(item.Shop.Id),
+            RecentFollowerCount: item.RecentFollowers,
+            RecentPurchaseCount: item.RecentPurchases,
+            RecentProductViewCount: item.RecentProductViews,
+            TrendScore: item.RecentPurchases * 12 +
+                item.RecentFollowers * 6 +
+                item.RecentProductViews * 2 +
+                item.RecentVisits)));
     }
 
     [HttpGet("featured-courses")]
@@ -184,6 +222,8 @@ public sealed class HomeController : ControllerBase
             .AsNoTracking()
             .Include(item => item.Product)
                 .ThenInclude(product => product.Shop)
+            .Include(item => item.Product)
+                .ThenInclude(product => product.ProductImages)
             .Include(item => item.CourseSections)
                 .ThenInclude(section => section.CourseLessons)
             .Where(item =>
@@ -216,7 +256,7 @@ public sealed class HomeController : ControllerBase
                 Price: course.Product.Price,
                 OriginalPrice: course.Product.OriginalPrice,
                 Currency: course.Product.Currency ?? "USD",
-                CoverImagePublicUrl: GeneratePublicAssetUrl(course.Product.CoverImageUrl),
+                CoverImagePublicUrl: GeneratePublicAssetUrl(GetProductCoverObjectKey(course.Product)),
                 Level: course.Level,
                 TotalDurationInMinutes: course.TotalDurationInMinutes,
                 LessonCount: activeLessons.Count,
@@ -251,6 +291,7 @@ public sealed class HomeController : ControllerBase
             .AsNoTracking()
             .Include(item => item.Shop)
             .Include(item => item.Product)
+                .ThenInclude(product => product!.ProductImages)
             .Where(DiscoveryEligibility.ReadyMedia)
             .OrderByDescending(item => item.ViewCount ?? 0)
             .ThenByDescending(item => item.LikeCount ?? 0)
@@ -272,7 +313,8 @@ public sealed class HomeController : ControllerBase
             ProductTitle: item.Product?.Title,
             VideoUrl: item.VideoUrl,
             VideoPublicUrl: GeneratePrivateProductUrl(item.VideoUrl),
-            ThumbnailPublicUrl: GeneratePublicAssetUrl(item.ThumbnailUrl) ?? GeneratePublicAssetUrl(item.Product?.CoverImageUrl),
+            ThumbnailPublicUrl: GeneratePublicAssetUrl(item.ThumbnailUrl)
+                ?? GeneratePublicAssetUrl(GetProductCoverObjectKey(item.Product)),
             Caption: item.Caption,
             ViewCount: item.ViewCount ?? 0,
             LikeCount: item.LikeCount ?? 0,
@@ -309,6 +351,7 @@ public sealed class HomeController : ControllerBase
         var products = await _dbContext.Products
             .AsNoTracking()
             .Include(item => item.Shop)
+            .Include(item => item.ProductImages)
             .Where(item => pageIds.Contains(item.Id))
             .ToListAsync(cancellationToken);
         var productsById = products.ToDictionary(item => item.Id);
@@ -338,7 +381,7 @@ public sealed class HomeController : ControllerBase
                     Price: product.Price,
                     OriginalPrice: product.OriginalPrice,
                     Currency: product.Currency ?? "USD",
-                    CoverImagePublicUrl: GeneratePublicAssetUrl(product.CoverImageUrl),
+                    CoverImagePublicUrl: GeneratePublicAssetUrl(GetProductCoverObjectKey(product)),
                     RatingAverage: product.RatingAverage,
                     ReviewCount: product.ReviewCount ?? 0,
                     SalesCount: product.SalesCount ?? 0,
@@ -377,6 +420,8 @@ public sealed class HomeController : ControllerBase
             .AsNoTracking()
             .Include(item => item.Product)
                 .ThenInclude(product => product.Shop)
+            .Include(item => item.Product)
+                .ThenInclude(product => product.ProductImages)
             .Include(item => item.CourseSections)
                 .ThenInclude(section => section.CourseLessons)
             .Where(item => pageIds.Contains(item.Id))
@@ -405,7 +450,7 @@ public sealed class HomeController : ControllerBase
                     Price: course.Product.Price,
                     OriginalPrice: course.Product.OriginalPrice,
                     Currency: course.Product.Currency ?? "USD",
-                    CoverImagePublicUrl: GeneratePublicAssetUrl(course.Product.CoverImageUrl),
+                    CoverImagePublicUrl: GeneratePublicAssetUrl(GetProductCoverObjectKey(course.Product)),
                     Level: course.Level,
                     TotalDurationInMinutes: course.TotalDurationInMinutes,
                     LessonCount: activeLessons,
@@ -434,6 +479,16 @@ public sealed class HomeController : ControllerBase
             ?? User.FindFirst("sub")?.Value;
 
         return Guid.TryParse(userIdClaim, out var userId) ? userId : null;
+    }
+
+    private static string? GetProductCoverObjectKey(Models.Entities.Product? product)
+    {
+        return product?.CoverImageUrl
+            ?? product?.ProductImages
+                .OrderBy(image => image.SortOrder)
+                .ThenBy(image => image.CreatedAt)
+                .Select(image => image.ObjectKey)
+                .FirstOrDefault();
     }
 
     private string? GeneratePublicAssetUrl(string? objectKey)

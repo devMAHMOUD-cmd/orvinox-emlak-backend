@@ -15,7 +15,10 @@ public sealed record HomeTrendingProductDto(
     Guid ShopId,
     string ShopName,
     string ShopSlug,
-    string? TrackingToken = null);
+    string? TrackingToken = null,
+    int RecentCartCount = 0,
+    int RecentPurchaseCount = 0,
+    int TrendScore = 0);
 
 public sealed record HomeTrendingShopDto(
     Guid Id,
@@ -28,7 +31,11 @@ public sealed record HomeTrendingShopDto(
     decimal? Rating,
     int VisitCount,
     bool IsVerified,
-    bool IsFollowedByCurrentUser = false);
+    bool IsFollowedByCurrentUser = false,
+    int RecentFollowerCount = 0,
+    int RecentPurchaseCount = 0,
+    int RecentProductViewCount = 0,
+    int TrendScore = 0);
 
 public sealed record HomeFeaturedCourseDto(
     Guid CourseId,
