@@ -4,7 +4,7 @@ public static class DiscoveryCacheKeys
 {
     public const string ReelsRankingVersion = "reels-organic-v1";
     public const string ProductRankingVersion = "organic-v1";
-    public const string MixedRankingVersion = "mixed-sponsored-v1";
+    public const string MixedRankingVersion = "mixed-sponsored-v2";
     public const string BoostVersion = "discovery:boost:version";
 
     public static string ReelsSnapshot(Guid userId) =>

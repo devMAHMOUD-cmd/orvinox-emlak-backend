@@ -3,7 +3,7 @@ namespace CraftoraApi.Services.Discovery;
 public static class DiscoveryFeedMixer
 {
     private static readonly string[] OrganicPattern =
-        ["media", "media", "product", "media", "course"];
+        ["media", "product", "course"];
     private static readonly string[] ContentTypes = ["media", "product", "course"];
 
     public static IReadOnlyList<DiscoveryFeedCandidate> Mix(
@@ -28,11 +28,12 @@ public static class DiscoveryFeedMixer
             var preferredType = OrganicPattern[patternIndex % OrganicPattern.Length];
             patternIndex++;
 
-            var selectedType = FindTypeWithDifferentShop(
+            var selectedType = queues[preferredType].Count > 0
+                ? preferredType
+                : FindTypeWithDifferentShop(
                     queues,
-                    preferredType,
                     previousShopId)
-                ?? FindAvailableType(queues, preferredType);
+                  ?? FindAvailableType(queues);
             if (selectedType is null)
             {
                 break;
@@ -83,32 +84,17 @@ public static class DiscoveryFeedMixer
 
     private static string? FindTypeWithDifferentShop(
         IReadOnlyDictionary<string, List<DiscoveryFeedCandidate>> queues,
-        string preferredType,
         Guid? previousShopId)
     {
-        if (!previousShopId.HasValue)
-        {
-            return queues[preferredType].Count > 0 ? preferredType : null;
-        }
-
-        if (queues[preferredType].Any(item => item.ShopId != previousShopId.Value))
-        {
-            return preferredType;
-        }
+        if (!previousShopId.HasValue) return null;
 
         return ContentTypes.FirstOrDefault(type =>
             queues[type].Any(item => item.ShopId != previousShopId.Value));
     }
 
     private static string? FindAvailableType(
-        IReadOnlyDictionary<string, List<DiscoveryFeedCandidate>> queues,
-        string preferredType)
+        IReadOnlyDictionary<string, List<DiscoveryFeedCandidate>> queues)
     {
-        if (queues[preferredType].Count > 0)
-        {
-            return preferredType;
-        }
-
         return ContentTypes.FirstOrDefault(type => queues[type].Count > 0);
     }
 }

@@ -6,7 +6,7 @@ namespace CraftoraApi.Tests;
 public sealed class DiscoveryFeedMixerTests
 {
     [Fact]
-    public void Mixer_uses_the_media_weighted_organic_pattern()
+    public void Mixer_balances_media_products_and_courses_at_the_start()
     {
         var media = CreateCandidates("media", 6);
         var products = CreateCandidates("product", 2);
@@ -16,9 +16,35 @@ public sealed class DiscoveryFeedMixerTests
 
         Assert.Equal(
             [
-                "media", "media", "product", "media", "course",
-                "media", "media", "product", "media", "course"
+                "media", "product", "course", "media", "product",
+                "course", "media", "media", "media", "media"
             ],
+            result.Select(item => item.ContentType));
+    }
+
+    [Fact]
+    public void Mixer_keeps_the_content_pattern_ahead_of_shop_diversity()
+    {
+        var shopA = Guid.NewGuid();
+        var shopB = Guid.NewGuid();
+        var media = new List<DiscoveryFeedCandidate>
+        {
+            new("media", Guid.NewGuid(), shopA),
+            new("media", Guid.NewGuid(), shopB)
+        };
+        var products = new List<DiscoveryFeedCandidate>
+        {
+            new("product", Guid.NewGuid(), shopA)
+        };
+        var courses = new List<DiscoveryFeedCandidate>
+        {
+            new("course", Guid.NewGuid(), shopB)
+        };
+
+        var result = DiscoveryFeedMixer.Mix(media, products, courses);
+
+        Assert.Equal(
+            ["media", "product", "course", "media"],
             result.Select(item => item.ContentType));
     }
 
