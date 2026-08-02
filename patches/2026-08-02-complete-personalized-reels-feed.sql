@@ -105,6 +105,7 @@ BEGIN
           AND shop.is_active = true
           AND (
               medium.product_id IS NULL OR
+              product.id IS NULL OR
               (product.is_active = true AND product.status = 'Published')
           )
           AND NOT EXISTS (
