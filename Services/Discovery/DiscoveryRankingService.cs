@@ -120,7 +120,7 @@ public sealed class DiscoveryRankingService : IDiscoveryRankingService
             await using var command = connection.CreateCommand();
             command.CommandText = """
                 SELECT media_id, shop_id, ranking_score, ranking_reason
-                FROM public.get_personalized_media_candidates(
+                FROM public.get_complete_personalized_media_candidates(
                     CAST(@user_id AS uuid),
                     CAST(@candidate_limit AS integer))
                 """;
