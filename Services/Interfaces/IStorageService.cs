@@ -40,6 +40,12 @@ public interface IStorageService
         string objectKey,
         CancellationToken cancellationToken = default);
 
+    Task DownloadFileAsync(
+        string bucketName,
+        string objectKey,
+        string destinationPath,
+        CancellationToken cancellationToken = default);
+
     Task DeleteFileAsync(
         string bucketName,
         string objectKey,

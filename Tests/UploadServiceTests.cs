@@ -219,6 +219,13 @@ public sealed class UploadServiceTests
             return Task.FromResult(NextObjectInfo);
         }
 
+        public Task DownloadFileAsync(
+            string bucketName,
+            string objectKey,
+            string destinationPath,
+            CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+
         public Task DeleteFileAsync(
             string bucketName,
             string objectKey,

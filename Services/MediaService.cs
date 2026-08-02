@@ -437,7 +437,8 @@ public sealed class MediaService : IMediaService
             VideoId: media.Id,
             OriginalFileUrl: dto.OriginalFileUrl,
             CourseId: Guid.Empty,
-            TargetType: MediaTargetType));
+            TargetType: MediaTargetType,
+            GenerateThumbnail: string.IsNullOrWhiteSpace(dto.ThumbnailUrl)));
 
         await _notificationService.NotifyShopFollowersAsync(
             shop.Id,

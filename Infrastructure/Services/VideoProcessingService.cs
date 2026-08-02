@@ -26,40 +26,9 @@ public sealed class VideoProcessingService : IVideoProcessingService
     {
         ArgumentNullException.ThrowIfNull(command);
 
-        if (!File.Exists(command.OriginalFileUrl))
-        {
-            var existingObjectKey = ExtractObjectKey(
-                command.OriginalFileUrl,
-                PrivateProductsBucketName);
-            var objectInfo = await _storageService.GetObjectInfoAsync(
-                PrivateProductsBucketName,
-                existingObjectKey,
-                cancellationToken);
-            if (objectInfo is null)
-            {
-                throw new FileNotFoundException(
-                    "Video source object was not found in storage.",
-                    existingObjectKey);
-            }
-
-            _logger.LogInformation(
-                "Video source is already in object storage; original object key retained. VideoId: {VideoId}, ObjectKey: {ObjectKey}",
-                command.VideoId,
-                existingObjectKey);
-
-            return new VideoProcessingResult(existingObjectKey, null);
-        }
-
         var baseObjectKey = string.Equals(command.TargetType, "Media", StringComparison.OrdinalIgnoreCase)
             ? $"media/{command.VideoId}"
             : $"courses/{command.CourseId}/videos/{command.VideoId}";
-        var videoExtension = Path.GetExtension(command.OriginalFileUrl);
-        if (string.IsNullOrWhiteSpace(videoExtension))
-        {
-            videoExtension = ".mp4";
-        }
-
-        var originalObjectKey = $"{baseObjectKey}/original{videoExtension.ToLowerInvariant()}";
         var thumbnailObjectKey = $"{baseObjectKey}/thumbnail.jpg";
         var tempDirectory = Path.Combine(
             Path.GetTempPath(),
@@ -69,7 +38,56 @@ public sealed class VideoProcessingService : IVideoProcessingService
 
         try
         {
-            var thumbnailPath = Path.Combine(tempDirectory, "thumbnail.jpg");
+            if (!File.Exists(command.OriginalFileUrl))
+            {
+                var existingObjectKey = ExtractObjectKey(
+                    command.OriginalFileUrl,
+                    PrivateProductsBucketName);
+                var objectInfo = await _storageService.GetObjectInfoAsync(
+                    PrivateProductsBucketName,
+                    existingObjectKey,
+                    cancellationToken);
+                if (objectInfo is null)
+                {
+                    throw new FileNotFoundException(
+                        "Video source object was not found in storage.",
+                        existingObjectKey);
+                }
+
+                if (!command.GenerateThumbnail)
+                {
+                    return new VideoProcessingResult(existingObjectKey, null);
+                }
+
+                var sourceExtension = Path.GetExtension(existingObjectKey);
+                var sourcePath = Path.Combine(
+                    tempDirectory,
+                    $"source{(string.IsNullOrWhiteSpace(sourceExtension) ? ".mp4" : sourceExtension)}");
+                await _storageService.DownloadFileAsync(
+                    PrivateProductsBucketName,
+                    existingObjectKey,
+                    sourcePath,
+                    cancellationToken);
+                await GenerateAndUploadThumbnailAsync(
+                    sourcePath,
+                    thumbnailObjectKey,
+                    tempDirectory,
+                    cancellationToken);
+
+                _logger.LogInformation(
+                    "Automatic video thumbnail generated. VideoId: {VideoId}, ObjectKey: {ObjectKey}",
+                    command.VideoId,
+                    thumbnailObjectKey);
+
+                return new VideoProcessingResult(existingObjectKey, thumbnailObjectKey);
+            }
+
+            var videoExtension = Path.GetExtension(command.OriginalFileUrl);
+            if (string.IsNullOrWhiteSpace(videoExtension))
+            {
+                videoExtension = ".mp4";
+            }
+            var originalObjectKey = $"{baseObjectKey}/original{videoExtension.ToLowerInvariant()}";
 
             await using (var videoStream = File.OpenRead(command.OriginalFileUrl))
             {
@@ -81,24 +99,18 @@ public sealed class VideoProcessingService : IVideoProcessingService
                     cancellationToken);
             }
 
-            await FFMpegArguments
-                .FromFileInput(command.OriginalFileUrl)
-                .OutputToFile(thumbnailPath, overwrite: true, options => options
-                    .WithCustomArgument("-frames:v 1 -q:v 2"))
-                .ProcessAsynchronously();
-
-            if (File.Exists(thumbnailPath))
+            if (command.GenerateThumbnail)
             {
-                await using var thumbnailStream = File.OpenRead(thumbnailPath);
-                await _storageService.UploadFileAsync(
-                    PublicAssetsBucketName,
+                await GenerateAndUploadThumbnailAsync(
+                    command.OriginalFileUrl,
                     thumbnailObjectKey,
-                    thumbnailStream,
-                    "image/jpeg",
+                    tempDirectory,
                     cancellationToken);
             }
 
-            return new VideoProcessingResult(originalObjectKey, thumbnailObjectKey);
+            return new VideoProcessingResult(
+                originalObjectKey,
+                command.GenerateThumbnail ? thumbnailObjectKey : null);
         }
         finally
         {
@@ -107,6 +119,33 @@ public sealed class VideoProcessingService : IVideoProcessingService
                 Directory.Delete(tempDirectory, recursive: true);
             }
         }
+    }
+
+    private async Task GenerateAndUploadThumbnailAsync(
+        string sourcePath,
+        string thumbnailObjectKey,
+        string tempDirectory,
+        CancellationToken cancellationToken)
+    {
+        var thumbnailPath = Path.Combine(tempDirectory, "thumbnail.jpg");
+        await FFMpegArguments
+            .FromFileInput(sourcePath)
+            .OutputToFile(thumbnailPath, overwrite: true, options => options
+                .WithCustomArgument("-vf thumbnail=30,scale=720:-2 -frames:v 1 -q:v 2"))
+            .ProcessAsynchronously();
+
+        if (!File.Exists(thumbnailPath))
+        {
+            throw new InvalidOperationException("Video thumbnail could not be generated.");
+        }
+
+        await using var thumbnailStream = File.OpenRead(thumbnailPath);
+        await _storageService.UploadFileAsync(
+            PublicAssetsBucketName,
+            thumbnailObjectKey,
+            thumbnailStream,
+            "image/jpeg",
+            cancellationToken);
     }
 
     private static string ExtractObjectKey(string urlOrObjectKey, string bucketName)

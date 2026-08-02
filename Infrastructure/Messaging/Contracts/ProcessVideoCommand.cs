@@ -4,4 +4,5 @@ public sealed record ProcessVideoCommand(
     Guid VideoId,
     string OriginalFileUrl,
     Guid CourseId,
-    string TargetType = "CourseLesson");
+    string TargetType = "CourseLesson",
+    bool GenerateThumbnail = false);

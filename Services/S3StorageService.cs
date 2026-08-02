@@ -191,6 +191,33 @@ public sealed class S3StorageService : IStorageService, IDisposable
         }
     }
 
+    public async Task DownloadFileAsync(
+        string bucketName,
+        string objectKey,
+        string destinationPath,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(bucketName);
+        ArgumentException.ThrowIfNullOrWhiteSpace(objectKey);
+        ArgumentException.ThrowIfNullOrWhiteSpace(destinationPath);
+        objectKey = NormalizeObjectKey(bucketName, objectKey);
+
+        using var response = await _s3Client.GetObjectAsync(
+            new GetObjectRequest
+            {
+                BucketName = bucketName,
+                Key = objectKey
+            },
+            cancellationToken);
+        await using var destination = File.Create(destinationPath);
+        await response.ResponseStream.CopyToAsync(destination, cancellationToken);
+
+        _logger.LogInformation(
+            "Storage file downloaded. BucketName: {BucketName}, ObjectKey: {ObjectKey}",
+            bucketName,
+            objectKey);
+    }
+
     public async Task DeleteFileAsync(
         string bucketName,
         string objectKey,
