@@ -103,11 +103,6 @@ BEGIN
         WHERE medium.is_active = true
           AND medium.status = 'ready'::public.media_status
           AND shop.is_active = true
-          AND (
-              medium.product_id IS NULL OR
-              product.id IS NULL OR
-              (product.is_active = true AND product.status = 'Published')
-          )
           AND NOT EXISTS (
               SELECT 1
               FROM primary_ranked AS ranked
