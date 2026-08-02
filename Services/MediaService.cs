@@ -806,6 +806,11 @@ public sealed class MediaService : IMediaService
 
     private MediaResponseDto MapToResponse(Medium media)
     {
+        var availableProduct = media.Product is
+            { IsActive: true, Status: ProductStatus.Published }
+            ? media.Product
+            : null;
+
         return new MediaResponseDto(
             Id: media.Id,
             ShopId: media.ShopId,
@@ -814,11 +819,11 @@ public sealed class MediaService : IMediaService
             ShopLogoUrl: media.Shop.LogoUrl,
             ShopLogoPublicUrl: GenerateStoragePublicUrl(media.Shop.LogoUrl, PublicAssetsBucketName),
             IsShopVerified: media.Shop.IsVerified == true,
-            ProductId: media.ProductId,
-            ProductTitle: media.Product?.Title,
-            ProductType: ToProductTypeName(media.Product?.Type),
+            ProductId: availableProduct?.Id,
+            ProductTitle: availableProduct?.Title,
+            ProductType: ToProductTypeName(availableProduct?.Type),
             ProductCoverImagePublicUrl: GenerateStoragePublicUrl(
-                media.Product?.CoverImageUrl,
+                availableProduct?.CoverImageUrl,
                 PublicAssetsBucketName),
             VideoUrl: media.VideoUrl,
             VideoPublicUrl: GenerateStoragePublicUrl(media.VideoUrl, PrivateProductsBucketName),
