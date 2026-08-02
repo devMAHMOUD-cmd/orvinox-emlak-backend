@@ -274,7 +274,8 @@ public sealed class HomeController : ControllerBase
                     course.Id,
                     course.Product.ShopId,
                     feedSessionId,
-                    startPosition + index));
+                    startPosition + index),
+                PreviewVideoPublicUrl: GeneratePrivateProductUrl(course.Product.PreviewVideoUrl));
         }));
     }
 
@@ -468,7 +469,8 @@ public sealed class HomeController : ControllerBase
                         course.Id,
                         course.Product.ShopId,
                         feedSessionId,
-                        startPosition + index));
+                        startPosition + index),
+                    PreviewVideoPublicUrl: GeneratePrivateProductUrl(course.Product.PreviewVideoUrl));
             })
             .ToList();
     }

@@ -411,7 +411,8 @@ public sealed class DiscoveryFeedService : IDiscoveryFeedService
                 feedSessionId,
                 position,
                 candidate.IsSponsored,
-                candidate.BoostId));
+                candidate.BoostId),
+            GeneratePrivateProductUrl(course.Product.PreviewVideoUrl));
 
         return new DiscoveryFeedItemDto(
             "course",

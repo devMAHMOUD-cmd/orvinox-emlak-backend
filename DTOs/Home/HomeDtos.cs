@@ -57,7 +57,8 @@ public sealed record HomeFeaturedCourseDto(
     string ShopName,
     string ShopSlug,
     string? ShopLogoPublicUrl,
-    string? TrackingToken = null);
+    string? TrackingToken = null,
+    string? PreviewVideoPublicUrl = null);
 
 public sealed record HomeReelDto(
     Guid Id,
