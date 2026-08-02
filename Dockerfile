@@ -13,6 +13,10 @@ RUN dotnet publish "CoreBackendApi.csproj" \
 FROM mcr.microsoft.com/dotnet/aspnet:9.0@sha256:86085bc68dde4a8cdfd8c2342acc3bf843eade855092879a85e3f3adb56e55c7 AS runtime
 WORKDIR /app
 
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
 ENV ASPNETCORE_HTTP_PORTS=
 ENV ASPNETCORE_URLS=http://+:5000
 EXPOSE 5000
