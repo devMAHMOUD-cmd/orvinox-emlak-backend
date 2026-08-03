@@ -3,6 +3,7 @@ using System.Data;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using CraftoraApi.Data;
+using CraftoraApi.DTOs.Notification;
 using CraftoraApi.DTOs.Shop;
 using CraftoraApi.Infrastructure.Messaging;
 using CraftoraApi.Middleware;
@@ -32,6 +33,7 @@ public sealed class ShopService : IShopService
     private readonly IStorageService _storageService;
     private readonly IUploadService _uploadService;
     private readonly IRabbitMqPublisher _rabbitMqPublisher;
+    private readonly INotificationService _notificationService;
 
     public ShopService(
         AppDbContext dbContext,
@@ -39,7 +41,8 @@ public sealed class ShopService : IShopService
         IDistributedCache cache,
         IStorageService storageService,
         IUploadService uploadService,
-        IRabbitMqPublisher rabbitMqPublisher)
+        IRabbitMqPublisher rabbitMqPublisher,
+        INotificationService notificationService)
     {
         _dbContext = dbContext ?? throw new ArgumentNullException(nameof(dbContext));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
@@ -47,6 +50,7 @@ public sealed class ShopService : IShopService
         _storageService = storageService ?? throw new ArgumentNullException(nameof(storageService));
         _uploadService = uploadService ?? throw new ArgumentNullException(nameof(uploadService));
         _rabbitMqPublisher = rabbitMqPublisher ?? throw new ArgumentNullException(nameof(rabbitMqPublisher));
+        _notificationService = notificationService ?? throw new ArgumentNullException(nameof(notificationService));
     }
 
     public async Task<ShopResponseDto> CreateShopAsync(Guid userId, CreateShopDto dto)
@@ -483,12 +487,75 @@ public sealed class ShopService : IShopService
             await TryRemoveShopCacheAsync(shop.Slug);
             await PublishShopIndexMessageAsync(shopId);
 
+            if (isFollowing)
+            {
+                await TrySendNewFollowerNotificationAsync(shop, userId);
+            }
+
             return new ShopFollowResponseDto(shopId, isFollowing, followerCount);
         }
         catch
         {
             await transaction.RollbackAsync();
             throw;
+        }
+    }
+
+    private async Task TrySendNewFollowerNotificationAsync(Shop followedShop, Guid followerUserId)
+    {
+        try
+        {
+            var actor = await _dbContext.Users
+                .AsNoTracking()
+                .Where(user => user.Id == followerUserId)
+                .Select(user => new
+                {
+                    user.Id,
+                    user.FullName,
+                    user.AvatarUrl,
+                    ShopId = user.Shop == null ? (Guid?)null : user.Shop.Id,
+                    ShopName = user.Shop == null ? null : user.Shop.ShopName,
+                    ShopLogoUrl = user.Shop == null ? null : user.Shop.LogoUrl
+                })
+                .FirstOrDefaultAsync();
+
+            if (actor is null)
+            {
+                return;
+            }
+
+            var actorName = actor.ShopName?.Trim();
+            if (string.IsNullOrWhiteSpace(actorName))
+            {
+                actorName = actor.FullName?.Trim();
+            }
+
+            if (string.IsNullOrWhiteSpace(actorName))
+            {
+                actorName = "Bir kullanici";
+            }
+
+            await _notificationService.SendActorNotificationAsync(
+                followedShop.UserId,
+                "Yeni takipcin var!",
+                $"{actorName} magazani takip etmeye basladi.",
+                NotificationType.NewFollow,
+                followedShop.Id,
+                actor.Id,
+                actor.FullName,
+                actor.AvatarUrl,
+                actor.ShopId,
+                actor.ShopName,
+                actor.ShopLogoUrl,
+                "shop_follow");
+        }
+        catch (Exception exception)
+        {
+            _logger.LogWarning(
+                exception,
+                "New follower notification could not be sent. ShopId: {ShopId}, FollowerUserId: {FollowerUserId}",
+                followedShop.Id,
+                followerUserId);
         }
     }
 

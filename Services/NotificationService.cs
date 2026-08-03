@@ -350,6 +350,7 @@ public sealed class NotificationService : INotificationService
             NotificationType.NewProduct => "new_product",
             NotificationType.NewLike => "media_liked",
             NotificationType.NewComment => "media_commented",
+            NotificationType.NewFollow => "new_follow",
             NotificationType.NewOrder => "order_completed",
             NotificationType.ProductQuestionAnswer => "product_question_answer",
             NotificationType.System => "system",
@@ -365,6 +366,7 @@ public sealed class NotificationService : INotificationService
             "new_product" => NotificationType.NewProduct,
             "media_liked" => NotificationType.NewLike,
             "media_commented" => NotificationType.NewComment,
+            "new_follow" => NotificationType.NewFollow,
             "order_completed" => NotificationType.NewOrder,
             "product_question_answer" => NotificationType.ProductQuestionAnswer,
             _ => NotificationType.System
@@ -379,6 +381,7 @@ public sealed class NotificationService : INotificationService
             NotificationType.NewProduct => "product",
             NotificationType.NewLike => "media",
             NotificationType.NewComment => "media",
+            NotificationType.NewFollow => "shop_follow",
             NotificationType.NewOrder => "order",
             NotificationType.ProductQuestionAnswer => "product_question_answer",
             NotificationType.System => "system",
