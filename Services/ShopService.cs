@@ -479,9 +479,8 @@ public sealed class ShopService : IShopService
             }
 
             await _dbContext.SaveChangesAsync();
-            var followerCount = await _dbContext.Subscriptions
-                .AsNoTracking()
-                .CountAsync(item => item.ShopId == shopId);
+            await _dbContext.Entry(shop).ReloadAsync();
+            var followerCount = Math.Max(shop.FollowerCount ?? 0, 0);
 
             await transaction.CommitAsync();
             await TryRemoveShopCacheAsync(shop.Slug);
