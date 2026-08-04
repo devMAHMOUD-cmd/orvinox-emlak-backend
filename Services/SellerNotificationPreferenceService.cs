@@ -38,7 +38,7 @@ public sealed class SellerNotificationPreferenceService : ISellerNotificationPre
 
     public async Task<SellerNotificationPreferencesDto> UpdateAsync(
         Guid sellerUserId,
-        SellerNotificationPreferencesDto dto,
+        UpdateSellerNotificationPreferencesDto dto,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(dto);
@@ -46,8 +46,14 @@ public sealed class SellerNotificationPreferenceService : ISellerNotificationPre
         await EnsureActiveSellerAsync(sellerUserId, cancellationToken);
         var preference = await GetOrCreatePreferenceAsync(sellerUserId, cancellationToken);
 
-        preference.OrderEmails = dto.OrderEmails;
-        preference.WeeklyReportEmails = dto.WeeklyReportEmails;
+        preference.OrderEmails = dto.OrderEmails ?? preference.OrderEmails;
+        preference.WeeklyReportEmails = dto.WeeklyReportEmails ?? preference.WeeklyReportEmails;
+        preference.OrderNotifications = dto.OrderNotifications ?? preference.OrderNotifications;
+        preference.LikeNotifications = dto.LikeNotifications ?? preference.LikeNotifications;
+        preference.CommentNotifications = dto.CommentNotifications ?? preference.CommentNotifications;
+        preference.FollowNotifications = dto.FollowNotifications ?? preference.FollowNotifications;
+        preference.NewContentNotifications = dto.NewContentNotifications ?? preference.NewContentNotifications;
+        preference.QuestionAnswerNotifications = dto.QuestionAnswerNotifications ?? preference.QuestionAnswerNotifications;
         preference.UpdatedAt = DateTime.UtcNow;
 
         await _dbContext.SaveChangesAsync(cancellationToken);
@@ -195,6 +201,12 @@ public sealed class SellerNotificationPreferenceService : ISellerNotificationPre
             UserId = sellerUserId,
             OrderEmails = true,
             WeeklyReportEmails = true,
+            OrderNotifications = true,
+            LikeNotifications = true,
+            CommentNotifications = true,
+            FollowNotifications = true,
+            NewContentNotifications = true,
+            QuestionAnswerNotifications = true,
             CreatedAt = DateTime.UtcNow,
             UpdatedAt = DateTime.UtcNow
         };
@@ -209,6 +221,12 @@ public sealed class SellerNotificationPreferenceService : ISellerNotificationPre
     {
         return new SellerNotificationPreferencesDto(
             preference.OrderEmails,
-            preference.WeeklyReportEmails);
+            preference.WeeklyReportEmails,
+            preference.OrderNotifications,
+            preference.LikeNotifications,
+            preference.CommentNotifications,
+            preference.FollowNotifications,
+            preference.NewContentNotifications,
+            preference.QuestionAnswerNotifications);
     }
 }

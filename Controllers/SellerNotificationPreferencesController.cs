@@ -34,7 +34,7 @@ public sealed class SellerNotificationPreferencesController : ControllerBase
 
     [HttpPut]
     public async Task<IActionResult> UpdateAsync(
-        [FromBody] SellerNotificationPreferencesDto request,
+        [FromBody] UpdateSellerNotificationPreferencesDto request,
         CancellationToken cancellationToken)
     {
         var result = await _preferenceService.UpdateAsync(

@@ -1564,6 +1564,24 @@ public partial class AppDbContext : DbContext
             entity.Property(e => e.WeeklyReportEmails)
                 .HasDefaultValue(true)
                 .HasColumnName("weekly_report_emails");
+            entity.Property(e => e.OrderNotifications)
+                .HasDefaultValue(true)
+                .HasColumnName("order_notifications");
+            entity.Property(e => e.LikeNotifications)
+                .HasDefaultValue(true)
+                .HasColumnName("like_notifications");
+            entity.Property(e => e.CommentNotifications)
+                .HasDefaultValue(true)
+                .HasColumnName("comment_notifications");
+            entity.Property(e => e.FollowNotifications)
+                .HasDefaultValue(true)
+                .HasColumnName("follow_notifications");
+            entity.Property(e => e.NewContentNotifications)
+                .HasDefaultValue(true)
+                .HasColumnName("new_content_notifications");
+            entity.Property(e => e.QuestionAnswerNotifications)
+                .HasDefaultValue(true)
+                .HasColumnName("question_answer_notifications");
             entity.Property(e => e.CreatedAt)
                 .HasDefaultValueSql("CURRENT_TIMESTAMP")
                 .HasColumnName("created_at");

@@ -10,7 +10,7 @@ public interface ISellerNotificationPreferenceService
 
     Task<SellerNotificationPreferencesDto> UpdateAsync(
         Guid sellerUserId,
-        SellerNotificationPreferencesDto dto,
+        UpdateSellerNotificationPreferencesDto dto,
         CancellationToken cancellationToken = default);
 
     Task QueueTestOrderEmailAsync(

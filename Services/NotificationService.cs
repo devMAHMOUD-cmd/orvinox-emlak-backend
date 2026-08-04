@@ -132,6 +132,11 @@ public sealed class NotificationService : INotificationService
         Guid? referenceId,
         string? referenceType = null)
     {
+        if (!await IsNotificationEnabledAsync(userId, type))
+        {
+            return;
+        }
+
         var normalizedTitle = PlainTextInputValidator.Require(title, "Bildirim basligi", 200);
         var normalizedMessage = PlainTextInputValidator.Require(message, "Bildirim mesaji", 1000);
 
@@ -182,6 +187,11 @@ public sealed class NotificationService : INotificationService
         string? shopLogoObjectKey,
         string answerText)
     {
+        if (!await IsNotificationEnabledAsync(userId, NotificationType.ProductQuestionAnswer))
+        {
+            return;
+        }
+
         var normalizedShopName = PlainTextInputValidator.Require(shopName, "Magaza adi", 200);
         var normalizedAnswer = PlainTextInputValidator.Require(answerText, "Cevap metni", 1000);
         var title = $"{normalizedShopName} sorunu yanitladi";
@@ -244,6 +254,11 @@ public sealed class NotificationService : INotificationService
         string? actorShopLogoObjectKey,
         string? referenceType = null)
     {
+        if (!await IsNotificationEnabledAsync(userId, type))
+        {
+            return;
+        }
+
         var normalizedTitle = PlainTextInputValidator.Require(title, "Bildirim basligi", 200);
         var normalizedMessage = PlainTextInputValidator.Require(message, "Bildirim mesaji", 1000);
         var normalizedReferenceType = PlainTextInputValidator.Optional(referenceType, "Bildirim referans tipi", 50)
@@ -386,6 +401,34 @@ public sealed class NotificationService : INotificationService
             NotificationType.ProductQuestionAnswer => "product_question_answer",
             NotificationType.System => "system",
             _ => "system"
+        };
+    }
+
+    private async Task<bool> IsNotificationEnabledAsync(Guid userId, NotificationType type)
+    {
+        if (type == NotificationType.System)
+        {
+            return true;
+        }
+
+        var preference = await _dbContext.SellerNotificationPreferences
+            .AsNoTracking()
+            .FirstOrDefaultAsync(item => item.UserId == userId);
+
+        if (preference is null)
+        {
+            return true;
+        }
+
+        return type switch
+        {
+            NotificationType.NewOrder => preference.OrderNotifications,
+            NotificationType.NewLike => preference.LikeNotifications,
+            NotificationType.NewComment => preference.CommentNotifications,
+            NotificationType.NewFollow => preference.FollowNotifications,
+            NotificationType.NewVideo or NotificationType.NewProduct => preference.NewContentNotifications,
+            NotificationType.ProductQuestionAnswer => preference.QuestionAnswerNotifications,
+            _ => true
         };
     }
 

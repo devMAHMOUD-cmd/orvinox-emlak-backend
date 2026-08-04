@@ -10,6 +10,18 @@ public sealed class SellerNotificationPreference
 
     public bool WeeklyReportEmails { get; set; } = true;
 
+    public bool OrderNotifications { get; set; } = true;
+
+    public bool LikeNotifications { get; set; } = true;
+
+    public bool CommentNotifications { get; set; } = true;
+
+    public bool FollowNotifications { get; set; } = true;
+
+    public bool NewContentNotifications { get; set; } = true;
+
+    public bool QuestionAnswerNotifications { get; set; } = true;
+
     public DateTime CreatedAt { get; set; }
 
     public DateTime UpdatedAt { get; set; }
