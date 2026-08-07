@@ -1,4 +1,5 @@
 using CraftoraApi.Data;
+using CraftoraApi.DTOs.Common;
 using CraftoraApi.DTOs.Customer;
 using CraftoraApi.Middleware;
 using CraftoraApi.Models.Entities;
@@ -130,7 +131,27 @@ public sealed class SellerCustomerService : ISellerCustomerService
 
         var totalOrders = orders.Count;
         var completedOrders = orders.Where(order => order.Status == OrderStatus.Completed).ToList();
-        var totalSpent = completedOrders.Sum(order => order.Amount);
+        var totalSpentByCurrency = completedOrders
+            .GroupBy(order => CurrencyCode.Normalize(order.Currency))
+            .Select(group => new CurrencyAmountDto(
+                Currency: group.Key,
+                Amount: group.Sum(order => order.Amount)))
+            .OrderBy(item => item.Currency)
+            .ToList();
+        var averageOrderValueByCurrency = completedOrders
+            .GroupBy(order => CurrencyCode.Normalize(order.Currency))
+            .Select(group => new CurrencyAmountDto(
+                Currency: group.Key,
+                Amount: Math.Round(
+                    group.Sum(order => order.Amount) / group.Count(),
+                    2,
+                    MidpointRounding.AwayFromZero)))
+            .OrderBy(item => item.Currency)
+            .ToList();
+        var totalSpent = totalSpentByCurrency.Count == 1 ? totalSpentByCurrency[0].Amount : 0;
+        var averageOrderValue = averageOrderValueByCurrency.Count == 1
+            ? averageOrderValueByCurrency[0].Amount
+            : 0;
 
         return new SellerCustomerDetailDto(
             CustomerId: customer.Id,
@@ -140,9 +161,9 @@ public sealed class SellerCustomerService : ISellerCustomerService
             JoinedAt: customer.CreatedAt,
             TotalOrders: totalOrders,
             TotalSpent: totalSpent,
-            AverageOrderValue: completedOrders.Count == 0
-                ? 0
-                : Math.Round(totalSpent / completedOrders.Count, 2, MidpointRounding.AwayFromZero),
+            AverageOrderValue: averageOrderValue,
+            TotalSpentByCurrency: totalSpentByCurrency,
+            AverageOrderValueByCurrency: averageOrderValueByCurrency,
             IsSubscriber: isSubscriber,
             SubscriptionStatus: isSubscriber ? "active" : null,
             LastActivityAt: activities.FirstOrDefault()?.CreatedAt,
@@ -163,7 +184,25 @@ public sealed class SellerCustomerService : ISellerCustomerService
         var buyers = snapshots.Count(item => item.TotalOrders > 0);
         var subscribers = snapshots.Count(item => item.IsSubscriber);
         var returningCustomers = snapshots.Count(item => item.TotalOrders >= 2);
-        var totalCompletedRevenue = snapshots.Sum(item => item.TotalSpent);
+        var averageCustomerValueByCurrency = snapshots
+            .SelectMany(snapshot => snapshot.TotalSpentByCurrency.Select(total => new
+            {
+                snapshot.CustomerId,
+                total.Currency,
+                total.Amount
+            }))
+            .GroupBy(item => item.Currency)
+            .Select(group => new CurrencyAmountDto(
+                Currency: group.Key,
+                Amount: Math.Round(
+                    group.Sum(item => item.Amount) / group
+                        .Select(item => item.CustomerId)
+                        .Distinct()
+                        .Count(),
+                    2,
+                    MidpointRounding.AwayFromZero)))
+            .OrderBy(item => item.Currency)
+            .ToList();
         var anonymousVisitors = await CountAnonymousVisitorsAsync(shop.Id, range, cancellationToken);
         var namedVisitors = snapshots.Count(item => item.ShopVisitCount > 0 || item.ProductViewCount > 0);
 
@@ -173,9 +212,10 @@ public sealed class SellerCustomerService : ISellerCustomerService
             Subscribers: subscribers,
             Visitors: namedVisitors + anonymousVisitors,
             ReturningCustomers: returningCustomers,
-            AverageCustomerValue: buyers == 0
-                ? 0
-                : Math.Round(totalCompletedRevenue / buyers, 2, MidpointRounding.AwayFromZero));
+            AverageCustomerValue: averageCustomerValueByCurrency.Count == 1
+                ? averageCustomerValueByCurrency[0].Amount
+                : 0,
+            AverageCustomerValueByCurrency: averageCustomerValueByCurrency);
     }
 
     public async Task<IReadOnlyList<SellerCustomerSegmentDto>> GetSegmentsAsync(
@@ -238,6 +278,35 @@ public sealed class SellerCustomerService : ISellerCustomerService
             })
             .ToDictionaryAsync(item => item.UserId, cancellationToken);
 
+        var spentRows = await _dbContext.Orders
+            .AsNoTracking()
+            .Where(order =>
+                order.ShopId == shopId &&
+                order.BuyerId != Guid.Empty &&
+                order.Status == OrderStatus.Completed &&
+                order.CreatedAt >= range.Start &&
+                order.CreatedAt <= range.End)
+            .GroupBy(order => new { order.BuyerId, order.Currency })
+            .Select(group => new
+            {
+                UserId = group.Key.BuyerId,
+                group.Key.Currency,
+                Amount = group.Sum(order => order.Amount)
+            })
+            .ToListAsync(cancellationToken);
+
+        var spentByCustomer = spentRows
+            .GroupBy(item => item.UserId)
+            .ToDictionary(
+                group => group.Key,
+                group => (IReadOnlyList<CurrencyAmountDto>)group
+                    .GroupBy(item => CurrencyCode.Normalize(item.Currency))
+                    .Select(currencyGroup => new CurrencyAmountDto(
+                        Currency: currencyGroup.Key,
+                        Amount: currencyGroup.Sum(item => item.Amount)))
+                    .OrderBy(item => item.Currency)
+                    .ToList());
+
         var subscriptions = await _dbContext.Subscriptions
             .AsNoTracking()
             .Where(item =>
@@ -296,6 +365,7 @@ public sealed class SellerCustomerService : ISellerCustomerService
                 orderStats.TryGetValue(customerId, out var order);
                 subscriptions.TryGetValue(customerId, out var subscription);
                 eventStats.TryGetValue(customerId, out var analytics);
+                spentByCustomer.TryGetValue(customerId, out var totalSpentByCurrency);
 
                 var lastActivity = GetLatestActivity(
                     order?.LastOrderAt,
@@ -313,8 +383,11 @@ public sealed class SellerCustomerService : ISellerCustomerService
                         analytics?.LeadEventCount ?? 0,
                         (analytics?.ProductViewCount ?? 0) + (analytics?.ShopVisitCount ?? 0)),
                     TotalOrders: order?.TotalOrders ?? 0,
-                    TotalSpent: order?.TotalSpent ?? 0,
+                    TotalSpent: totalSpentByCurrency?.Count == 1
+                        ? totalSpentByCurrency[0].Amount
+                        : 0,
                     Currency: order?.Currency,
+                    TotalSpentByCurrency: totalSpentByCurrency ?? [],
                     LastActivityAt: lastActivity.At,
                     LastActivityType: lastActivity.Type,
                     IsSubscriber: subscription is not null,
@@ -411,6 +484,7 @@ public sealed class SellerCustomerService : ISellerCustomerService
             TotalOrders: snapshot.TotalOrders,
             TotalSpent: snapshot.TotalSpent,
             Currency: snapshot.Currency,
+            TotalSpentByCurrency: snapshot.TotalSpentByCurrency,
             LastActivityAt: snapshot.LastActivityAt,
             LastActivityType: snapshot.LastActivityType,
             IsSubscriber: snapshot.IsSubscriber,
@@ -426,6 +500,7 @@ public sealed class SellerCustomerService : ISellerCustomerService
             OrderNumber: order.OrderNumber,
             ProductTitle: order.Product.Title,
             Amount: order.Amount,
+            Currency: CurrencyCode.Normalize(order.Currency),
             Status: ToOrderStatusName(order.Status),
             CreatedAt: order.CreatedAt);
     }
@@ -570,6 +645,7 @@ public sealed class SellerCustomerService : ISellerCustomerService
         int TotalOrders,
         decimal TotalSpent,
         string? Currency,
+        IReadOnlyList<CurrencyAmountDto> TotalSpentByCurrency,
         DateTime? LastActivityAt,
         string? LastActivityType,
         bool IsSubscriber,

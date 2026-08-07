@@ -1,3 +1,5 @@
+using CraftoraApi.DTOs.Common;
+
 namespace CraftoraApi.DTOs.Customer;
 
 public sealed record SellerCustomerListItemDto(
@@ -9,6 +11,7 @@ public sealed record SellerCustomerListItemDto(
     int TotalOrders,
     decimal TotalSpent,
     string? Currency,
+    IReadOnlyList<CurrencyAmountDto> TotalSpentByCurrency,
     DateTime? LastActivityAt,
     string? LastActivityType,
     bool IsSubscriber,

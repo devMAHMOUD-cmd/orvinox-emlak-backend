@@ -727,9 +727,11 @@ public sealed class SearchService : ISearchService
                     Title: product.Title,
                     Description: product.Description,
                     Price: product.Price,
+                    Currency: ProductCurrency.Resolve(null, product.Metadata, product.Currency),
                     CoverImagePublicUrl: GeneratePublicAssetUrl(product.CoverImageUrl),
                     ShopId: product.ShopId,
-                    ShopName: product.Shop.ShopName);
+                    ShopName: product.Shop.ShopName,
+                    ShopSlug: product.Shop.Slug);
             })
             .ToList();
     }
@@ -767,9 +769,11 @@ public sealed class SearchService : ISearchService
                     Title: product.Title,
                     Description: product.Description,
                     Price: product.Price,
+                    Currency: ProductCurrency.Resolve(null, product.Metadata, product.Currency),
                     CoverImagePublicUrl: GeneratePublicAssetUrl(product.CoverImageUrl),
                     ShopId: product.ShopId,
                     ShopName: product.Shop.ShopName,
+                    ShopSlug: product.Shop.Slug,
                     Level: course.Level,
                     TotalDurationInMinutes: course.TotalDurationInMinutes);
             })

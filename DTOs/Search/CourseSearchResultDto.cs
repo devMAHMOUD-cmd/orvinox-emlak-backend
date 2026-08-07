@@ -5,8 +5,10 @@ public sealed record CourseSearchResultDto(
     string Title,
     string? Description,
     decimal Price,
+    string Currency,
     string? CoverImagePublicUrl,
     Guid ShopId,
     string? ShopName,
+    string? ShopSlug,
     string? Level,
     int? TotalDurationInMinutes);

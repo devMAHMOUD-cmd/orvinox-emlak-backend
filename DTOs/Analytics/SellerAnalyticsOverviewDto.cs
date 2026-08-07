@@ -1,3 +1,5 @@
+using CraftoraApi.DTOs.Common;
+
 namespace CraftoraApi.DTOs.Analytics;
 
 public sealed record SellerAnalyticsOverviewDto(
@@ -13,6 +15,7 @@ public sealed record SellerAnalyticsOverviewDto(
     int CheckoutStartedCount,
     int PurchaseCompletedCount,
     decimal TotalRevenue,
+    IReadOnlyList<CurrencyAmountDto> RevenueByCurrency,
     int UniqueVisitors,
     int UniqueCustomers,
     double PurchaseConversionRate,

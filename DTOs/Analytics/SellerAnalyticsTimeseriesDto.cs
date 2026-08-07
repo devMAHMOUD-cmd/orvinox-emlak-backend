@@ -1,3 +1,5 @@
+using CraftoraApi.DTOs.Common;
+
 namespace CraftoraApi.DTOs.Analytics;
 
 public sealed record SellerAnalyticsTimeseriesDto(
@@ -17,4 +19,5 @@ public sealed record SellerAnalyticsTimeseriesPointDto(
     int CheckoutStartedCount,
     int PurchaseCompletedCount,
     decimal Revenue,
+    IReadOnlyList<CurrencyAmountDto> RevenueByCurrency,
     int UniqueVisitors);

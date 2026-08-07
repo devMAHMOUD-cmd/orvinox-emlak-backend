@@ -5,6 +5,8 @@ public sealed record ProductSearchResultDto(
     string Title,
     string? Description,
     decimal Price,
+    string Currency,
     string? CoverImagePublicUrl,
     Guid ShopId,
-    string? ShopName);
+    string? ShopName,
+    string? ShopSlug);

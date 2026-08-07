@@ -1,3 +1,5 @@
+using CraftoraApi.DTOs.Common;
+
 namespace CraftoraApi.DTOs.Analytics;
 
 public sealed record CourseAnalyticsDto(
@@ -8,6 +10,7 @@ public sealed record CourseAnalyticsDto(
     int Views,
     int Sales,
     decimal Revenue,
+    IReadOnlyList<CurrencyAmountDto> RevenueByCurrency,
     int TotalLessons,
     int StartedStudents,
     int CompletedStudents,
@@ -21,6 +24,7 @@ public sealed record CourseAnalyticsDetailDto(
     int Views,
     int Sales,
     decimal Revenue,
+    IReadOnlyList<CurrencyAmountDto> RevenueByCurrency,
     int TotalLessons,
     int StartedStudents,
     int CompletedStudents,

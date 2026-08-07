@@ -1,3 +1,5 @@
+using CraftoraApi.DTOs.Common;
+
 namespace CraftoraApi.DTOs.Analytics;
 
 public sealed record TopProductAnalyticsDto(
@@ -7,4 +9,5 @@ public sealed record TopProductAnalyticsDto(
     int Views,
     int Sales,
     decimal Revenue,
+    IReadOnlyList<CurrencyAmountDto> RevenueByCurrency,
     double ViewToPurchaseRate);

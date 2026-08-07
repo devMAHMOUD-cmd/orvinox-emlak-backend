@@ -115,15 +115,48 @@ public sealed class SellerOrderService : ISellerOrderService
         var refundedOrders = await query.CountAsync(
             order => order.Status == OrderStatus.Refunded,
             cancellationToken);
-        var totalRevenue = await query
-            .Where(order => order.Status == OrderStatus.Completed)
-            .SumAsync(order => order.Amount, cancellationToken);
-        var pendingAmount = await query
-            .Where(order => order.Status == OrderStatus.Pending)
-            .SumAsync(order => order.Amount, cancellationToken);
-        var averageOrderValue = paidOrders == 0
-            ? 0
-            : Math.Round(totalRevenue / paidOrders, 2, MidpointRounding.AwayFromZero);
+        var financialRows = await query
+            .Where(order =>
+                order.Status == OrderStatus.Completed ||
+                order.Status == OrderStatus.Pending)
+            .Select(order => new
+            {
+                order.Status,
+                order.Amount,
+                order.Currency
+            })
+            .ToListAsync(cancellationToken);
+
+        var totalsByCurrency = financialRows
+            .GroupBy(order => CurrencyCode.Normalize(order.Currency))
+            .Select(group =>
+            {
+                var paidCurrencyOrders = group
+                    .Where(order => order.Status == OrderStatus.Completed)
+                    .ToList();
+                var currencyRevenue = paidCurrencyOrders.Sum(order => order.Amount);
+
+                return new SellerOrderCurrencySummaryDto(
+                    Currency: group.Key,
+                    PaidOrders: paidCurrencyOrders.Count,
+                    TotalRevenue: currencyRevenue,
+                    PendingAmount: group
+                        .Where(order => order.Status == OrderStatus.Pending)
+                        .Sum(order => order.Amount),
+                    AverageOrderValue: paidCurrencyOrders.Count == 0
+                        ? 0
+                        : Math.Round(
+                            currencyRevenue / paidCurrencyOrders.Count,
+                            2,
+                            MidpointRounding.AwayFromZero));
+            })
+            .OrderBy(item => item.Currency)
+            .ToList();
+
+        var singleCurrencyTotal = totalsByCurrency.Count == 1 ? totalsByCurrency[0] : null;
+        var totalRevenue = singleCurrencyTotal?.TotalRevenue ?? 0;
+        var pendingAmount = singleCurrencyTotal?.PendingAmount ?? 0;
+        var averageOrderValue = singleCurrencyTotal?.AverageOrderValue ?? 0;
 
         return new SellerOrderSummaryDto(
             TotalOrders: totalOrders,
@@ -132,7 +165,8 @@ public sealed class SellerOrderService : ISellerOrderService
             RefundedOrders: refundedOrders,
             TotalRevenue: totalRevenue,
             PendingAmount: pendingAmount,
-            AverageOrderValue: averageOrderValue);
+            AverageOrderValue: averageOrderValue,
+            TotalsByCurrency: totalsByCurrency);
     }
 
     public async Task<RefundOrderResponseDto> RefundOrderAsync(

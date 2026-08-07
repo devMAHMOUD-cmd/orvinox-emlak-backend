@@ -155,7 +155,7 @@ public sealed class SellerCourseService : ISellerCourseService
             Description = dto.Description,
             Price = dto.Price,
             OriginalPrice = dto.OriginalPrice,
-            Currency = "USD",
+            Currency = ProductCurrency.Resolve(dto.Currency, dto.Metadata),
             CoverImageUrl = dto.CoverImageUrl,
             PreviewVideoUrl = dto.PreviewVideoUrl,
             Metadata = dto.Metadata,
@@ -227,6 +227,7 @@ public sealed class SellerCourseService : ISellerCourseService
         course.Product.Description = dto.Description;
         course.Product.Price = dto.Price;
         course.Product.OriginalPrice = dto.OriginalPrice;
+        course.Product.Currency = ProductCurrency.Resolve(dto.Currency, dto.Metadata, course.Product.Currency);
         course.Product.CoverImageUrl = dto.CoverImageUrl;
         course.Product.PreviewVideoUrl = dto.PreviewVideoUrl;
         course.Product.Metadata = dto.Metadata;
@@ -584,6 +585,7 @@ public sealed class SellerCourseService : ISellerCourseService
             Description: course.Product.Description ?? string.Empty,
             Price: course.Product.Price,
             OriginalPrice: course.Product.OriginalPrice,
+            Currency: ProductCurrency.Resolve(null, course.Product.Metadata, course.Product.Currency),
             CoverImageUrl: course.Product.CoverImageUrl,
             CoverImagePublicUrl: GeneratePublicAssetUrl(course.Product.CoverImageUrl),
             PreviewVideoUrl: course.Product.PreviewVideoUrl,
@@ -612,6 +614,7 @@ public sealed class SellerCourseService : ISellerCourseService
             Description: course.Product.Description ?? string.Empty,
             Price: course.Product.Price,
             OriginalPrice: course.Product.OriginalPrice,
+            Currency: ProductCurrency.Resolve(null, course.Product.Metadata, course.Product.Currency),
             CoverImageUrl: course.Product.CoverImageUrl,
             CoverImagePublicUrl: GeneratePublicAssetUrl(course.Product.CoverImageUrl),
             PreviewVideoUrl: course.Product.PreviewVideoUrl,

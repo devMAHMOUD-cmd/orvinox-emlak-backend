@@ -12,6 +12,7 @@ public sealed record SellerCourseListItemDto(
     string Description,
     decimal Price,
     decimal? OriginalPrice,
+    string Currency,
     string? CoverImageUrl,
     string? CoverImagePublicUrl,
     string? PreviewVideoUrl,
@@ -44,6 +45,7 @@ public sealed record SellerCourseDetailDto(
     string Description,
     decimal Price,
     decimal? OriginalPrice,
+    string Currency,
     string? CoverImageUrl,
     string? CoverImagePublicUrl,
     string? PreviewVideoUrl,
@@ -123,6 +125,9 @@ public sealed record CreateSellerCourseDto
     [Range(0d, 99999999.99d)]
     public decimal? OriginalPrice { get; init; }
 
+    [StringLength(3)]
+    public string? Currency { get; init; }
+
     public ProductStatus Status { get; init; } = ProductStatus.Draft;
 
     [MaxLength(20)]
@@ -169,6 +174,9 @@ public sealed record UpdateSellerCourseDto
 
     [Range(0d, 99999999.99d)]
     public decimal? OriginalPrice { get; init; }
+
+    [StringLength(3)]
+    public string? Currency { get; init; }
 
     public ProductStatus Status { get; init; } = ProductStatus.Draft;
 

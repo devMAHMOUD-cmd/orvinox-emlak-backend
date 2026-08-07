@@ -5,5 +5,6 @@ public sealed record SellerCustomerOrderDto(
     string OrderNumber,
     string ProductTitle,
     decimal Amount,
+    string Currency,
     string Status,
     DateTime? CreatedAt);

@@ -2,6 +2,7 @@ using System.Data;
 using System.Data.Common;
 using CraftoraApi.Data;
 using CraftoraApi.DTOs.Analytics;
+using CraftoraApi.DTOs.Common;
 using CraftoraApi.Middleware;
 using CraftoraApi.Models.Entities;
 using CraftoraApi.Models.Enums;
@@ -56,8 +57,18 @@ public sealed class SellerAnalyticsService : ISellerAnalyticsService
         var checkoutStartedCount = await events.CountAsync(
             item => item.EventType == AnalyticsEventType.CheckoutStarted,
             cancellationToken);
-        var purchaseCompletedCount = await orders.CountAsync(cancellationToken);
-        var totalRevenue = await orders.SumAsync(order => order.Amount, cancellationToken);
+        var completedOrderRows = await orders
+            .Select(order => new { order.Amount, order.Currency })
+            .ToListAsync(cancellationToken);
+        var purchaseCompletedCount = completedOrderRows.Count;
+        var revenueByCurrency = completedOrderRows
+            .GroupBy(order => CurrencyCode.Normalize(order.Currency))
+            .Select(group => new CurrencyAmountDto(
+                Currency: group.Key,
+                Amount: group.Sum(order => order.Amount)))
+            .OrderBy(item => item.Currency)
+            .ToList();
+        var totalRevenue = revenueByCurrency.Count == 1 ? revenueByCurrency[0].Amount : 0;
         var uniqueCustomers = await orders
             .Select(order => order.BuyerId)
             .Distinct()
@@ -81,6 +92,7 @@ public sealed class SellerAnalyticsService : ISellerAnalyticsService
             CheckoutStartedCount: checkoutStartedCount,
             PurchaseCompletedCount: purchaseCompletedCount,
             TotalRevenue: totalRevenue,
+            RevenueByCurrency: revenueByCurrency,
             UniqueVisitors: uniqueVisitors,
             UniqueCustomers: uniqueCustomers,
             PurchaseConversionRate: CalculateRate(
@@ -190,15 +202,32 @@ public sealed class SellerAnalyticsService : ISellerAnalyticsService
             })
             .ToDictionaryAsync(item => item.ProductId, item => item.Views, cancellationToken);
 
-        var salesByProduct = await CompletedOrdersForShop(shop.Id, range)
-            .GroupBy(order => order.ProductId)
+        var salesRows = await CompletedOrdersForShop(shop.Id, range)
+            .GroupBy(order => new { order.ProductId, order.Currency })
             .Select(group => new
             {
-                ProductId = group.Key,
+                group.Key.ProductId,
+                group.Key.Currency,
                 Sales = group.Count(),
                 Revenue = group.Sum(order => order.Amount)
             })
-            .ToDictionaryAsync(item => item.ProductId, item => new { item.Sales, item.Revenue }, cancellationToken);
+            .ToListAsync(cancellationToken);
+
+        var salesByProduct = salesRows
+            .GroupBy(item => item.ProductId)
+            .ToDictionary(
+                group => group.Key,
+                group => new
+                {
+                    Sales = group.Sum(item => item.Sales),
+                    RevenueByCurrency = group
+                        .GroupBy(item => CurrencyCode.Normalize(item.Currency))
+                        .Select(currencyGroup => new CurrencyAmountDto(
+                            Currency: currencyGroup.Key,
+                            Amount: currencyGroup.Sum(item => item.Revenue)))
+                        .OrderBy(item => item.Currency)
+                        .ToList()
+                });
 
         return products
             .Select(product =>
@@ -212,11 +241,13 @@ public sealed class SellerAnalyticsService : ISellerAnalyticsService
                     ProductType: ToProductTypeName(product.Type),
                     Views: views,
                     Sales: sales?.Sales ?? 0,
-                    Revenue: sales?.Revenue ?? 0,
+                    Revenue: sales?.RevenueByCurrency.Count == 1
+                        ? sales.RevenueByCurrency[0].Amount
+                        : 0,
+                    RevenueByCurrency: sales?.RevenueByCurrency ?? [],
                     ViewToPurchaseRate: CalculateRate(sales?.Sales ?? 0, views));
             })
-            .OrderByDescending(item => item.Revenue)
-            .ThenByDescending(item => item.Sales)
+            .OrderByDescending(item => item.Sales)
             .ThenByDescending(item => item.Views)
             .Take(limit)
             .ToList();
@@ -263,7 +294,8 @@ public sealed class SellerAnalyticsService : ISellerAnalyticsService
             .Select(order => new
             {
                 CreatedAt = order.CreatedAt!.Value,
-                order.Amount
+                order.Amount,
+                order.Currency
             })
             .ToListAsync(cancellationToken);
 
@@ -272,7 +304,15 @@ public sealed class SellerAnalyticsService : ISellerAnalyticsService
             .ToDictionary(group => group.Key, group => group.ToList());
         var revenueByDate = orderRows
             .GroupBy(item => DateOnly.FromDateTime(item.CreatedAt.Date))
-            .ToDictionary(group => group.Key, group => group.Sum(item => item.Amount));
+            .ToDictionary(
+                group => group.Key,
+                group => group
+                    .GroupBy(item => CurrencyCode.Normalize(item.Currency))
+                    .Select(currencyGroup => new CurrencyAmountDto(
+                        Currency: currencyGroup.Key,
+                        Amount: currencyGroup.Sum(item => item.Amount)))
+                    .OrderBy(item => item.Currency)
+                    .ToList());
         var ordersByDate = orderRows
             .GroupBy(item => DateOnly.FromDateTime(item.CreatedAt.Date))
             .ToDictionary(group => group.Key, group => group.Count());
@@ -284,7 +324,8 @@ public sealed class SellerAnalyticsService : ISellerAnalyticsService
         {
             eventsByDate.TryGetValue(date, out var dayEvents);
             dayEvents ??= [];
-            revenueByDate.TryGetValue(date, out var revenue);
+            revenueByDate.TryGetValue(date, out var dayRevenueByCurrency);
+            dayRevenueByCurrency ??= [];
             ordersByDate.TryGetValue(date, out var completedOrders);
 
             var courseViews = dayEvents.Count(item =>
@@ -306,7 +347,8 @@ public sealed class SellerAnalyticsService : ISellerAnalyticsService
                 AddToCartCount: dayEvents.Count(item => item.EventType == AnalyticsEventType.AddToCart),
                 CheckoutStartedCount: dayEvents.Count(item => item.EventType == AnalyticsEventType.CheckoutStarted),
                 PurchaseCompletedCount: completedOrders,
-                Revenue: revenue,
+                Revenue: dayRevenueByCurrency.Count == 1 ? dayRevenueByCurrency[0].Amount : 0,
+                RevenueByCurrency: dayRevenueByCurrency,
                 UniqueVisitors: CountUniqueVisitors(dayEvents)));
         }
 
@@ -340,7 +382,10 @@ public sealed class SellerAnalyticsService : ISellerAnalyticsService
                     Level: course.Level,
                     Views: stats?.Views ?? 0,
                     Sales: stats?.Sales ?? 0,
-                    Revenue: stats?.Revenue ?? 0,
+                    Revenue: stats?.RevenueByCurrency.Count == 1
+                        ? stats.RevenueByCurrency[0].Amount
+                        : 0,
+                    RevenueByCurrency: stats?.RevenueByCurrency ?? [],
                     TotalLessons: course.TotalLessons,
                     StartedStudents: stats?.StartedStudents ?? 0,
                     CompletedStudents: stats?.CompletedStudents ?? 0,
@@ -434,7 +479,10 @@ public sealed class SellerAnalyticsService : ISellerAnalyticsService
             Level: course.Level,
             Views: stats?.Views ?? 0,
             Sales: stats?.Sales ?? 0,
-            Revenue: stats?.Revenue ?? 0,
+            Revenue: stats?.RevenueByCurrency.Count == 1
+                ? stats.RevenueByCurrency[0].Amount
+                : 0,
+            RevenueByCurrency: stats?.RevenueByCurrency ?? [],
             TotalLessons: lessons.Count,
             StartedStudents: stats?.StartedStudents ?? 0,
             CompletedStudents: stats?.CompletedStudents ?? 0,
@@ -552,16 +600,33 @@ public sealed class SellerAnalyticsService : ISellerAnalyticsService
             })
             .ToDictionaryAsync(item => item.ProductId, item => item.Views, cancellationToken);
 
-        var salesByProduct = await CompletedOrdersForShop(shopId, range)
+        var salesRows = await CompletedOrdersForShop(shopId, range)
             .Where(order => courseProductIds.Contains(order.ProductId))
-            .GroupBy(order => order.ProductId)
+            .GroupBy(order => new { order.ProductId, order.Currency })
             .Select(group => new
             {
-                ProductId = group.Key,
+                group.Key.ProductId,
+                group.Key.Currency,
                 Sales = group.Count(),
                 Revenue = group.Sum(order => order.Amount)
             })
-            .ToDictionaryAsync(item => item.ProductId, item => new { item.Sales, item.Revenue }, cancellationToken);
+            .ToListAsync(cancellationToken);
+
+        var salesByProduct = salesRows
+            .GroupBy(item => item.ProductId)
+            .ToDictionary(
+                group => group.Key,
+                group => new
+                {
+                    Sales = group.Sum(item => item.Sales),
+                    RevenueByCurrency = group
+                        .GroupBy(item => CurrencyCode.Normalize(item.Currency))
+                        .Select(currencyGroup => new CurrencyAmountDto(
+                            Currency: currencyGroup.Key,
+                            Amount: currencyGroup.Sum(item => item.Revenue)))
+                        .OrderBy(item => item.Currency)
+                        .ToList()
+                });
 
         var courseIds = courses.Select(course => course.CourseId).ToList();
         var progressRows = (await GetCourseProgressRowsAsync(shopId, cancellationToken))
@@ -604,7 +669,10 @@ public sealed class SellerAnalyticsService : ISellerAnalyticsService
                 return new CourseStats(
                     Views: views,
                     Sales: sales?.Sales ?? 0,
-                    Revenue: sales?.Revenue ?? 0,
+                    Revenue: sales?.RevenueByCurrency.Count == 1
+                        ? sales.RevenueByCurrency[0].Amount
+                        : 0,
+                    RevenueByCurrency: sales?.RevenueByCurrency ?? [],
                     StartedStudents: startedStudents,
                     CompletedStudents: completedStudents,
                     AverageCompletionRate: averageCompletionRate);
@@ -788,6 +856,7 @@ public sealed class SellerAnalyticsService : ISellerAnalyticsService
         int Views,
         int Sales,
         decimal Revenue,
+        IReadOnlyList<CurrencyAmountDto> RevenueByCurrency,
         int StartedStudents,
         int CompletedStudents,
         double AverageCompletionRate);

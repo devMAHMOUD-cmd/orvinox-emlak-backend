@@ -42,4 +42,7 @@ public sealed record UpdateProductDto(
 
     IReadOnlyList<string>? ImageObjectKeys = null,
 
-    bool RemoveProductFile = false);
+    bool RemoveProductFile = false,
+
+    [property: StringLength(3, ErrorMessage = "Para birimi en fazla 3 karakter olabilir.")]
+    string? Currency = null);

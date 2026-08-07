@@ -7,4 +7,12 @@ public sealed record SellerOrderSummaryDto(
     int RefundedOrders,
     decimal TotalRevenue,
     decimal PendingAmount,
+    decimal AverageOrderValue,
+    IReadOnlyList<SellerOrderCurrencySummaryDto> TotalsByCurrency);
+
+public sealed record SellerOrderCurrencySummaryDto(
+    string Currency,
+    int PaidOrders,
+    decimal TotalRevenue,
+    decimal PendingAmount,
     decimal AverageOrderValue);

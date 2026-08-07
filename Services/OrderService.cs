@@ -160,9 +160,10 @@ public sealed class OrderService : IOrderService
             var commissionSnapshot = commissionSnapshots[cartItem.Product.ShopId];
             var platformFee = Math.Round(amount * commissionSnapshot.CommissionRate, 2, MidpointRounding.AwayFromZero);
             var sellerEarnings = amount - platformFee;
-            var currency = string.IsNullOrWhiteSpace(cartItem.Product.Currency)
-                ? DefaultCurrency
-                : cartItem.Product.Currency;
+            var currency = ProductCurrency.Resolve(
+                requestedCurrency: null,
+                metadata: cartItem.Product.Metadata,
+                storedCurrency: cartItem.Product.Currency);
 
             var order = new Order
             {
@@ -305,9 +306,10 @@ public sealed class OrderService : IOrderService
 
             var subtotalAmount = Math.Round(product.Price, 2, MidpointRounding.AwayFromZero);
             var commissionSnapshot = await GetCommissionSnapshotAsync(product.ShopId);
-            var currency = string.IsNullOrWhiteSpace(product.Currency)
-                ? DefaultCurrency
-                : product.Currency;
+            var currency = ProductCurrency.Resolve(
+                requestedCurrency: null,
+                metadata: product.Metadata,
+                storedCurrency: product.Currency);
 
             await using var transaction = await _dbContext.Database.BeginTransactionAsync();
 

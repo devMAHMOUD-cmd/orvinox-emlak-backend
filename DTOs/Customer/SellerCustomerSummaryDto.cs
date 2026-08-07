@@ -1,3 +1,5 @@
+using CraftoraApi.DTOs.Common;
+
 namespace CraftoraApi.DTOs.Customer;
 
 public sealed record SellerCustomerSummaryDto(
@@ -6,4 +8,5 @@ public sealed record SellerCustomerSummaryDto(
     int Subscribers,
     int Visitors,
     int ReturningCustomers,
-    decimal AverageCustomerValue);
+    decimal AverageCustomerValue,
+    IReadOnlyList<CurrencyAmountDto> AverageCustomerValueByCurrency);

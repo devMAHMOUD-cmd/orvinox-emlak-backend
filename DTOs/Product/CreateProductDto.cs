@@ -40,4 +40,7 @@ public sealed record CreateProductDto(
 
     ProductType? Type = null,
 
-    IReadOnlyList<string>? ImageObjectKeys = null);
+    IReadOnlyList<string>? ImageObjectKeys = null,
+
+    [property: StringLength(3, ErrorMessage = "Para birimi en fazla 3 karakter olabilir.")]
+    string? Currency = null);

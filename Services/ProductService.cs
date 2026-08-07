@@ -73,13 +73,14 @@ public sealed class ProductService : IProductService
         {
             Id = Guid.NewGuid(),
             ShopId = shopId,
+            Shop = shop,
             CategoryId = categoryId,
             Type = ProductType.DigitalFile,
             Title = dto.Title.Trim(),
             Description = dto.Description,
             Price = dto.Price,
             OriginalPrice = dto.OriginalPrice,
-            Currency = "USD",
+            Currency = ProductCurrency.Resolve(dto.Currency, dto.Metadata),
             CoverImageUrl = dto.CoverImageUrl,
             PreviewVideoUrl = dto.PreviewVideoUrl,
             FileUrl = dto.FileUrl,
@@ -309,6 +310,7 @@ public sealed class ProductService : IProductService
         product.Description = dto.Description;
         product.Price = dto.Price;
         product.OriginalPrice = dto.OriginalPrice;
+        product.Currency = ProductCurrency.Resolve(dto.Currency, dto.Metadata, product.Currency);
         product.CoverImageUrl = dto.CoverImageUrl;
         product.PreviewVideoUrl = dto.PreviewVideoUrl;
         if (dto.RemoveProductFile)
@@ -555,6 +557,9 @@ public sealed class ProductService : IProductService
             Description: product.Description ?? string.Empty,
             Price: product.Price,
             OriginalPrice: product.OriginalPrice,
+            Currency: ProductCurrency.Resolve(null, product.Metadata, product.Currency),
+            ShopName: product.Shop?.ShopName ?? string.Empty,
+            ShopSlug: product.Shop?.Slug ?? string.Empty,
             CoverImageUrl: product.CoverImageUrl,
             CoverImagePublicUrl: GeneratePublicAssetUrl(product.CoverImageUrl),
             PreviewVideoUrl: product.PreviewVideoUrl,
