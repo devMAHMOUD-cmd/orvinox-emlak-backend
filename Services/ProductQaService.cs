@@ -1,5 +1,6 @@
 using CraftoraApi.Data;
 using CraftoraApi.DTOs.Interaction;
+using CraftoraApi.DTOs.Notification;
 using CraftoraApi.Infrastructure.Security;
 using CraftoraApi.Middleware;
 using CraftoraApi.Models.Entities;
@@ -29,15 +30,38 @@ public sealed class ProductQaService : IProductQaService
     {
         ArgumentNullException.ThrowIfNull(dto);
 
-        var productExists = await _dbContext.Products.AnyAsync(product =>
-            product.Id == dto.ProductId &&
-            product.IsActive == true &&
-            product.Status == ProductStatus.Published &&
-            product.Shop.IsActive == true);
-        if (!productExists)
+        var product = await _dbContext.Products
+            .AsNoTracking()
+            .Where(product =>
+                product.Id == dto.ProductId &&
+                product.IsActive == true &&
+                product.Status == ProductStatus.Published &&
+                product.Shop.IsActive == true)
+            .Select(product => new
+            {
+                product.Id,
+                product.Title,
+                product.ShopId,
+                OwnerUserId = product.Shop.UserId
+            })
+            .FirstOrDefaultAsync();
+        if (product is null)
         {
             throw new NotFoundException("Urun bulunamadi.");
         }
+
+        var actor = await _dbContext.Users
+            .AsNoTracking()
+            .Where(user => user.Id == userId)
+            .Select(user => new
+            {
+                user.FullName,
+                user.AvatarUrl,
+                ShopId = (Guid?)user.Shop!.Id,
+                ShopName = user.Shop != null ? user.Shop.ShopName : null,
+                ShopLogoUrl = user.Shop != null ? user.Shop.LogoUrl : null
+            })
+            .FirstAsync();
 
         var question = new ProductQa
         {
@@ -49,6 +73,33 @@ public sealed class ProductQaService : IProductQaService
 
         _dbContext.ProductQas.Add(question);
         await _dbContext.SaveChangesAsync();
+
+        if (product.OwnerUserId != userId)
+        {
+            try
+            {
+                await _notificationService.SendActorNotificationAsync(
+                    product.OwnerUserId,
+                    "Urunune yeni bir soru geldi",
+                    $"{DisplayName(actor.FullName)} {product.Title} icin sordu: {question.Message}",
+                    NotificationType.NewQuestion,
+                    product.Id,
+                    userId,
+                    actor.FullName,
+                    actor.AvatarUrl,
+                    actor.ShopId,
+                    actor.ShopName,
+                    actor.ShopLogoUrl,
+                    "product");
+            }
+            catch (Exception exception)
+            {
+                _logger.LogWarning(
+                    exception,
+                    "Product question notification failed after question was saved. QuestionId: {QuestionId}",
+                    question.Id);
+            }
+        }
 
         return await GetQaResponseAsync(question.Id);
     }
@@ -183,4 +234,7 @@ public sealed class ProductQaService : IProductQaService
                 .Select(MapToResponse)
                 .ToList());
     }
+
+    private static string DisplayName(string? fullName) =>
+        string.IsNullOrWhiteSpace(fullName) ? "Bir kullanici" : fullName.Trim();
 }

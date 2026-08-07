@@ -1,5 +1,6 @@
 using CraftoraApi.Data;
 using CraftoraApi.DTOs.Interaction;
+using CraftoraApi.DTOs.Notification;
 using CraftoraApi.Infrastructure.Security;
 using CraftoraApi.Middleware;
 using CraftoraApi.Models.Entities;
@@ -17,25 +18,39 @@ public sealed class ReviewService : IReviewService
     private readonly AppDbContext _dbContext;
     private readonly IStorageService _storageService;
     private readonly IUploadService _uploadService;
+    private readonly INotificationService _notificationService;
+    private readonly ILogger<ReviewService> _logger;
 
     public ReviewService(
         AppDbContext dbContext,
         IStorageService storageService,
-        IUploadService uploadService)
+        IUploadService uploadService,
+        INotificationService notificationService,
+        ILogger<ReviewService> logger)
     {
         _dbContext = dbContext ?? throw new ArgumentNullException(nameof(dbContext));
         _storageService = storageService ?? throw new ArgumentNullException(nameof(storageService));
         _uploadService = uploadService ?? throw new ArgumentNullException(nameof(uploadService));
+        _notificationService = notificationService ?? throw new ArgumentNullException(nameof(notificationService));
+        _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
 
     public async Task<ReviewResponseDto> AddReviewAsync(Guid userId, CreateReviewDto dto)
     {
         ArgumentNullException.ThrowIfNull(dto);
 
-        var productExists = await _dbContext.Products.AnyAsync(product =>
-            product.Id == dto.ProductId &&
-            product.IsActive == true);
-        if (!productExists)
+        var product = await _dbContext.Products
+            .AsNoTracking()
+            .Where(product => product.Id == dto.ProductId && product.IsActive == true)
+            .Select(product => new
+            {
+                product.Id,
+                product.Title,
+                product.ShopId,
+                OwnerUserId = product.Shop.UserId
+            })
+            .FirstOrDefaultAsync();
+        if (product is null)
         {
             throw new NotFoundException("Urun bulunamadi.");
         }
@@ -52,6 +67,18 @@ public sealed class ReviewService : IReviewService
 
         var comment = PlainTextInputValidator.Optional(dto.Comment, "Yorum metni", 2000);
         var images = await NormalizeReviewImagesAsync(userId, dto.Images);
+        var actor = await _dbContext.Users
+            .AsNoTracking()
+            .Where(user => user.Id == userId)
+            .Select(user => new
+            {
+                user.FullName,
+                user.AvatarUrl,
+                ShopId = (Guid?)user.Shop!.Id,
+                ShopName = user.Shop != null ? user.Shop.ShopName : null,
+                ShopLogoUrl = user.Shop != null ? user.Shop.LogoUrl : null
+            })
+            .FirstAsync();
         await using var transaction = await _dbContext.Database.BeginTransactionAsync();
 
         try
@@ -84,6 +111,37 @@ public sealed class ReviewService : IReviewService
             await RefreshProductReviewStatsAsync(dto.ProductId);
             await _dbContext.SaveChangesAsync();
             await transaction.CommitAsync();
+
+            if (product.OwnerUserId != userId)
+            {
+                try
+                {
+                    var reviewSummary = string.IsNullOrWhiteSpace(comment)
+                        ? $"{dto.Rating}/5 puan verdi."
+                        : $"{dto.Rating}/5 puan verdi: {Preview(comment, 600)}";
+
+                    await _notificationService.SendActorNotificationAsync(
+                        product.OwnerUserId,
+                        "Urunune yeni bir yorum geldi",
+                        $"{DisplayName(actor.FullName)}, {product.Title} urunune {reviewSummary}",
+                        NotificationType.NewReview,
+                        product.Id,
+                        userId,
+                        actor.FullName,
+                        actor.AvatarUrl,
+                        actor.ShopId,
+                        actor.ShopName,
+                        actor.ShopLogoUrl,
+                        "product");
+                }
+                catch (Exception exception)
+                {
+                    _logger.LogWarning(
+                        exception,
+                        "Product review notification failed after review was saved. ReviewId: {ReviewId}",
+                        review.Id);
+                }
+            }
 
             return await GetReviewResponseAsync(review.Id);
         }
@@ -271,6 +329,12 @@ public sealed class ReviewService : IReviewService
             $"users/{userId:D}/public/",
             StringComparison.OrdinalIgnoreCase);
     }
+
+    private static string DisplayName(string? fullName) =>
+        string.IsNullOrWhiteSpace(fullName) ? "Bir kullanici" : fullName.Trim();
+
+    private static string Preview(string value, int maxLength) =>
+        value.Length <= maxLength ? value : $"{value[..maxLength].TrimEnd()}...";
 
     private ReviewResponseDto MapToResponse(Review review)
     {

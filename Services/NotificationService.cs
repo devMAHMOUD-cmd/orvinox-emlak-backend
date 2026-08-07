@@ -365,6 +365,8 @@ public sealed class NotificationService : INotificationService
             NotificationType.NewProduct => "new_product",
             NotificationType.NewLike => "media_liked",
             NotificationType.NewComment => "media_commented",
+            NotificationType.NewReview => "new_review",
+            NotificationType.NewQuestion => "new_question",
             NotificationType.NewFollow => "new_follower",
             NotificationType.NewOrder => "order_completed",
             NotificationType.ProductQuestionAnswer => "product_question_answer",
@@ -381,6 +383,8 @@ public sealed class NotificationService : INotificationService
             "new_product" => NotificationType.NewProduct,
             "media_liked" => NotificationType.NewLike,
             "media_commented" => NotificationType.NewComment,
+            "new_review" => NotificationType.NewReview,
+            "new_question" => NotificationType.NewQuestion,
             "new_follower" => NotificationType.NewFollow,
             "order_completed" => NotificationType.NewOrder,
             "product_question_answer" => NotificationType.ProductQuestionAnswer,
@@ -396,6 +400,8 @@ public sealed class NotificationService : INotificationService
             NotificationType.NewProduct => "product",
             NotificationType.NewLike => "media",
             NotificationType.NewComment => "media",
+            NotificationType.NewReview => "product",
+            NotificationType.NewQuestion => "product",
             NotificationType.NewFollow => "shop_follow",
             NotificationType.NewOrder => "order",
             NotificationType.ProductQuestionAnswer => "product_question_answer",
@@ -424,10 +430,10 @@ public sealed class NotificationService : INotificationService
         {
             NotificationType.NewOrder => preference.OrderNotifications,
             NotificationType.NewLike => preference.LikeNotifications,
-            NotificationType.NewComment => preference.CommentNotifications,
+            NotificationType.NewComment or NotificationType.NewReview => preference.CommentNotifications,
             NotificationType.NewFollow => preference.FollowNotifications,
             NotificationType.NewVideo or NotificationType.NewProduct => preference.NewContentNotifications,
-            NotificationType.ProductQuestionAnswer => preference.QuestionAnswerNotifications,
+            NotificationType.NewQuestion or NotificationType.ProductQuestionAnswer => preference.QuestionAnswerNotifications,
             _ => true
         };
     }
