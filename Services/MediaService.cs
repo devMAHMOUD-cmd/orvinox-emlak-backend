@@ -715,8 +715,7 @@ public sealed class MediaService : IMediaService
             .Include(item => item.Shop)
             .FirstOrDefaultAsync(item =>
                 item.Id == mediaId &&
-                item.IsActive == true &&
-                item.Status == MediaStatus.Ready);
+                item.IsActive == true);
 
         if (media is null)
         {

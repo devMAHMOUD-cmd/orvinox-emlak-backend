@@ -10,5 +10,9 @@ public interface ISubscriptionService
 
     Task<SubscriptionResponseDto> StartSubscriptionAsync(Guid userId, StartSubscriptionRequestDto request);
 
+    Task<SubscriptionResponseDto> StartShopSubscriptionAsync(
+        Guid userId,
+        StartShopSubscriptionRequestDto request);
+
     Task<SubscriptionResponseDto> CancelSubscriptionAsync(Guid userId);
 }

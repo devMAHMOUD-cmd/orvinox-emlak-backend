@@ -1,10 +1,13 @@
 using CraftoraApi.DTOs.Shop;
+using CraftoraApi.Models.Entities;
 
 namespace CraftoraApi.Services.Interfaces;
 
 public interface IShopService
 {
     Task<ShopResponseDto> CreateShopAsync(Guid userId, CreateShopDto dto);
+
+    Task<Shop> PrepareNewShopAsync(Guid userId, CreateShopDto dto);
 
     Task<ShopResponseDto> UpdateShopAsync(Guid userId, UpdateShopDto dto);
 

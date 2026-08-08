@@ -55,64 +55,15 @@ public sealed class ShopService : IShopService
 
     public async Task<ShopResponseDto> CreateShopAsync(Guid userId, CreateShopDto dto)
     {
-        ArgumentNullException.ThrowIfNull(dto);
-        ValidatePublicAssetOwnership(userId, dto.LogoUrl);
-        ValidatePublicAssetOwnership(userId, dto.BannerUrl);
-        await ValidatePublicAssetsExistAsync(userId, dto.LogoUrl, dto.BannerUrl);
-
         await using var transaction = await _dbContext.Database.BeginTransactionAsync();
-
         try
         {
-            // Keep the identity on the same pooled connection for the whole request.
-            // The request middleware resets this setting after the request completes.
-            await _dbContext.Database.ExecuteSqlInterpolatedAsync(
-                $"SELECT set_config('app.current_user_id', {userId.ToString("D")}, false);");
-
-            var hasShop = await _dbContext.Shops.AnyAsync(shop => shop.UserId == userId);
-            if (hasShop)
-            {
-                throw new ConflictException("Bu kullaniciya ait bir magaza zaten var.");
-            }
-
-            var user = await _dbContext.Users.FirstOrDefaultAsync(item => item.Id == userId);
-            if (user is null)
-            {
-                throw new NotFoundException("Kullanici bulunamadi.");
-            }
-
-            var slug = await GenerateUniqueSlugAsync(dto.ShopName);
-            var shop = new Shop
-            {
-                UserId = userId,
-                ShopName = dto.ShopName.Trim(),
-                Slug = slug,
-                ShortDescription = dto.ShortDescription,
-                Description = dto.Description,
-                ExternalUrl = dto.ExternalUrl,
-                SocialLinks = dto.SocialLinks,
-                LogoUrl = dto.LogoUrl,
-                BannerUrl = dto.BannerUrl,
-                FollowerCount = 0,
-                Rating = 0,
-                IsVerified = false,
-                IsActive = false
-            };
-
-            _dbContext.Shops.Add(shop);
-
-            // Re-assert the identity immediately before the INSERT. This guards
-            // against a connection reset/rebind between earlier reads and SaveChanges.
-            await _dbContext.Database.ExecuteSqlInterpolatedAsync(
-                $"SELECT set_config('app.current_user_id', {userId.ToString("D")}, true);");
-
+            var shop = await PrepareNewShopAsync(userId, dto);
             await _dbContext.SaveChangesAsync();
             var response = await MapToResponseAsync(shop);
             await transaction.CommitAsync();
             await PublishShopIndexMessageAsync(shop.Id);
-
             _logger.LogInformation("Shop created. ShopId: {ShopId}, UserId: {UserId}", shop.Id, userId);
-
             return response;
         }
         catch
@@ -120,6 +71,48 @@ public sealed class ShopService : IShopService
             await transaction.RollbackAsync();
             throw;
         }
+    }
+
+    public async Task<Shop> PrepareNewShopAsync(Guid userId, CreateShopDto dto)
+    {
+        ArgumentNullException.ThrowIfNull(dto);
+        ValidatePublicAssetOwnership(userId, dto.LogoUrl);
+        ValidatePublicAssetOwnership(userId, dto.BannerUrl);
+        await ValidatePublicAssetsExistAsync(userId, dto.LogoUrl, dto.BannerUrl);
+
+        await _dbContext.Database.ExecuteSqlInterpolatedAsync(
+            $"SELECT set_config('app.current_user_id', {userId.ToString("D")}, true);");
+
+        if (await _dbContext.Shops.AnyAsync(shop => shop.UserId == userId))
+        {
+            throw new ConflictException("Bu kullaniciya ait bir magaza zaten var.");
+        }
+
+        if (!await _dbContext.Users.AnyAsync(item => item.Id == userId))
+        {
+            throw new NotFoundException("Kullanici bulunamadi.");
+        }
+
+        var shop = new Shop
+        {
+            Id = Guid.NewGuid(),
+            UserId = userId,
+            ShopName = dto.ShopName.Trim(),
+            Slug = await GenerateUniqueSlugAsync(dto.ShopName),
+            ShortDescription = dto.ShortDescription,
+            Description = dto.Description,
+            ExternalUrl = dto.ExternalUrl,
+            SocialLinks = dto.SocialLinks,
+            LogoUrl = dto.LogoUrl,
+            BannerUrl = dto.BannerUrl,
+            FollowerCount = 0,
+            Rating = 0,
+            IsVerified = false,
+            IsActive = false
+        };
+
+        _dbContext.Shops.Add(shop);
+        return shop;
     }
 
     public async Task<ShopResponseDto> GetMyShopAsync(Guid userId)
@@ -132,7 +125,6 @@ public sealed class ShopService : IShopService
         {
             throw new NotFoundException("Magaza bulunamadi.");
         }
-
         return await MapToResponseAsync(shop);
     }
 
@@ -142,7 +134,6 @@ public sealed class ShopService : IShopService
         {
             throw new BadRequestException("Magaza slug degeri zorunludur.");
         }
-
         var normalizedSlug = slug.Trim().ToLowerInvariant();
         var cacheKey = GetShopSlugCacheKey(normalizedSlug);
         string? cachedShop = null;
@@ -157,7 +148,6 @@ public sealed class ShopService : IShopService
                 "Public shop cache could not be read. Slug: {Slug}",
                 normalizedSlug);
         }
-
         if (!string.IsNullOrWhiteSpace(cachedShop))
         {
             var cachedResponse = JsonSerializer.Deserialize<PublicShopResponseDto>(cachedShop);
@@ -166,7 +156,6 @@ public sealed class ShopService : IShopService
                 return await ApplyCurrentUserFollowStateAsync(cachedResponse, currentUserId);
             }
         }
-
         var shop = await _dbContext.Shops
             .AsNoTracking()
             .FirstOrDefaultAsync(shop => shop.Slug == normalizedSlug && shop.IsActive == true);
@@ -175,7 +164,6 @@ public sealed class ShopService : IShopService
         {
             throw new NotFoundException("Magaza bulunamadi.");
         }
-
         var response = await MapToPublicResponseAsync(shop);
         try
         {
@@ -205,7 +193,6 @@ public sealed class ShopService : IShopService
         {
             throw new NotFoundException("Magaza bulunamadi.");
         }
-
         var response = await MapToPublicResponseAsync(shop);
         return await ApplyCurrentUserFollowStateAsync(response, currentUserId);
     }

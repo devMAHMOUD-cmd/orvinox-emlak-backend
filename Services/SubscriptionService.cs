@@ -21,6 +21,7 @@ public sealed class SubscriptionService : ISubscriptionService
 
     private readonly AppDbContext _dbContext;
     private readonly IPaymentService _paymentService;
+    private readonly IShopService _shopService;
     private readonly IRabbitMqPublisher _rabbitMqPublisher;
     private readonly ICacheService _cacheService;
     private readonly ILogger<SubscriptionService> _logger;
@@ -28,12 +29,14 @@ public sealed class SubscriptionService : ISubscriptionService
     public SubscriptionService(
         AppDbContext dbContext,
         IPaymentService paymentService,
+        IShopService shopService,
         IRabbitMqPublisher rabbitMqPublisher,
         ICacheService cacheService,
         ILogger<SubscriptionService> logger)
     {
         _dbContext = dbContext ?? throw new ArgumentNullException(nameof(dbContext));
         _paymentService = paymentService ?? throw new ArgumentNullException(nameof(paymentService));
+        _shopService = shopService ?? throw new ArgumentNullException(nameof(shopService));
         _rabbitMqPublisher = rabbitMqPublisher ?? throw new ArgumentNullException(nameof(rabbitMqPublisher));
         _cacheService = cacheService ?? throw new ArgumentNullException(nameof(cacheService));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
@@ -175,6 +178,138 @@ public sealed class SubscriptionService : ISubscriptionService
         await transaction.CommitAsync();
         await InvalidateVisibilityCachesAsync(shop);
         await TryPublishShopVisibilityAsync(shop.Id, isActive: true);
+
+        return MapToResponse(subscription);
+    }
+
+    public async Task<SubscriptionResponseDto> StartShopSubscriptionAsync(
+        Guid userId,
+        StartShopSubscriptionRequestDto request)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(request.Shop);
+        ArgumentNullException.ThrowIfNull(request.Payment);
+
+        var plan = request.Payment.PlanId.HasValue
+            ? await _dbContext.SellerSubscriptionPlans
+                .SingleOrDefaultAsync(item => item.Id == request.Payment.PlanId.Value && item.IsActive)
+            : await _dbContext.SellerSubscriptionPlans
+                .SingleOrDefaultAsync(item => item.Code == DefaultPlanCode && item.IsActive);
+
+        if (plan is null)
+        {
+            throw new NotFoundException("Abonelik plani bulunamadi.");
+        }
+
+        await using var transaction = await _dbContext.Database.BeginTransactionAsync();
+        string? successfulTransactionId = null;
+        Shop shop;
+        SellerSubscription subscription;
+        try
+        {
+            // The shop is only tracked here. Nothing is persisted before payment succeeds.
+            shop = await _shopService.PrepareNewShopAsync(userId, request.Shop);
+            var paymentResult = await _paymentService.ProcessPaymentAsync(
+                plan.MonthlyAmount,
+                plan.Currency,
+                request.Payment.CardNumber);
+
+            if (!paymentResult.IsSuccess)
+            {
+                throw new BadRequestException(paymentResult.ErrorMessage);
+            }
+            successfulTransactionId = paymentResult.TransactionId;
+
+            var user = await _dbContext.Users.SingleOrDefaultAsync(item => item.Id == userId);
+            if (user is null)
+            {
+                throw new NotFoundException("Kullanici bulunamadi.");
+            }
+
+            var now = DateTime.UtcNow;
+            subscription = new SellerSubscription
+            {
+                Id = Guid.NewGuid(),
+                ShopId = shop.Id,
+                Shop = shop,
+                PlanId = plan.Id,
+                Plan = plan,
+                ProviderSubscriptionId = $"sub_mock_{Guid.NewGuid():N}",
+                Status = SubStatus.Active,
+                CurrentPeriodEnd = now.AddDays(30),
+                Amount = plan.MonthlyAmount,
+                Currency = plan.Currency,
+                PaymentProvider = PaymentProvider,
+                CreatedAt = now,
+                UpdatedAt = now
+            };
+
+            shop.IsActive = true;
+            shop.CreatedAt ??= now;
+            shop.UpdatedAt = now;
+            user.Role = UserRole.Seller;
+
+            _dbContext.SellerSubscriptions.Add(subscription);
+            _dbContext.SellerSubscriptionPayments.Add(new SellerSubscriptionPayment
+            {
+                Id = Guid.NewGuid(),
+                SubscriptionId = subscription.Id,
+                PlanId = plan.Id,
+                ShopId = shop.Id,
+                PaymentProvider = PaymentProvider,
+                ProviderTransactionId = paymentResult.TransactionId,
+                Amount = plan.MonthlyAmount,
+                CommissionRate = plan.CommissionRate,
+                Currency = plan.Currency,
+                Status = "succeeded",
+                BillingPeriodStart = now,
+                BillingPeriodEnd = subscription.CurrentPeriodEnd,
+                CreatedAt = now
+            });
+
+            await _dbContext.SaveChangesAsync();
+            await transaction.CommitAsync();
+        }
+        catch
+        {
+            await transaction.RollbackAsync();
+            if (!string.IsNullOrWhiteSpace(successfulTransactionId))
+            {
+                try
+                {
+                    var refund = await _paymentService.RefundPaymentAsync(
+                        successfulTransactionId,
+                        plan.MonthlyAmount,
+                        plan.Currency);
+                    if (!refund.IsSuccess)
+                    {
+                        _logger.LogError(
+                            "Shop subscription payment compensation failed. UserId: {UserId}, TransactionId: {TransactionId}, Error: {Error}",
+                            userId,
+                            successfulTransactionId,
+                            refund.ErrorMessage);
+                    }
+                }
+                catch (Exception refundException)
+                {
+                    _logger.LogError(
+                        refundException,
+                        "Shop subscription payment compensation threw an exception. UserId: {UserId}, TransactionId: {TransactionId}",
+                        userId,
+                        successfulTransactionId);
+                }
+            }
+            throw;
+        }
+
+        // These operations happen after commit and cannot reverse a completed payment.
+        await InvalidateVisibilityCachesAsync(shop);
+        await TryPublishShopVisibilityAsync(shop.Id, isActive: true);
+        _logger.LogInformation(
+            "Shop and subscription created after successful payment. ShopId: {ShopId}, UserId: {UserId}, PlanId: {PlanId}",
+            shop.Id,
+            userId,
+            plan.Id);
 
         return MapToResponse(subscription);
     }

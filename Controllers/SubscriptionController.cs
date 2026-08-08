@@ -48,6 +48,18 @@ public sealed class SubscriptionController : ControllerBase
         return Ok(result);
     }
 
+    [Authorize]
+    [HttpPost("start-with-shop")]
+    public async Task<IActionResult> StartShopSubscriptionAsync(
+        [FromBody] StartShopSubscriptionRequestDto request)
+    {
+        var result = await _subscriptionService.StartShopSubscriptionAsync(
+            GetCurrentUserId(),
+            request);
+
+        return Ok(result);
+    }
+
     [Authorize(Policy = "SellerOnly")]
     [HttpPost("cancel")]
     public async Task<IActionResult> CancelSubscriptionAsync()

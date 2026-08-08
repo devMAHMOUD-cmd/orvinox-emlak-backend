@@ -73,6 +73,20 @@ public sealed class StartSubscriptionRequestDtoValidator : AbstractValidator<Sta
     }
 }
 
+public sealed class StartShopSubscriptionRequestDtoValidator : AbstractValidator<StartShopSubscriptionRequestDto>
+{
+    public StartShopSubscriptionRequestDtoValidator()
+    {
+        RuleFor(request => request.Shop)
+            .NotNull()
+            .WithMessage("Magaza bilgileri zorunludur.");
+
+        RuleFor(request => request.Payment)
+            .NotNull()
+            .SetValidator(new StartSubscriptionRequestDtoValidator());
+    }
+}
+
 internal static class PaymentRequestValidationRules
 {
     internal static void Apply<T>(

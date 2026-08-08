@@ -22,12 +22,10 @@ public sealed class ShopController : ControllerBase
 
     [Authorize]
     [HttpPost]
-    public async Task<IActionResult> CreateShopAsync([FromBody] CreateShopDto dto)
+    public IActionResult CreateShopAsync([FromBody] CreateShopDto dto)
     {
-        var userId = GetCurrentUserId();
-        var result = await _shopService.CreateShopAsync(userId, dto);
-
-        return Ok(result);
+        throw new ConflictException(
+            "Magaza, abonelik plani secilip odeme basariyla tamamlandiktan sonra olusturulur.");
     }
 
     [Authorize]

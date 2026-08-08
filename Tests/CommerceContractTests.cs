@@ -1,5 +1,6 @@
 using CraftoraApi.DTOs.Order;
 using CraftoraApi.DTOs.Subscription;
+using CraftoraApi.DTOs.Shop;
 using CraftoraApi.Services;
 using CraftoraApi.Validators;
 using Xunit;
@@ -89,6 +90,31 @@ public sealed class CommerceContractTests
             Cvv: "123"));
 
         Assert.Contains(result.Errors, error => error.PropertyName == nameof(StartSubscriptionRequestDto.Expiry));
+    }
+
+    [Fact]
+    public void Shop_subscription_rejects_invalid_payment_before_provisioning()
+    {
+        var validator = new StartShopSubscriptionRequestDtoValidator();
+        var request = new StartShopSubscriptionRequestDto(
+            new CreateShopDto(
+                "Test Magaza",
+                null,
+                null,
+                null,
+                null,
+                null,
+                null),
+            new StartSubscriptionRequestDto(
+                "4000000000000002",
+                "01/20",
+                "1"));
+
+        var result = validator.Validate(request);
+
+        Assert.False(result.IsValid);
+        Assert.Contains(result.Errors, error => error.PropertyName.Contains("Payment.Expiry"));
+        Assert.Contains(result.Errors, error => error.PropertyName.Contains("Payment.Cvv"));
     }
 
     [Fact]
