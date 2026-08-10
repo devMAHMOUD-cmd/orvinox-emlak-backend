@@ -951,6 +951,8 @@ public partial class AppDbContext : DbContext
                 .HasDefaultValueSql("CURRENT_TIMESTAMP")
                 .HasColumnName("updated_at");
             entity.Property(e => e.VideoUrl).HasColumnName("video_url");
+            entity.Property(e => e.OptimizedVideoUrl).HasColumnName("optimized_video_url");
+            entity.Property(e => e.HlsUrl).HasColumnName("hls_url");
             entity.Property(e => e.ViewCount)
                 .HasDefaultValue(0)
                 .HasColumnName("view_count");

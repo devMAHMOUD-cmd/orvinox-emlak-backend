@@ -13,6 +13,7 @@ public sealed class DiscoveryFeedService : IDiscoveryFeedService
 {
     private const string PublicAssetsBucketName = "public-assets";
     private const string PrivateProductsBucketName = "private-products";
+    private const string MediaStreamsBucketName = "media-streams";
     private const int PublicUrlExpiryMinutes = 60;
     private static readonly TimeSpan SnapshotTtl = TimeSpan.FromMinutes(30);
 
@@ -294,7 +295,12 @@ public sealed class DiscoveryFeedService : IDiscoveryFeedService
             medium.ProductId,
             medium.Product?.Title,
             medium.VideoUrl,
-            GeneratePrivateProductUrl(medium.VideoUrl),
+            !string.IsNullOrWhiteSpace(medium.OptimizedVideoUrl)
+                ? GenerateMediaStreamUrl(medium.OptimizedVideoUrl)
+                : GeneratePrivateProductUrl(medium.VideoUrl),
+            !string.IsNullOrWhiteSpace(medium.HlsUrl)
+                ? GenerateMediaStreamUrl(medium.HlsUrl)
+                : null,
             GeneratePublicAssetUrl(medium.ThumbnailUrl)
                 ?? GeneratePublicAssetUrl(GetProductCoverObjectKey(medium.Product)),
             medium.Caption,
@@ -522,6 +528,13 @@ public sealed class DiscoveryFeedService : IDiscoveryFeedService
                 PrivateProductsBucketName,
                 objectKey,
                 PublicUrlExpiryMinutes);
+    }
+
+    private string? GenerateMediaStreamUrl(string? objectKey)
+    {
+        return string.IsNullOrWhiteSpace(objectKey)
+            ? null
+            : _storageService.GeneratePublicUrl(MediaStreamsBucketName, objectKey);
     }
 }
 

@@ -21,6 +21,16 @@ public interface IStorageService
         string objectKey,
         int expiryInMinutes = 60);
 
+    string GeneratePublicUrl(string bucketName, string objectKey);
+
+    Task UploadCacheableFileAsync(
+        string bucketName,
+        string objectKey,
+        Stream content,
+        string contentType,
+        string cacheControl,
+        CancellationToken cancellationToken = default);
+
     Task UploadFileAsync(
         string bucketName,
         string objectKey,

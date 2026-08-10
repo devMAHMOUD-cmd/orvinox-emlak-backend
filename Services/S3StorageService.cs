@@ -1,6 +1,7 @@
 using Amazon.S3;
 using Amazon.S3.Model;
 using Amazon.Runtime;
+using System.Text.Json;
 using CraftoraApi.Configuration;
 using CraftoraApi.Services.Interfaces;
 using Microsoft.Extensions.Options;
@@ -12,6 +13,7 @@ public sealed class S3StorageService : IStorageService, IDisposable
     private static readonly string[] RequiredBuckets =
     {
         "public-assets",
+        "media-streams",
         "private-products",
         "invoices"
     };
@@ -56,6 +58,7 @@ public sealed class S3StorageService : IStorageService, IDisposable
         }
 
         await ApplyCorsConfigurationAsync();
+        await ApplyPublicMediaPolicyAsync();
     }
 
     public string GeneratePresignedUploadUrl(
@@ -99,6 +102,20 @@ public sealed class S3StorageService : IStorageService, IDisposable
         };
 
         return NormalizePresignedPublicUrl(_presignClient.GetPreSignedURL(request));
+    }
+
+    public string GeneratePublicUrl(string bucketName, string objectKey)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(bucketName);
+        ArgumentException.ThrowIfNullOrWhiteSpace(objectKey);
+        objectKey = NormalizeObjectKey(bucketName, objectKey);
+
+        if (!Uri.TryCreate(_settings.PublicServiceUrl, UriKind.Absolute, out var endpoint))
+        {
+            throw new InvalidOperationException("Storage public service URL is not configured.");
+        }
+
+        return new Uri(endpoint, $"/{bucketName}/{Uri.EscapeDataString(objectKey).Replace("%2F", "/", StringComparison.OrdinalIgnoreCase)}").AbsoluteUri;
     }
 
     public async Task UploadFileAsync(
@@ -155,6 +172,30 @@ public sealed class S3StorageService : IStorageService, IDisposable
             "Storage file uploaded. BucketName: {BucketName}, ObjectKey: {ObjectKey}",
             bucketName,
             objectKey);
+    }
+
+    public async Task UploadCacheableFileAsync(
+        string bucketName,
+        string objectKey,
+        Stream content,
+        string contentType,
+        string cacheControl,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(cacheControl);
+        objectKey = NormalizeObjectKey(bucketName, objectKey);
+
+        var request = new PutObjectRequest
+        {
+            BucketName = bucketName,
+            Key = objectKey,
+            InputStream = content,
+            ContentType = contentType,
+            AutoCloseStream = false
+        };
+        request.Headers.CacheControl = cacheControl;
+
+        await _s3Client.PutObjectAsync(request, cancellationToken);
     }
 
     public async Task<StorageObjectInfo?> GetObjectInfoAsync(
@@ -313,6 +354,31 @@ public sealed class S3StorageService : IStorageService, IDisposable
                     exception.Message);
             }
         }
+    }
+
+    private async Task ApplyPublicMediaPolicyAsync()
+    {
+        const string bucketName = "media-streams";
+        var policy = JsonSerializer.Serialize(new
+        {
+            Version = "2012-10-17",
+            Statement = new[]
+            {
+                new
+                {
+                    Effect = "Allow",
+                    Principal = new { AWS = new[] { "*" } },
+                    Action = new[] { "s3:GetObject" },
+                    Resource = new[] { $"arn:aws:s3:::{bucketName}/*" }
+                }
+            }
+        });
+
+        await _s3Client.PutBucketPolicyAsync(new PutBucketPolicyRequest
+        {
+            BucketName = bucketName,
+            Policy = policy
+        });
     }
 
     private static IAmazonS3 CreatePresignClient(

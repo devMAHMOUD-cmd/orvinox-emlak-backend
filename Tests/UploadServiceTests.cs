@@ -194,6 +194,9 @@ public sealed class UploadServiceTests
             int expiryInMinutes = 60) =>
             $"https://storage.test/{bucketName}/{objectKey}";
 
+        public string GeneratePublicUrl(string bucketName, string objectKey) =>
+            $"https://storage.test/{bucketName}/{objectKey}";
+
         public Task UploadFileAsync(
             string bucketName,
             string objectKey,
@@ -207,6 +210,15 @@ public sealed class UploadServiceTests
             string objectKey,
             Stream content,
             string contentType,
+            CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+
+        public Task UploadCacheableFileAsync(
+            string bucketName,
+            string objectKey,
+            Stream content,
+            string contentType,
+            string cacheControl,
             CancellationToken cancellationToken = default) =>
             Task.CompletedTask;
 

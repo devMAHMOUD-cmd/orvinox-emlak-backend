@@ -49,8 +49,10 @@ public sealed class VideoProcessConsumer : IConsumer<ProcessVideoCommand>
     {
         var updated = await CompleteMediaProcessingAsync(
             mediaId,
-            result.VideoUrl,
+            result.OptimizedVideoUrl,
+            result.HlsUrl,
             result.ThumbnailUrl,
+            result.DurationSeconds,
             cancellationToken);
         if (!updated)
         {
@@ -66,8 +68,10 @@ public sealed class VideoProcessConsumer : IConsumer<ProcessVideoCommand>
 
     private async Task<bool> CompleteMediaProcessingAsync(
         Guid mediaId,
-        string videoUrl,
+        string optimizedVideoUrl,
+        string? hlsUrl,
         string? thumbnailUrl,
+        int? durationSeconds,
         CancellationToken cancellationToken)
     {
         var connection = _dbContext.Database.GetDbConnection();
@@ -81,14 +85,18 @@ public sealed class VideoProcessConsumer : IConsumer<ProcessVideoCommand>
         {
             await using var command = connection.CreateCommand();
             command.CommandText = """
-                SELECT public.complete_media_processing(
+                SELECT public.complete_media_stream_processing(
                     CAST(@media_id AS uuid),
-                    CAST(@video_url AS text),
-                    CAST(@thumbnail_url AS text))
+                    CAST(@optimized_video_url AS text),
+                    CAST(@hls_url AS text),
+                    CAST(@thumbnail_url AS text),
+                    CAST(@duration_seconds AS integer))
                 """;
             AddParameter(command, "media_id", mediaId);
-            AddParameter(command, "video_url", videoUrl);
+            AddParameter(command, "optimized_video_url", optimizedVideoUrl);
+            AddParameter(command, "hls_url", hlsUrl);
             AddParameter(command, "thumbnail_url", thumbnailUrl);
+            AddParameter(command, "duration_seconds", durationSeconds);
 
             return await command.ExecuteScalarAsync(cancellationToken) is true;
         }
@@ -131,7 +139,7 @@ public sealed class VideoProcessConsumer : IConsumer<ProcessVideoCommand>
             return;
         }
 
-        lesson.VideoUrl = result.VideoUrl;
+        lesson.VideoUrl = result.OptimizedVideoUrl;
         lesson.IsActive = true;
         lesson.UpdatedAt = DateTime.UtcNow;
 

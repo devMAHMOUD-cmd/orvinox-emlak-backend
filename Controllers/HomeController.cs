@@ -17,6 +17,7 @@ public sealed class HomeController : ControllerBase
 {
     private const string PublicAssetsBucketName = "public-assets";
     private const string PrivateProductsBucketName = "private-products";
+    private const string MediaStreamsBucketName = "media-streams";
     private const int PublicUrlExpiryMinutes = 60;
 
     private readonly AppDbContext _dbContext;
@@ -313,7 +314,10 @@ public sealed class HomeController : ControllerBase
             ProductId: item.ProductId,
             ProductTitle: item.Product?.Title,
             VideoUrl: item.VideoUrl,
-            VideoPublicUrl: GeneratePrivateProductUrl(item.VideoUrl),
+            VideoPublicUrl: !string.IsNullOrWhiteSpace(item.OptimizedVideoUrl)
+                ? GenerateMediaStreamUrl(item.OptimizedVideoUrl)
+                : GeneratePrivateProductUrl(item.VideoUrl),
+            HlsPublicUrl: GenerateMediaStreamUrl(item.HlsUrl),
             ThumbnailPublicUrl: GeneratePublicAssetUrl(item.ThumbnailUrl)
                 ?? GeneratePublicAssetUrl(GetProductCoverObjectKey(item.Product)),
             Caption: item.Caption,
@@ -517,5 +521,12 @@ public sealed class HomeController : ControllerBase
             PrivateProductsBucketName,
             objectKey,
             PublicUrlExpiryMinutes);
+    }
+
+    private string? GenerateMediaStreamUrl(string? objectKey)
+    {
+        return string.IsNullOrWhiteSpace(objectKey)
+            ? null
+            : _storageService.GeneratePublicUrl(MediaStreamsBucketName, objectKey);
     }
 }

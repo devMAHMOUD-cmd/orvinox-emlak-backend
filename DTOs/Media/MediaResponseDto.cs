@@ -14,6 +14,7 @@ public sealed record MediaResponseDto(
     string? ProductCoverImagePublicUrl,
     string VideoUrl,
     string? VideoPublicUrl,
+    string? HlsPublicUrl,
     string? ThumbnailUrl,
     string? ThumbnailPublicUrl,
     string? Caption,

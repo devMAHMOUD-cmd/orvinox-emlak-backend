@@ -15,6 +15,10 @@ public partial class Medium
 
     public string VideoUrl { get; set; } = null!;
 
+    public string? OptimizedVideoUrl { get; set; }
+
+    public string? HlsUrl { get; set; }
+
     public string? ThumbnailUrl { get; set; }
 
     public int? ViewCount { get; set; }

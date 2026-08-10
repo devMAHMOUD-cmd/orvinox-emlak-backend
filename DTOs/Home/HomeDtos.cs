@@ -69,6 +69,7 @@ public sealed record HomeReelDto(
     string? ProductTitle,
     string VideoUrl,
     string? VideoPublicUrl,
+    string? HlsPublicUrl,
     string? ThumbnailPublicUrl,
     string? Caption,
     int ViewCount,

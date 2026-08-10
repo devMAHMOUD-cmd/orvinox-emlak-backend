@@ -59,8 +59,10 @@ services:
     command: >-
       mc alias set craftora http://minio:9000 "$${MINIO_ROOT_USER}" "$${MINIO_ROOT_PASSWORD}" &&
       mc mb --ignore-existing craftora/public-assets &&
+      mc mb --ignore-existing craftora/media-streams &&
       mc mb --ignore-existing craftora/private-products &&
       mc anonymous set download craftora/public-assets &&
+      mc anonymous set download craftora/media-streams &&
       mc anonymous set private craftora/private-products
     networks:
       - craftora_network

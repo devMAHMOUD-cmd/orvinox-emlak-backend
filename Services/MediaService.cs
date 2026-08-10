@@ -21,6 +21,7 @@ public sealed class MediaService : IMediaService
     private const string MediaTargetType = "Media";
     private const string PublicAssetsBucketName = "public-assets";
     private const string PrivateProductsBucketName = "private-products";
+    private const string MediaStreamsBucketName = "media-streams";
     private const string TrackedViewsSetKey = "media:tracked-views";
     private const string FeedCacheVersionKey = "media:feed:contract:v2:version";
     private const string LikedMediaCacheVersionKey = "media:liked:contract:v1:version";
@@ -826,7 +827,12 @@ public sealed class MediaService : IMediaService
                 availableProduct?.CoverImageUrl,
                 PublicAssetsBucketName),
             VideoUrl: media.VideoUrl,
-            VideoPublicUrl: GenerateStoragePublicUrl(media.VideoUrl, PrivateProductsBucketName),
+            VideoPublicUrl: !string.IsNullOrWhiteSpace(media.OptimizedVideoUrl)
+                ? _storageService.GeneratePublicUrl(MediaStreamsBucketName, media.OptimizedVideoUrl)
+                : GenerateStoragePublicUrl(media.VideoUrl, PrivateProductsBucketName),
+            HlsPublicUrl: !string.IsNullOrWhiteSpace(media.HlsUrl)
+                ? _storageService.GeneratePublicUrl(MediaStreamsBucketName, media.HlsUrl)
+                : null,
             ThumbnailUrl: media.ThumbnailUrl,
             ThumbnailPublicUrl: GenerateStoragePublicUrl(media.ThumbnailUrl, PublicAssetsBucketName),
             Caption: media.Caption,
